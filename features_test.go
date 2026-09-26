@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -74,16 +75,20 @@ func (w *world) reset() {
 	}
 
 	h := &execmhttp.Handlers{
-		CreateTask:      &usecases.CreateTask{Tasks: tasks, Publisher: publisher, Clock: clock, NewId: newTaskId},
-		ClaimNext:       &usecases.ClaimNext{Tasks: tasks, Stations: stations, Publisher: publisher, Clock: clock},
-		RenewLease:      &usecases.RenewLease{Tasks: tasks, Clock: clock},
-		CompleteTask:    &usecases.CompleteTask{Tasks: tasks, Publisher: publisher, Clock: clock},
-		SealPackage:     &usecases.SealPackage{Tasks: tasks, Packages: packages, Publisher: publisher, Clock: clock, NewId: newPackageId},
-		RunSlam:         &usecases.RunSlam{Packages: packages, Publisher: publisher, Clock: clock},
-		GetQueueDepth:   &usecases.GetQueueDepth{Tasks: tasks},
-		ExpireLeases:    &usecases.ExpireLeases{Tasks: tasks, Publisher: publisher, Clock: clock},
-		RegisterStation: &usecases.RegisterStation{Stations: stations, Publisher: publisher},
-		SweepCPTMisses:  &usecases.SweepCPTMisses{Tasks: tasks, Publisher: publisher, Clock: clock},
+		CreateTask:           &usecases.CreateTask{Tasks: tasks, Publisher: publisher, Clock: clock, NewId: newTaskId},
+		ClaimNext:            &usecases.ClaimNext{Tasks: tasks, Stations: stations, Publisher: publisher, Clock: clock},
+		RenewLease:           &usecases.RenewLease{Tasks: tasks, Clock: clock},
+		CompleteTask:         &usecases.CompleteTask{Tasks: tasks, Publisher: publisher, Clock: clock},
+		SealPackage:          &usecases.SealPackage{Tasks: tasks, Packages: packages, Publisher: publisher, Clock: clock, NewId: newPackageId},
+		RunSlam:              &usecases.RunSlam{Packages: packages, Publisher: publisher, Clock: clock},
+		GetQueueDepth:        &usecases.GetQueueDepth{Tasks: tasks},
+		ExpireLeases:         &usecases.ExpireLeases{Tasks: tasks, Publisher: publisher, Clock: clock},
+		RegisterStation:      &usecases.RegisterStation{Stations: stations, Publisher: publisher},
+		GetTasksByOrderRef:   &usecases.GetTasksByOrderRef{Tasks: tasks},
+		CheckInStation:       &usecases.CheckInStation{Stations: stations},
+		CheckOutStation:      &usecases.CheckOutStation{Stations: stations},
+		GetInstalledCapacity: &usecases.GetInstalledCapacity{Stations: stations},
+		SweepCPTMisses:       &usecases.SweepCPTMisses{Tasks: tasks, Publisher: publisher, Clock: clock},
 	}
 
 	w.server = httptest.NewServer(execmhttp.NewRouter(h, nil))
@@ -287,6 +292,44 @@ func (w *world) theSlamWeighCheckRuns(actual, expected float64) error {
 	})
 }
 
+func (w *world) theTasksForOrderAreLookedUp(orderRef string) error {
+	return w.do(http.MethodGet, "/tasks?orderRef="+url.QueryEscape(orderRef), nil)
+}
+
+func (w *world) tasksAreLookedUpWithoutAnOrderRef() error {
+	return w.do(http.MethodGet, "/tasks", nil)
+}
+
+func (w *world) workerChecksInAtStation(occupantId, stationId string) error {
+	return w.do(http.MethodPost, "/stations/"+stationId+"/check-in", map[string]any{
+		"occupantId": occupantId,
+	})
+}
+
+func (w *world) workerHasCheckedInAtStation(occupantId, stationId string) error {
+	if err := w.workerChecksInAtStation(occupantId, stationId); err != nil {
+		return err
+	}
+	if w.status != http.StatusOK {
+		return fmt.Errorf("worker %q checking in at station %q: expected 200, got %d: %s", occupantId, stationId, w.status, w.body)
+	}
+	return nil
+}
+
+func (w *world) stationChecksOut(stationId string) error {
+	return w.do(http.MethodPost, "/stations/"+stationId+"/check-out", nil)
+}
+
+func (w *world) stationTriesToRenewTheLeaseOnTheTaskForOrder(stationId, orderRef string) error {
+	taskId, ok := w.tasksByOrder[orderRef]
+	if !ok {
+		return fmt.Errorf("no task recorded for order %q", orderRef)
+	}
+	return w.do(http.MethodPost, "/tasks/"+taskId+"/renew-lease", map[string]any{
+		"stationId": stationId,
+	})
+}
+
 // --- Then steps ------------------------------------------------------------
 
 func (w *world) theResponseStatusIs(expected int) error {
@@ -432,6 +475,96 @@ func (w *world) theSealedPackageHoldsContents(contents string) error {
 	return nil
 }
 
+func (w *world) theLookupReturnsTasksForOrder(expected int, orderRef string) error {
+	var tasks []struct {
+		Id       string `json:"id"`
+		OrderRef string `json:"orderRef"`
+	}
+	if err := w.decodeLast(&tasks); err != nil {
+		return err
+	}
+	if len(tasks) != expected {
+		return fmt.Errorf("expected %d task(s) for order %q, got %d: %s", expected, orderRef, len(tasks), w.body)
+	}
+	seen := make(map[string]bool, len(tasks))
+	for _, t := range tasks {
+		if t.OrderRef != orderRef {
+			return fmt.Errorf("expected task %q to reference order %q, got %q", t.Id, orderRef, t.OrderRef)
+		}
+		seen[t.Id] = true
+	}
+	for id := range w.tasksByOrder {
+		if id == orderRef && !seen[w.tasksByOrder[id]] {
+			return fmt.Errorf("expected the lookup to include task %q for order %q", w.tasksByOrder[id], orderRef)
+		}
+	}
+	return nil
+}
+
+func (w *world) theInstalledCapacityForIs(capability string, expected int) error {
+	status, body, _, err := w.call(http.MethodGet, "/capacity/"+url.PathEscape(capability), nil)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("reading %s installed capacity: expected 200, got %d: %s", capability, status, body)
+	}
+	var capacity struct {
+		Capability string `json:"capability"`
+		Installed  int    `json:"installed"`
+	}
+	if err := json.Unmarshal(body, &capacity); err != nil {
+		return fmt.Errorf("decode installed capacity %q: %w", string(body), err)
+	}
+	if capacity.Capability != capability {
+		return fmt.Errorf("expected capability %q in the response, got %q", capability, capacity.Capability)
+	}
+	if capacity.Installed != expected {
+		return fmt.Errorf("expected %s installed capacity %d, got %d", capability, expected, capacity.Installed)
+	}
+	return nil
+}
+
+func (w *world) theStationResponseShowsOccupied() error {
+	var resp struct {
+		Occupied bool `json:"occupied"`
+	}
+	if err := w.decodeLast(&resp); err != nil {
+		return err
+	}
+	if !resp.Occupied {
+		return fmt.Errorf("expected the station to be occupied: %s", w.body)
+	}
+	return nil
+}
+
+func (w *world) theStationResponseShowsUnoccupied() error {
+	var resp struct {
+		Occupied bool `json:"occupied"`
+	}
+	if err := w.decodeLast(&resp); err != nil {
+		return err
+	}
+	if resp.Occupied {
+		return fmt.Errorf("expected the station to be unoccupied: %s", w.body)
+	}
+	return nil
+}
+
+func (w *world) noDomainEventsAreRecorded() error {
+	if recorded := w.publisher.Events(); len(recorded) != 0 {
+		return fmt.Errorf("expected no domain events, recorded: %v", w.recordedEventNames())
+	}
+	return nil
+}
+
+func (w *world) exactlyNDomainEventsAreRecorded(expected int, name string) error {
+	if n := w.countEvents(name); n != expected {
+		return fmt.Errorf("expected exactly %d %s domain event(s), got %d", expected, name, n)
+	}
+	return nil
+}
+
 func (w *world) countEvents(name string) int {
 	count := 0
 	for _, e := range w.publisher.Events() {
@@ -496,18 +629,30 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	sc.Step(`^Station "([^"]*)" completes the claimed Task$`, w.stationCompletesTheClaimedTask)
 	sc.Step(`^Station "([^"]*)" seal(?:s|ed) a Package for the claimed Task with scanned contents "([^"]*)"$`, w.stationSealsAPackage)
 	sc.Step(`^the SLAM weigh-check runs on the Package with an actual weight of ([0-9.]+) against an expected weight of ([0-9.]+)$`, w.theSlamWeighCheckRuns)
+	sc.Step(`^the tasks for order "([^"]*)" are looked up$`, w.theTasksForOrderAreLookedUp)
+	sc.Step(`^tasks are looked up without an orderRef$`, w.tasksAreLookedUpWithoutAnOrderRef)
+	sc.Step(`^worker "([^"]*)" has checked in at Station "([^"]*)"$`, w.workerHasCheckedInAtStation)
+	sc.Step(`^worker "([^"]*)" checks in at Station "([^"]*)"$`, w.workerChecksInAtStation)
+	sc.Step(`^Station "([^"]*)" checks out$`, w.stationChecksOut)
+	sc.Step(`^Station "([^"]*)" tries to renew the lease on the Task for order "([^"]*)"$`, w.stationTriesToRenewTheLeaseOnTheTaskForOrder)
 
 	sc.Step(`^the response status is (\d+)$`, w.theResponseStatusIs)
 	sc.Step(`^the claimed Task is the one for order "([^"]*)"$`, w.theClaimedTaskIsForOrder)
 	sc.Step(`^the claimed Task is leased to Station "([^"]*)"$`, w.theClaimedTaskIsLeasedTo)
 	sc.Step(`^the response is a Problem Details document of type "([^"]*)"$`, w.theResponseIsAProblemOfType)
 	sc.Step(`^the queue depth for "([^"]*)" is (\d+)$`, w.theQueueDepthIs)
+	sc.Step(`^the lookup returns (\d+) tasks? for order "([^"]*)"$`, w.theLookupReturnsTasksForOrder)
+	sc.Step(`^the installed capacity for "([^"]*)" is (\d+)$`, w.theInstalledCapacityForIs)
+	sc.Step(`^the Station response shows the station is occupied$`, w.theStationResponseShowsOccupied)
+	sc.Step(`^the Station response shows the station is unoccupied$`, w.theStationResponseShowsUnoccupied)
 	sc.Step(`^(\d+) leases? (?:were|was) freed$`, w.leasesWereFreed)
 	sc.Step(`^(\d+) tasks? (?:were|was) reported as CPT-missed$`, w.tasksWereReportedAsCPTMissed)
 	sc.Step(`^the sealed Package has status "([^"]*)"$`, w.theSealedPackageHasStatus)
 	sc.Step(`^the sealed Package holds scanned contents "([^"]*)"$`, w.theSealedPackageHoldsContents)
 	sc.Step(`^an? "([^"]*)" domain event is recorded$`, w.aDomainEventIsRecorded)
 	sc.Step(`^no "([^"]*)" domain event is recorded$`, w.noDomainEventIsRecorded)
+	sc.Step(`^no domain events are recorded$`, w.noDomainEventsAreRecorded)
+	sc.Step(`^exactly (\d+) "([^"]*)" domain events? (?:is|are) recorded$`, w.exactlyNDomainEventsAreRecorded)
 }
 
 // TestFeatures runs every Gherkin scenario under features/ as a Go test.
