@@ -20,6 +20,7 @@ import (
 
 	inboundhttp "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/http"
 	inboundkafka "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/kafka"
+	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/bootretry"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/events"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/facilitylayout"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/filecatalog"
@@ -119,9 +120,21 @@ func run() error {
 	defer cancelConsumer()
 	switch catalogueSource {
 	case "kafka":
-		var err error
-		kafkaCatalogue, err = kafkacatalog.NewConsumer(rootCtx, kafkaBrokers, logger)
-		if err != nil {
+		// Retried: kafkacatalog.NewConsumer's newTargetOffsets dials the
+		// broker synchronously (kafkago.DialContext) to capture the
+		// readiness watermark before any consuming begins, and that dial
+		// is exactly this fleet's known ~10s post-start
+		// first-outbound-dial reset (Istio native sidecars;
+		// holdApplicationUntilProxyStarts is a no-op for them). A single
+		// attempt turns that transient condition into CrashLoopBackOff.
+		if err := bootretry.Retry(rootCtx, logger, "dial process-path kafka catalogue", func() error {
+			c, err := kafkacatalog.NewConsumer(rootCtx, kafkaBrokers, logger)
+			if err != nil {
+				return err
+			}
+			kafkaCatalogue = c
+			return nil
+		}); err != nil {
 			return fmt.Errorf("failed to start the process-path Kafka catalogue: %w", err)
 		}
 		catalogue = kafkaCatalogue
@@ -171,7 +184,15 @@ func run() error {
 		processedEvents = memory.NewProcessedEventsRepo()
 		consolidationRepo = memory.NewOrderConsolidationRepo()
 	} else {
-		if err := postgres.Migrate(databaseURL, "migrations"); err != nil {
+		// Retried: this fleet's Istio native sidecars reset EVERY pod's
+		// first outbound TCP dial ~10s after the app starts
+		// (holdApplicationUntilProxyStarts is a no-op for native
+		// sidecars). A single attempt turns that transient condition
+		// into CrashLoopBackOff; the retry still fails closed once its
+		// budget is exhausted.
+		if err := bootretry.Retry(rootCtx, logger, "run migrations", func() error {
+			return postgres.Migrate(databaseURL, "migrations")
+		}); err != nil {
 			return err
 		}
 		var err error
@@ -180,6 +201,14 @@ func run() error {
 			return err
 		}
 		defer pool.Close()
+		// ParseConfig/NewWithConfig do not themselves establish a
+		// connection, so without this the first-dial reset would surface
+		// inside the first real request instead of at boot.
+		if err := bootretry.Retry(rootCtx, logger, "ping database", func() error {
+			return pool.Ping(rootCtx)
+		}); err != nil {
+			return err
+		}
 		if err := postgres.RecordPoolStats(pool); err != nil {
 			logger.Error("pgxpool metrics unavailable", "error", err)
 		}

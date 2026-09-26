@@ -56,6 +56,15 @@ spec:
             - name: ENVIRONMENT
               value: {{ .Values.environment | quote }}
             {{- end }}
+          # startupProbe covers this fleet's known ~10s post-start
+          # first-outbound-dial reset (Istio native sidecars); see
+          # values.yaml's startupProbe comment for the full rationale.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
           livenessProbe:
             httpGet:
               path: /healthz

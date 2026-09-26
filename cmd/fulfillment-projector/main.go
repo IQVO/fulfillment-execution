@@ -19,6 +19,7 @@ import (
 
 	inboundkafka "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/kafka"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/analyticsstore"
+	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/bootretry"
 	outboundkafka "github.com/claudioed/fulfillment-execution/internal/adapters/outbound/kafka"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/postgres"
 	"github.com/claudioed/fulfillment-execution/internal/observability"
@@ -67,7 +68,14 @@ func run() error {
 	migrationsPath := getenv("ANALYTICS_MIGRATIONS_PATH", "migrations/analytics")
 
 	// The projector owns the analytical schema: run its migrations on start.
-	if err := postgres.Migrate(analyticsURL, migrationsPath); err != nil {
+	// Retried: this fleet's Istio native sidecars reset EVERY pod's first
+	// outbound TCP dial ~10s after the app starts
+	// (holdApplicationUntilProxyStarts is a no-op for native sidecars). A
+	// single attempt turns that transient condition into CrashLoopBackOff;
+	// the retry still fails closed once its budget is exhausted.
+	if err := bootretry.Retry(rootCtx, logger, "run analytics migrations", func() error {
+		return postgres.Migrate(analyticsURL, migrationsPath)
+	}); err != nil {
 		return err
 	}
 
@@ -76,6 +84,14 @@ func run() error {
 		return err
 	}
 	defer pool.Close()
+	// ParseConfig/NewWithConfig do not themselves establish a connection,
+	// so without this the first-dial reset would surface inside the first
+	// consumed message instead of at boot.
+	if err := bootretry.Retry(rootCtx, logger, "ping analytics database", func() error {
+		return pool.Ping(rootCtx)
+	}); err != nil {
+		return err
+	}
 	if err := postgres.RecordPoolStats(pool); err != nil {
 		logger.Error("analytics pgxpool metrics unavailable", "error", err)
 	}
