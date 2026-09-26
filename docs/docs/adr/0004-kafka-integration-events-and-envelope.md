@@ -177,3 +177,12 @@ convention rather than a local improvisation.
 - **In-memory idempotency does not survive restart.** Running with
   `EVENT_PUBLISHER=kafka` but no `DATABASE_URL` gives process-lifetime
   deduplication only.
+
+## Addendum (2026-09-26)
+
+The CloudEvents migration referenced above as a future intent now has a
+concrete plan: [ADR-0027](./0027-cloudevents-envelope-migration.md)
+(Proposed), a companion to wes-work-planning's own envelope-migration ADR
+(ADR-0021). It implements the CloudEvents envelope this ADR documented but
+never shipped, via a non-breaking dual-read/dual-write bake period. See
+ADR-0027 for the schema, phase sequence, and rollback plan.
