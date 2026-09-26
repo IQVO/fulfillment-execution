@@ -144,9 +144,13 @@ paths:
         - name: orderRef
           in: query
           required: true
-          description: The order reference to look up (Task.orderRef, set at creation).
+          description: >
+            The order reference to look up (Task.orderRef, set at creation).
+            Must be non-empty — an empty value is treated as a missing
+            parameter and rejected with 400.
           schema:
             type: string
+            minLength: 1
             example: order-42
       responses:
         "200":
@@ -953,8 +957,13 @@ components:
 
     TaskType:
       type: string
-      description: The process path a task belongs to.
-      enum: [PICK, PACK, SLAM]
+      description: >
+        The process path a task belongs to. REBIN tasks are not creatable
+        through `POST /tasks` by HTTP-only callers in practice — they arrive
+        via the WorkReleased Kafka event's rebin path (see the process-path
+        catalogue) — but they exist in the task store and therefore appear
+        in read-model responses alongside PICK/PACK/SLAM.
+      enum: [PICK, PACK, SLAM, REBIN]
       example: PICK
 
     TaskStatus:
@@ -999,7 +1008,11 @@ components:
           example: "2026-01-01T18:00:00Z"
         orderRef:
           type: string
-          description: The originating order/work-unit reference (opaque to this service).
+          minLength: 1
+          description: >
+            The originating order/work-unit reference (opaque to this
+            service). Must be non-empty: the API treats "" as a missing
+            field and rejects it with 400.
           example: order-42
         requiredCapabilities:
           type: array
@@ -1013,9 +1026,14 @@ components:
           minItems: 1
           items:
             type: string
+            nullable: true
+            description: >
+              A null item is accepted and treated as an empty capability
+              string (Go's JSON decoding cannot distinguish them).
             example: pick
         fragile:
           type: boolean
+          nullable: true
           default: false
           description: >
             A packing hint, not a placement or capability-matching signal:
@@ -1023,7 +1041,9 @@ components:
             by inventory-storage's ProductClassification concept, as
             stamped onto the WorkReleased event by wes-work-planning at
             release time. Optional and defaults to false for backward
-            compatibility with any producer that predates this field.
+            compatibility with any producer that predates this field; an
+            explicit null is accepted and treated the same as omission
+            (false).
       example:
         type: PICK
         cpt: "2026-01-01T18:00:00Z"
@@ -1097,7 +1117,11 @@ components:
       properties:
         stationId:
           type: string
-          description: Must match the station that currently owns the active claim.
+          minLength: 1
+          description: >
+            Must match the station that currently owns the active claim.
+            Must be non-empty: the API treats "" as a missing field and
+            rejects it with 400.
           example: station-1
       example:
         stationId: station-1
@@ -1108,7 +1132,11 @@ components:
       properties:
         stationId:
           type: string
-          description: Must match the station that currently owns the active claim.
+          minLength: 1
+          description: >
+            Must match the station that currently owns the active claim.
+            Must be non-empty: the API treats "" as a missing field and
+            rejects it with 400.
           example: station-1
       example:
         stationId: station-1
@@ -1119,7 +1147,11 @@ components:
       properties:
         stationId:
           type: string
-          description: Must match the station that currently owns the active claim on the Pack task.
+          minLength: 1
+          description: >
+            Must match the station that currently owns the active claim on
+            the Pack task. Must be non-empty: the API treats "" as a
+            missing field and rejects it with 400.
           example: station-2
         contents:
           type: array
@@ -1130,6 +1162,10 @@ components:
             least one scanned item.
           items:
             type: string
+            nullable: true
+            description: >
+              A null item is accepted and treated as an empty SKU string
+              (Go's JSON decoding cannot distinguish them).
             example: sku-1
       example:
         stationId: station-2
@@ -1180,12 +1216,21 @@ components:
         actualWeight:
           type: number
           format: double
-          description: Measured weight from the SLAM scale, in the same unit as expectedWeight (e.g. kilograms).
+          nullable: true
+          description: >
+            Measured weight from the SLAM scale, in the same unit as
+            expectedWeight (e.g. kilograms). An explicit null is accepted
+            and treated the same as 0 (Go's JSON decoding cannot
+            distinguish them).
           example: 2.02
         expectedWeight:
           type: number
           format: double
-          description: Expected weight for this order's contents, in the same unit as actualWeight.
+          nullable: true
+          description: >
+            Expected weight for this order's contents, in the same unit as
+            actualWeight. An explicit null is accepted and treated the same
+            as 0 (Go's JSON decoding cannot distinguish them).
           example: 2.0
       example:
         actualWeight: 2.02
@@ -1239,20 +1284,30 @@ components:
       properties:
         stationId:
           type: string
-          description: Client-supplied station identifier; re-using an existing one upserts capabilities.
+          minLength: 1
+          description: >
+            Client-supplied station identifier; re-using an existing one
+            upserts capabilities. Must be non-empty: the API treats "" as a
+            missing field and rejects it with 400.
           example: station-1
         capabilities:
           type: array
           minItems: 1
           items:
             type: string
+            nullable: true
+            description: >
+              A null item is accepted and treated as an empty capability
+              string (Go's JSON decoding cannot distinguish them).
             example: pick
         locationCode:
           type: string
+          nullable: true
           description: >
             Optional facility-layout LocationCode identifying where this
-            station physically sits (ADR-0024). Omitted entirely means
-            unchecked — no role validation is attempted. When supplied
+            station physically sits (ADR-0024). Omitted entirely — or an
+            explicit null, which is treated exactly the same — means
+            unchecked: no role validation is attempted. When supplied
             and the location-role lookup is configured, a LocationCode
             that KNOWINGLY resolves to a role other than WorkCenter is
             rejected (422); an unrecognized LocationCode, or an
@@ -1290,12 +1345,15 @@ components:
       properties:
         occupantId:
           type: string
+          minLength: 1
           description: >
             Identifies the worker or robot checking in. Opaque to this
             service — carried through to the `associateId` field of a
             later `TaskCompleted` Kafka event for any task this station
             completes while the occupant remains checked in (see
             [ADR-0014](/docs/adr/0014-labor-performance-integration-hooks)).
+            Must be non-empty: the API treats "" as a missing field and
+            rejects it with 400.
           example: worker-42
       example:
         occupantId: worker-42
@@ -1303,7 +1361,9 @@ components:
   responses:
     BadRequest:
       description: >
-        The request body is malformed JSON, or a required field is missing.
+        The request body is malformed JSON, a required field is missing or
+        empty, or a field value is invalid (e.g. a task type outside the
+        TaskType enum).
       content:
         application/problem+json:
           schema:
@@ -1317,9 +1377,11 @@ components:
 
     BadRequestNoInstance:
       description: >
-        The request body is malformed JSON, or a required field is missing.
-        `instance` is omitted: this is a bare collection-create endpoint
-        with no path segment identifying a specific resource.
+        The request body is malformed JSON, a required field is missing or
+        empty, or a field value is invalid (e.g. a task type outside the
+        TaskType enum). `instance` is omitted: this is a bare
+        collection-create endpoint with no path segment identifying a
+        specific resource.
       content:
         application/problem+json:
           schema:
@@ -1328,7 +1390,7 @@ components:
             type: https://errors.fulfillment-execution.warehouse-systems.dev/invalid-request
             title: The request is malformed or missing a required field
             status: 400
-            detail: type is required
+            detail: type must be one of PICK, PACK, SLAM, REBIN
 
     InternalError:
       description: An unexpected server-side failure (e.g. a repository or event-publisher error).
