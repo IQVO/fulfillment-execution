@@ -127,6 +127,19 @@ pathCatalogue:
   # When set, content above is ignored and no ConfigMap is created here.
   existingConfigMap: ""
 
+# startupProbe covers this fleet's known ~10s post-start first-outbound-dial
+# reset (Istio native sidecars; holdApplicationUntilProxyStarts is a no-op
+# for them): failureThreshold * periodSeconds = 60s gives the app-side boot
+# retry (internal/adapters/outbound/bootretry, ~31s worst case) room to
+# finish before liveness/readiness probing (and any liveness-triggered
+# restart) begins.
+startupProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  periodSeconds: 2
+  failureThreshold: 30
+
 livenessProbe:
   httpGet:
     path: /healthz

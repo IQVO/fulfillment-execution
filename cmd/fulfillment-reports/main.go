@@ -19,6 +19,7 @@ import (
 
 	inboundhttp "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/http"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/analyticsstore"
+	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/bootretry"
 	"github.com/claudioed/fulfillment-execution/internal/observability"
 )
 
@@ -67,6 +68,18 @@ func run() error {
 		return err
 	}
 	defer pool.Close()
+	// Retried: this fleet's Istio native sidecars reset EVERY pod's first
+	// outbound TCP dial ~10s after the app starts
+	// (holdApplicationUntilProxyStarts is a no-op for native sidecars).
+	// ParseConfig/NewWithConfig do not themselves establish a connection,
+	// so without this the first-dial reset would surface inside the first
+	// served request instead of at boot, and a single attempt would turn
+	// that transient condition into CrashLoopBackOff.
+	if err := bootretry.Retry(rootCtx, logger, "ping analytics database", func() error {
+		return pool.Ping(rootCtx)
+	}); err != nil {
+		return err
+	}
 	if err := analyticsstore.RecordPoolStats(pool); err != nil {
 		logger.Error("analytics pgxpool metrics unavailable", "error", err)
 	}
