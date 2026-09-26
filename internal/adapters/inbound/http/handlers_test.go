@@ -187,6 +187,26 @@ func TestPostTask_MissingRequiredField_Returns400(t *testing.T) {
 		"https://errors.fulfillment-execution.warehouse-systems.dev/invalid-request", "")
 }
 
+// A task type outside the TaskType enum documented in apis/openapi.yaml is
+// a malformed request (400), not a domain error: the HTTP surface must not
+// mint tasks carrying free-form type strings the published contract
+// rejects (exercised by Schemathesis contract testing,
+// scripts/contract-test.sh).
+func TestPostTask_UnknownTaskType_Returns400(t *testing.T) {
+	srv, _, _, _, _ := newTestServer()
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
+		"type":                 "SORT",
+		"cpt":                  time.Now().Add(time.Hour),
+		"orderRef":             "order-1",
+		"requiredCapabilities": []string{"pick"},
+	})
+	if rec.Code != stdhttp.StatusBadRequest {
+		t.Fatalf("expected 400 for a task type outside the enum, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertProblemDetails(t, rec, stdhttp.StatusBadRequest,
+		"https://errors.fulfillment-execution.warehouse-systems.dev/invalid-request", "")
+}
+
 func TestPostClaimNext_LeasesTaskToStation(t *testing.T) {
 	srv, _, stations, _, clock := newTestServer()
 	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pick")))
