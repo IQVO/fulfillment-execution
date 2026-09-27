@@ -125,23 +125,46 @@ type Publisher struct {
 	Tasks    ports.TaskRepo
 	Stations ports.StationRepo
 	NewId    func() string
+	// Mode selects the wire envelope shape(s) Encode produces
+	// (ADR-0027 Phase 4). The zero value behaves as EnvelopeModeFlat, so
+	// every existing test/caller building a Publisher via a bare struct
+	// literal is unaffected.
+	Mode EnvelopeMode
 }
 
-// NewPublisher constructs a Publisher writing to Topic on brokers.
+// NewPublisher constructs a Publisher writing to Topic on brokers, in
+// EnvelopeModeFlat. Use NewPublisherWithMode to select a different mode.
 func NewPublisher(brokers []string, tasks ports.TaskRepo, stations ports.StationRepo, newId func() string) *Publisher {
-	return NewPublisherWithWriter(&kafkago.Writer{
+	return NewPublisherWithMode(brokers, tasks, stations, newId, EnvelopeModeFlat)
+}
+
+// NewPublisherWithMode constructs a Publisher writing to Topic on brokers
+// in the given EnvelopeMode (ADR-0027 Phase 4).
+func NewPublisherWithMode(brokers []string, tasks ports.TaskRepo, stations ports.StationRepo, newId func() string, mode EnvelopeMode) *Publisher {
+	p := NewPublisherWithWriter(&kafkago.Writer{
 		Addr:                   kafkago.TCP(brokers...),
 		Topic:                  Topic,
 		Balancer:               &kafkago.LeastBytes{},
 		AllowAutoTopicCreation: true,
 	}, tasks, stations, newId)
+	p.Mode = mode
+	return p
 }
 
-// NewPublisherWithWriter constructs a Publisher over an explicit Writer.
-// When used only as an Encoder (the outbox configuration, ADR 0020) the
-// writer may be nil — Encode never touches it.
+// NewPublisherWithWriter constructs a Publisher over an explicit Writer, in
+// EnvelopeModeFlat. When used only as an Encoder (the outbox configuration,
+// ADR 0020) the writer may be nil — Encode never touches it. Use
+// NewPublisherWithWriterAndMode to select a different mode.
 func NewPublisherWithWriter(w Writer, tasks ports.TaskRepo, stations ports.StationRepo, newId func() string) *Publisher {
 	return &Publisher{Writer: w, Tasks: tasks, Stations: stations, NewId: newId}
+}
+
+// NewPublisherWithWriterAndMode constructs a Publisher over an explicit
+// Writer in the given EnvelopeMode (ADR-0027 Phase 4).
+func NewPublisherWithWriterAndMode(w Writer, tasks ports.TaskRepo, stations ports.StationRepo, newId func() string, mode EnvelopeMode) *Publisher {
+	p := NewPublisherWithWriter(w, tasks, stations, newId)
+	p.Mode = mode
+	return p
 }
 
 // Encode builds the wire form of every TaskCompleted, TaskCPTMissed, and
@@ -161,37 +184,33 @@ func NewPublisherWithWriter(w Writer, tasks ports.TaskRepo, stations ports.Stati
 func (p *Publisher) Encode(ctx context.Context, evts ...shared.DomainEvent) ([]Encoded, error) {
 	var out []Encoded
 	for _, e := range evts {
+		var encs []Encoded
+		var err error
 		switch ev := e.(type) {
 		case shared.TaskCompleted:
-			enc, err := p.encodeTaskCompleted(ctx, ev)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, enc)
+			encs, err = p.encodeTaskCompleted(ctx, ev)
 		case shared.TaskCPTMissed:
-			enc, err := p.encodeTaskCPTMissed(ev)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, enc)
+			encs, err = p.encodeTaskCPTMissed(ev)
 		case shared.PackageManifested:
-			enc, err := p.encodePackageManifested(ev)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, enc)
+			encs, err = p.encodePackageManifested(ev)
 		default:
 			continue
 		}
-		observability.InjectKafkaTrace(ctx, &out[len(out)-1].Headers)
+		if err != nil {
+			return nil, err
+		}
+		for i := range encs {
+			observability.InjectKafkaTrace(ctx, &encs[i].Headers)
+		}
+		out = append(out, encs...)
 	}
 	return out, nil
 }
 
-func (p *Publisher) encodeTaskCompleted(ctx context.Context, tc shared.TaskCompleted) (Encoded, error) {
+func (p *Publisher) encodeTaskCompleted(ctx context.Context, tc shared.TaskCompleted) ([]Encoded, error) {
 	t, err := p.Tasks.FindById(ctx, tc.TaskId)
 	if err != nil {
-		return Encoded{}, fmt.Errorf("kafka: lookup task %s for enrichment: %w", tc.TaskId, err)
+		return nil, fmt.Errorf("kafka: lookup task %s for enrichment: %w", tc.TaskId, err)
 	}
 	var workUnitId string
 	var durationSeconds int64
@@ -206,66 +225,111 @@ func (p *Publisher) encodeTaskCompleted(ctx context.Context, tc shared.TaskCompl
 
 	associateId, err := p.associateId(ctx, tc.StationId)
 	if err != nil {
-		return Encoded{}, fmt.Errorf("kafka: lookup station %s for enrichment: %w", tc.StationId, err)
+		return nil, fmt.Errorf("kafka: lookup station %s for enrichment: %w", tc.StationId, err)
 	}
 
-	env := Envelope{
-		EventId:    p.NewId(),
-		EventType:  "TaskCompleted",
-		OccurredAt: tc.OccurredAt(),
-		Source:     "fulfillment-execution",
-		Data: TaskCompletedData{
-			TaskId:          string(tc.TaskId),
-			StationId:       string(tc.StationId),
-			WorkUnitId:      workUnitId,
-			AssociateId:     associateId,
-			DurationSeconds: durationSeconds,
-			TaskType:        taskType,
-		},
+	eventId := p.NewId()
+	data := TaskCompletedData{
+		TaskId:          string(tc.TaskId),
+		StationId:       string(tc.StationId),
+		WorkUnitId:      workUnitId,
+		AssociateId:     associateId,
+		DurationSeconds: durationSeconds,
+		TaskType:        taskType,
 	}
-	payload, err := json.Marshal(env)
-	if err != nil {
-		return Encoded{}, fmt.Errorf("kafka: marshal envelope: %w", err)
+
+	var out []Encoded
+	if mode := p.effectiveMode(); mode == EnvelopeModeFlat || mode == EnvelopeModeDual {
+		env := Envelope{
+			EventId:    eventId,
+			EventType:  "TaskCompleted",
+			OccurredAt: tc.OccurredAt(),
+			Source:     "fulfillment-execution",
+			Data:       data,
+		}
+		payload, err := json.Marshal(env)
+		if err != nil {
+			return nil, fmt.Errorf("kafka: marshal envelope: %w", err)
+		}
+		out = append(out, Encoded{Topic: Topic, EventType: env.EventType, Key: []byte(tc.TaskId), Value: payload})
 	}
-	return Encoded{Topic: Topic, EventType: env.EventType, Key: []byte(tc.TaskId), Value: payload}, nil
+	if mode := p.effectiveMode(); mode == EnvelopeModeCloudEvents || mode == EnvelopeModeDual {
+		ce := newCloudEvent(eventId, "task", "TaskCompleted", string(tc.TaskId), tc.OccurredAt(), data)
+		payload, err := json.Marshal(ce)
+		if err != nil {
+			return nil, fmt.Errorf("kafka: marshal cloudevent: %w", err)
+		}
+		out = append(out, Encoded{Topic: Topic, EventType: "TaskCompleted", Key: []byte(tc.TaskId), Value: payload})
+	}
+	return out, nil
 }
 
-func (p *Publisher) encodeTaskCPTMissed(ev shared.TaskCPTMissed) (Encoded, error) {
-	env := TaskCPTMissedEnvelope{
-		EventId:    p.NewId(),
-		EventType:  "TaskCPTMissed",
-		OccurredAt: ev.OccurredAt(),
-		Source:     "fulfillment-execution",
-		Data: TaskCPTMissedData{
-			TaskId:   string(ev.TaskId),
-			OrderRef: string(ev.OrderRef),
-			TaskType: ev.TaskType,
-			Cpt:      ev.CPT,
-		},
+func (p *Publisher) encodeTaskCPTMissed(ev shared.TaskCPTMissed) ([]Encoded, error) {
+	eventId := p.NewId()
+	data := TaskCPTMissedData{
+		TaskId:   string(ev.TaskId),
+		OrderRef: string(ev.OrderRef),
+		TaskType: ev.TaskType,
+		Cpt:      ev.CPT,
 	}
-	payload, err := json.Marshal(env)
-	if err != nil {
-		return Encoded{}, fmt.Errorf("kafka: marshal TaskCPTMissed envelope: %w", err)
+
+	var out []Encoded
+	if mode := p.effectiveMode(); mode == EnvelopeModeFlat || mode == EnvelopeModeDual {
+		env := TaskCPTMissedEnvelope{
+			EventId:    eventId,
+			EventType:  "TaskCPTMissed",
+			OccurredAt: ev.OccurredAt(),
+			Source:     "fulfillment-execution",
+			Data:       data,
+		}
+		payload, err := json.Marshal(env)
+		if err != nil {
+			return nil, fmt.Errorf("kafka: marshal TaskCPTMissed envelope: %w", err)
+		}
+		out = append(out, Encoded{Topic: Topic, EventType: env.EventType, Key: []byte(ev.TaskId), Value: payload})
 	}
-	return Encoded{Topic: Topic, EventType: env.EventType, Key: []byte(ev.TaskId), Value: payload}, nil
+	if mode := p.effectiveMode(); mode == EnvelopeModeCloudEvents || mode == EnvelopeModeDual {
+		ce := newCloudEvent(eventId, "task", "TaskCPTMissed", string(ev.TaskId), ev.OccurredAt(), data)
+		payload, err := json.Marshal(ce)
+		if err != nil {
+			return nil, fmt.Errorf("kafka: marshal TaskCPTMissed cloudevent: %w", err)
+		}
+		out = append(out, Encoded{Topic: Topic, EventType: "TaskCPTMissed", Key: []byte(ev.TaskId), Value: payload})
+	}
+	return out, nil
 }
 
-func (p *Publisher) encodePackageManifested(ev shared.PackageManifested) (Encoded, error) {
-	env := PackageManifestedEnvelope{
-		EventId:    p.NewId(),
-		EventType:  "PackageManifested",
-		OccurredAt: ev.OccurredAt(),
-		Source:     "fulfillment-execution",
-		Data: PackageManifestedData{
-			PackageId: string(ev.PackageId),
-			OrderRef:  string(ev.OrderRef),
-		},
+func (p *Publisher) encodePackageManifested(ev shared.PackageManifested) ([]Encoded, error) {
+	eventId := p.NewId()
+	data := PackageManifestedData{
+		PackageId: string(ev.PackageId),
+		OrderRef:  string(ev.OrderRef),
 	}
-	payload, err := json.Marshal(env)
-	if err != nil {
-		return Encoded{}, fmt.Errorf("kafka: marshal PackageManifested envelope: %w", err)
+
+	var out []Encoded
+	if mode := p.effectiveMode(); mode == EnvelopeModeFlat || mode == EnvelopeModeDual {
+		env := PackageManifestedEnvelope{
+			EventId:    eventId,
+			EventType:  "PackageManifested",
+			OccurredAt: ev.OccurredAt(),
+			Source:     "fulfillment-execution",
+			Data:       data,
+		}
+		payload, err := json.Marshal(env)
+		if err != nil {
+			return nil, fmt.Errorf("kafka: marshal PackageManifested envelope: %w", err)
+		}
+		out = append(out, Encoded{Topic: Topic, EventType: env.EventType, Key: []byte(ev.PackageId), Value: payload})
 	}
-	return Encoded{Topic: Topic, EventType: env.EventType, Key: []byte(ev.PackageId), Value: payload}, nil
+	if mode := p.effectiveMode(); mode == EnvelopeModeCloudEvents || mode == EnvelopeModeDual {
+		ce := newCloudEvent(eventId, "package", "PackageManifested", string(ev.PackageId), ev.OccurredAt(), data)
+		payload, err := json.Marshal(ce)
+		if err != nil {
+			return nil, fmt.Errorf("kafka: marshal PackageManifested cloudevent: %w", err)
+		}
+		out = append(out, Encoded{Topic: Topic, EventType: "PackageManifested", Key: []byte(ev.PackageId), Value: payload})
+	}
+	return out, nil
 }
 
 // Publish forwards every TaskCompleted, TaskCPTMissed, and

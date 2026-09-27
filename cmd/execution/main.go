@@ -356,8 +356,18 @@ func buildEventPublisher(pool *pgxpool.Pool, brokers []string, tasks ports.TaskR
 		return events.NewLogPublisher(logger), nil, func() {}
 	}
 
+	// EVENT_ENVELOPE_MODE selects the integration publisher's wire
+	// envelope shape (ADR-0027 Phase 4): flat (default, today's
+	// byte-identical envelope), cloudevents (CloudEvents 1.0 structured
+	// mode), or dual (both, two physical messages per event). Logged once
+	// here so a deployed pod's actual behavior is always visible in its
+	// own startup log, regardless of which branch below constructs the
+	// publisher.
+	envelopeMode := outboundkafka.ParseEnvelopeMode(getenv("EVENT_ENVELOPE_MODE", ""))
+	logger.Info("event envelope mode", "mode", string(envelopeMode))
+
 	if pool == nil {
-		kafkaPublisher := outboundkafka.NewPublisher(brokers, tasks, stations, uuidLike)
+		kafkaPublisher := outboundkafka.NewPublisherWithMode(brokers, tasks, stations, uuidLike, envelopeMode)
 		analyticsPub := outboundkafka.NewAnalyticsPublisher(brokers, tasks, uuidLike)
 		logger.Info("event publisher configured", "publisher", "kafka", "mode", "direct",
 			"topic", outboundkafka.Topic, "analytics_topic", outboundkafka.AnalyticsTopic, "brokers", brokers)
@@ -370,7 +380,7 @@ func buildEventPublisher(pool *pgxpool.Pool, brokers []string, tasks ports.TaskR
 	// Encoders only: no writer is ever opened for them, the relay's
 	// topic-less sink is the single Kafka connection this process holds
 	// for publishing.
-	integration := outboundkafka.NewPublisherWithWriter(nil, tasks, stations, uuidLike)
+	integration := outboundkafka.NewPublisherWithWriterAndMode(nil, tasks, stations, uuidLike, envelopeMode)
 	analytics := outboundkafka.NewAnalyticsPublisherWithWriter(nil, tasks, uuidLike)
 	sink := outboundkafka.NewRelaySink(brokers)
 	relay := postgres.NewOutboxRelay(pool, sink, logger,
