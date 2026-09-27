@@ -58,15 +58,30 @@ func (r fakeTaskRepo) FindByOrderRef(_ context.Context, orderRef shared.OrderRef
 
 func TestAnalyticsPublisher_PublishesEachEventType(t *testing.T) {
 	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	for _, tt := range eachEventTypeCases(at) {
+		t.Run(tt.name, func(t *testing.T) {
+			assertAnalyticsEventPublished(t, tt, at)
+		})
+	}
+}
 
-	tests := []struct {
-		name          string
-		event         shared.DomainEvent
-		wantType      string
-		wantKey       string
-		wantDataField string
-		wantDataValue any
-	}{
+// analyticsEventCase is one event-type scenario of the analytics contract:
+// the envelope's routing key, event_type, and one representative data
+// field asserted per event.
+type analyticsEventCase struct {
+	name          string
+	event         shared.DomainEvent
+	wantType      string
+	wantKey       string
+	wantDataField string
+	wantDataValue any
+}
+
+// eachEventTypeCases is the table behind
+// TestAnalyticsPublisher_PublishesEachEventType: one case per event type
+// on the analytics contract.
+func eachEventTypeCases(at time.Time) []analyticsEventCase {
+	return []analyticsEventCase{
 		{
 			name:          "TaskCreated",
 			event:         shared.NewTaskCreated("t1", at),
@@ -140,52 +155,55 @@ func TestAnalyticsPublisher_PublishesEachEventType(t *testing.T) {
 			wantDataValue: "p9",
 		},
 	}
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			w := &fakeAnalyticsWriter{}
-			p := outboundkafka.NewAnalyticsPublisher(nil, fakeTaskRepo{found: false}, func() string { return "evt-fixed" })
-			p.Writer = w
+// assertAnalyticsEventPublished publishes tt's event through a real
+// analytics publisher backed by a recording writer and asserts the
+// envelope's fixed fields plus tt's key/event_type/data expectations.
+func assertAnalyticsEventPublished(t *testing.T, tt analyticsEventCase, at time.Time) {
+	t.Helper()
 
-			if err := p.Publish(context.Background(), tt.event); err != nil {
-				t.Fatalf("Publish: %v", err)
-			}
-			if len(w.msgs) != 1 {
-				t.Fatalf("expected 1 message, got %d", len(w.msgs))
-			}
-			msg := w.msgs[0]
-			if string(msg.Key) != tt.wantKey {
-				t.Errorf("key = %q, want %q", string(msg.Key), tt.wantKey)
-			}
+	w := &fakeAnalyticsWriter{}
+	p := outboundkafka.NewAnalyticsPublisher(nil, fakeTaskRepo{found: false}, func() string { return "evt-fixed" })
+	p.Writer = w
 
-			var env outboundkafka.AnalyticsEnvelope
-			if err := json.Unmarshal(msg.Value, &env); err != nil {
-				t.Fatalf("unmarshal envelope: %v", err)
-			}
-			if env.EventType != tt.wantType {
-				t.Errorf("event_type = %q, want %q", env.EventType, tt.wantType)
-			}
-			if env.EventId != "evt-fixed" {
-				t.Errorf("event_id = %q, want evt-fixed", env.EventId)
-			}
-			if env.Source != "fulfillment-execution" {
-				t.Errorf("source = %q, want fulfillment-execution", env.Source)
-			}
-			if env.SchemaVersion != 1 {
-				t.Errorf("schema_version = %d, want 1", env.SchemaVersion)
-			}
-			if !env.OccurredAt.Equal(at) {
-				t.Errorf("occurred_at = %v, want %v", env.OccurredAt, at)
-			}
+	if err := p.Publish(context.Background(), tt.event); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if len(w.msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(w.msgs))
+	}
+	msg := w.msgs[0]
+	if string(msg.Key) != tt.wantKey {
+		t.Errorf("key = %q, want %q", string(msg.Key), tt.wantKey)
+	}
 
-			var data map[string]any
-			if err := json.Unmarshal(env.Data, &data); err != nil {
-				t.Fatalf("unmarshal data: %v", err)
-			}
-			if got := data[tt.wantDataField]; got != tt.wantDataValue {
-				t.Errorf("data[%q] = %v (%T), want %v (%T)", tt.wantDataField, got, got, tt.wantDataValue, tt.wantDataValue)
-			}
-		})
+	var env outboundkafka.AnalyticsEnvelope
+	if err := json.Unmarshal(msg.Value, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.EventType != tt.wantType {
+		t.Errorf("event_type = %q, want %q", env.EventType, tt.wantType)
+	}
+	if env.EventId != "evt-fixed" {
+		t.Errorf("event_id = %q, want evt-fixed", env.EventId)
+	}
+	if env.Source != "fulfillment-execution" {
+		t.Errorf("source = %q, want fulfillment-execution", env.Source)
+	}
+	if env.SchemaVersion != 1 {
+		t.Errorf("schema_version = %d, want 1", env.SchemaVersion)
+	}
+	if !env.OccurredAt.Equal(at) {
+		t.Errorf("occurred_at = %v, want %v", env.OccurredAt, at)
+	}
+
+	var data map[string]any
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
+	if got := data[tt.wantDataField]; got != tt.wantDataValue {
+		t.Errorf("data[%q] = %v (%T), want %v (%T)", tt.wantDataField, got, got, tt.wantDataValue, tt.wantDataValue)
 	}
 }
 
@@ -270,14 +288,6 @@ func TestAnalyticsPublisher_EnrichesTaskType(t *testing.T) {
 func TestAnalyticsPublisher_PackageManifested_OnTimeAndLateAndBoundary(t *testing.T) {
 	cpt := time.Date(2026, 3, 1, 18, 0, 0, 0, time.UTC)
 
-	slamTask := func() *task.Task {
-		tk := task.New("slam-1", task.Slam, shared.NewCPT(cpt), "order-9", shared.NewCapabilitySet(), false, false)
-		if err := tk.Claim("station-9", shared.NewCapabilitySet(), cpt.Add(-time.Hour), time.Hour); err != nil {
-			t.Fatalf("claim: %v", err)
-		}
-		return tk
-	}
-
 	tests := []struct {
 		name         string
 		manifestedAt time.Time
@@ -290,42 +300,64 @@ func TestAnalyticsPublisher_PackageManifested_OnTimeAndLateAndBoundary(t *testin
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			w := &fakeAnalyticsWriter{}
-			repo := fakeTaskRepo{byOrderRef: map[shared.OrderRef][]*task.Task{"order-9": {slamTask()}}}
-			p := outboundkafka.NewAnalyticsPublisher(nil, repo, func() string { return "evt" })
-			p.Writer = w
-
-			evt := shared.NewPackageManifested("pkg-1", "order-9", tt.manifestedAt)
-			if err := p.Publish(context.Background(), evt); err != nil {
-				t.Fatalf("Publish: %v", err)
-			}
-			if len(w.msgs) != 1 {
-				t.Fatalf("expected 1 message, got %d", len(w.msgs))
-			}
-			var env outboundkafka.AnalyticsEnvelope
-			if err := json.Unmarshal(w.msgs[0].Value, &env); err != nil {
-				t.Fatalf("unmarshal envelope: %v", err)
-			}
-			if env.EventType != "PackageManifested" {
-				t.Fatalf("event_type = %q, want PackageManifested", env.EventType)
-			}
-			var data map[string]any
-			if err := json.Unmarshal(env.Data, &data); err != nil {
-				t.Fatalf("unmarshal data: %v", err)
-			}
-			if data["resolved"] != true {
-				t.Fatalf("resolved = %v, want true", data["resolved"])
-			}
-			if data["task_type"] != string(task.Slam) {
-				t.Errorf("task_type = %v, want %v", data["task_type"], task.Slam)
-			}
-			if data["station_id"] != "station-9" {
-				t.Errorf("station_id = %v, want station-9", data["station_id"])
-			}
-			if data["on_time"] != tt.wantOnTime {
-				t.Errorf("on_time = %v, want %v", data["on_time"], tt.wantOnTime)
-			}
+			assertPackageManifestedOnTime(t, cpt, tt.manifestedAt, tt.wantOnTime)
 		})
+	}
+}
+
+// newClaimedSlamTask builds the claimed SLAM task for "order-9" whose CPT
+// the on-time enrichment resolves: the publisher finds it via
+// FindByOrderRef and compares the manifest's occurred_at against its CPT.
+func newClaimedSlamTask(t *testing.T, cpt time.Time) *task.Task {
+	t.Helper()
+
+	tk := task.New("slam-1", task.Slam, shared.NewCPT(cpt), "order-9", shared.NewCapabilitySet(), false, false)
+	if err := tk.Claim("station-9", shared.NewCapabilitySet(), cpt.Add(-time.Hour), time.Hour); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	return tk
+}
+
+// assertPackageManifestedOnTime publishes one PackageManifested event at
+// manifestedAt against a repo whose SLAM task has the given CPT, and
+// asserts the resolved enrichment's fields, including the on_time verdict.
+func assertPackageManifestedOnTime(t *testing.T, cpt, manifestedAt time.Time, wantOnTime bool) {
+	t.Helper()
+
+	w := &fakeAnalyticsWriter{}
+	repo := fakeTaskRepo{byOrderRef: map[shared.OrderRef][]*task.Task{"order-9": {newClaimedSlamTask(t, cpt)}}}
+	p := outboundkafka.NewAnalyticsPublisher(nil, repo, func() string { return "evt" })
+	p.Writer = w
+
+	evt := shared.NewPackageManifested("pkg-1", "order-9", manifestedAt)
+	if err := p.Publish(context.Background(), evt); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if len(w.msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(w.msgs))
+	}
+	var env outboundkafka.AnalyticsEnvelope
+	if err := json.Unmarshal(w.msgs[0].Value, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.EventType != "PackageManifested" {
+		t.Fatalf("event_type = %q, want PackageManifested", env.EventType)
+	}
+	var data map[string]any
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
+	if data["resolved"] != true {
+		t.Fatalf("resolved = %v, want true", data["resolved"])
+	}
+	if data["task_type"] != string(task.Slam) {
+		t.Errorf("task_type = %v, want %v", data["task_type"], task.Slam)
+	}
+	if data["station_id"] != "station-9" {
+		t.Errorf("station_id = %v, want station-9", data["station_id"])
+	}
+	if data["on_time"] != wantOnTime {
+		t.Errorf("on_time = %v, want %v", data["on_time"], wantOnTime)
 	}
 }
 
