@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riandyrn/otelchi"
 
 	"github.com/claudioed/fulfillment-execution/internal/observability"
@@ -18,7 +19,26 @@ import (
 // RouterOption customises NewRouter / NewReportsRouter.
 type RouterOption func(*routerConfig)
 
-type routerConfig struct{}
+type routerConfig struct {
+	// idempotencyPool, when non-nil, wires RequireIdempotencyKey onto
+	// POST /tasks (see idempotency.go and WithIdempotencyPool). A nil
+	// pool means "no transactional Postgres backing wired" (in-memory
+	// dev/test configuration) — the idempotency middleware needs a real
+	// pgxpool.Pool to begin its own transaction, so it is simply not
+	// applied in that case, exactly this codebase's existing convention
+	// for every other optional Postgres-backed capability (UnitOfWork,
+	// the outbox relay).
+	idempotencyPool *pgxpool.Pool
+}
+
+// WithIdempotencyPool wires RequireIdempotencyKey onto POST /tasks — the
+// one mutating endpoint that creates a NEW resource with a
+// server-generated id (see docs/docs/adr/0028-idempotency-key-middleware.md).
+// A nil pool (or omitting this option entirely) leaves POST /tasks
+// unprotected, matching the in-memory dev/test composition root.
+func WithIdempotencyPool(pool *pgxpool.Pool) RouterOption {
+	return func(cfg *routerConfig) { cfg.idempotencyPool = pool }
+}
 
 // NewRouter builds the chi router for every Fulfillment Execution endpoint.
 // A nil logger falls back to slog.Default() rather than panicking.
@@ -51,7 +71,22 @@ func NewRouter(h *Handlers, logger *slog.Logger, opts ...RouterOption) *chi.Mux 
 	r.Get("/healthz", h.GetHealthz)
 
 	r.Post("/stations", h.PostRegisterStation)
-	r.Post("/tasks", h.PostTask)
+	// POST /tasks is route-scoped (r.With, not r.Use) behind
+	// RequireIdempotencyKey — it is the one mutating endpoint that
+	// creates a NEW resource with a server-generated id, so a lost
+	// response and a client retry would otherwise create a duplicate
+	// task (docs/docs/adr/0028-idempotency-key-middleware.md). Every
+	// other mutating route either acts on a caller-supplied {id} or is a
+	// sweep/batch operation — see the ADR for the full survey.
+	// idempotencyPool nil (in-memory dev/test configuration, no
+	// transactional Postgres backing) skips the middleware entirely,
+	// mirroring every other optional Postgres-backed capability's nil
+	// convention in this repo.
+	if cfg.idempotencyPool != nil {
+		r.With(RequireIdempotencyKey(cfg.idempotencyPool)).Post("/tasks", h.PostTask)
+	} else {
+		r.Post("/tasks", h.PostTask)
+	}
 	r.Get("/tasks", h.GetTasksHandler)
 	r.Post("/stations/{stationId}/claim-next", h.PostClaimNext)
 	r.Post("/stations/{stationId}/check-in", h.PostCheckInStation)
