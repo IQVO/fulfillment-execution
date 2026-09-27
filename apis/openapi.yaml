@@ -915,6 +915,47 @@ paths:
         "200":
           description: The service process is up.
 
+  /readyz:
+    get:
+      operationId: getReadyz
+      tags: [System]
+      summary: Readiness check
+      description: >
+        Returns `200 {"status":"ready"}` while the service is ready to
+        accept new traffic, and `503 {"status":"not_ready"}` once graceful
+        shutdown has begun (ADR-0029) — the readiness gate is flipped as
+        the FIRST step of shutdown, before the HTTP server stops accepting
+        connections, so a Kubernetes readinessProbe pointed here has a
+        window to stop routing new traffic before the listener closes.
+        Distinct from `/healthz` (liveness, never flipped by shutdown).
+      responses:
+        "200":
+          description: The service is ready to accept new traffic.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: [ready]
+              example:
+                status: ready
+        "503":
+          description: The service has begun graceful shutdown and is no longer accepting new traffic.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: [not_ready]
+              example:
+                status: not_ready
+
 components:
   schemas:
     Problem:
