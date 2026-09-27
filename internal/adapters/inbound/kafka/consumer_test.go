@@ -207,6 +207,30 @@ func workReleasedJSONWithGiftWrap(eventId, pathId, workUnitId string, giftWrap b
 	}`)
 }
 
+// cloudEventsWorkReleasedJSON is the ADR-0027 / wes-work-planning ADR-0021
+// CloudEvents 1.0 structured-mode shape for a WorkReleased event: same
+// data payload as workReleasedJSON, wrapped in the new envelope fields
+// instead of the flat ones. eventId/pathId/workUnitId map to the exact
+// same values a flat fixture with the same arguments would carry, so a
+// test can assert the two decode to an identical normalized result.
+func cloudEventsWorkReleasedJSON(eventId, pathId, workUnitId string) []byte {
+	return []byte(`{
+		"specversion": "1.0",
+		"id": "` + eventId + `",
+		"type": "com.warehouse.wes.work-planning.workunit.WorkReleased",
+		"source": "/warehouse/wes-work-planning",
+		"subject": "` + workUnitId + `",
+		"time": "2026-08-21T22:00:00Z",
+		"datacontenttype": "application/json",
+		"data": {
+			"path_id": "` + pathId + `",
+			"work_unit_id": "` + workUnitId + `",
+			"cpt": "2026-08-21T23:00:00Z",
+			"ref": "release-1"
+		}
+	}`)
+}
+
 func TestNewConsumerWithGroup_UsesSuppliedConsumerGroup(t *testing.T) {
 	c := kafka.NewConsumerWithGroup([]string{"broker:9092"}, "work-released", "e2s-fulfillment", nil, nil, nil, nil)
 	defer c.Close()
@@ -449,5 +473,123 @@ func TestHandleMessage_MissingGiftWrapFieldDefaultsFalse(t *testing.T) {
 	}
 	if candidates[0].GiftWrap() {
 		t.Fatalf("expected GiftWrap() == false when data.gift_wrap is absent from the envelope")
+	}
+}
+
+// ADR-0027 / wes-work-planning ADR-0021 Phase 2 dual-read, test 1: the
+// flat-shaped fixture must still create a Task exactly as it did before
+// this migration touched the file — a pure regression test.
+func TestHandleMessage_FlatEnvelope_CreatesTaskFromWorkReleased(t *testing.T) {
+	c, tasks := newConsumer(t)
+
+	err := c.HandleMessage(context.Background(), workReleasedJSON("evt-flat", "PICK", "wu-flat"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got := totalPending(t, tasks); got != 1 {
+		t.Fatalf("expected exactly 1 task, got %d", got)
+	}
+	n, _ := tasks.CountByTypeAndStatus(context.Background(), task.Pick, task.Pending)
+	if n != 1 {
+		t.Fatalf("expected the task to be a Pick task, got %d Pick tasks", n)
+	}
+}
+
+// ADR-0027 / wes-work-planning ADR-0021 Phase 2 dual-read, test 2: a
+// CloudEvents-shaped WorkReleased fixture (the exact schema from the ADR)
+// must produce the SAME normalized result — same task type, same order
+// ref, same idempotency key — as the equivalent flat fixture. This proves
+// decodeEnvelope's normalization, not just that it doesn't crash.
+func TestHandleMessage_CloudEventsEnvelope_CreatesTaskFromWorkReleased(t *testing.T) {
+	c, tasks := newConsumer(t)
+
+	err := c.HandleMessage(context.Background(), cloudEventsWorkReleasedJSON("evt-ce", "PICK", "wu-ce"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got := totalPending(t, tasks); got != 1 {
+		t.Fatalf("expected exactly 1 task, got %d", got)
+	}
+	n, _ := tasks.CountByTypeAndStatus(context.Background(), task.Pick, task.Pending)
+	if n != 1 {
+		t.Fatalf("expected the task to be a Pick task, got %d Pick tasks", n)
+	}
+	candidates, err := tasks.FindClaimableByType(context.Background(), task.Pick, epoch)
+	if err != nil {
+		t.Fatalf("FindClaimableByType: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("expected exactly 1 Pick task, got %d", len(candidates))
+	}
+	if got := candidates[0].OrderRef(); got != shared.OrderRef("wu-ce") {
+		t.Fatalf("expected OrderRef %q (from CloudEvents data.work_unit_id), got %q", "wu-ce", got)
+	}
+}
+
+// ADR-0027 / wes-work-planning ADR-0021 Phase 2 dual-read, same-result
+// assertion made explicit: a flat and a CloudEvents fixture carrying
+// identical logical content (same path/work-unit ids, different event_id
+// so both persist independently) must both resolve to a Pick task with
+// the same OrderRef — proving the normalization is truly shape-agnostic,
+// not just individually non-crashing.
+func TestHandleMessage_FlatAndCloudEvents_ProduceIdenticalNormalizedResult(t *testing.T) {
+	flatConsumer, flatTasks := newConsumer(t)
+	ceConsumer, ceTasks := newConsumer(t)
+
+	if err := flatConsumer.HandleMessage(context.Background(), workReleasedJSON("evt-cmp-flat", "PACK", "wu-cmp")); err != nil {
+		t.Fatalf("flat: unexpected error: %v", err)
+	}
+	if err := ceConsumer.HandleMessage(context.Background(), cloudEventsWorkReleasedJSON("evt-cmp-ce", "PACK", "wu-cmp")); err != nil {
+		t.Fatalf("cloudevents: unexpected error: %v", err)
+	}
+
+	flatCandidates, err := flatTasks.FindClaimableByType(context.Background(), task.Pack, epoch)
+	if err != nil {
+		t.Fatalf("FindClaimableByType (flat): %v", err)
+	}
+	ceCandidates, err := ceTasks.FindClaimableByType(context.Background(), task.Pack, epoch)
+	if err != nil {
+		t.Fatalf("FindClaimableByType (cloudevents): %v", err)
+	}
+	if len(flatCandidates) != 1 || len(ceCandidates) != 1 {
+		t.Fatalf("expected exactly 1 Pack task from each shape, got flat=%d cloudevents=%d", len(flatCandidates), len(ceCandidates))
+	}
+	if flatCandidates[0].OrderRef() != ceCandidates[0].OrderRef() {
+		t.Fatalf("expected identical OrderRef from both shapes, got flat=%q cloudevents=%q", flatCandidates[0].OrderRef(), ceCandidates[0].OrderRef())
+	}
+	if flatCandidates[0].Type() != ceCandidates[0].Type() {
+		t.Fatalf("expected identical Type from both shapes, got flat=%q cloudevents=%q", flatCandidates[0].Type(), ceCandidates[0].Type())
+	}
+}
+
+// ADR-0027 / wes-work-planning ADR-0021 Phase 2 dual-read, test 3: an
+// unrecognized/malformed specversion value must fail soft — return an
+// error to the caller, exactly the same failure posture this consumer
+// already has for a malformed flat message (see
+// TestHandleMessage_UnknownPathId_ReturnsError and the DLQ integration
+// test) — never crash the process and never silently create a Task from
+// an envelope this consumer cannot actually interpret.
+func TestHandleMessage_MalformedSpecversion_FailsSoftWithoutCreatingTask(t *testing.T) {
+	c, tasks := newConsumer(t)
+
+	malformed := []byte(`{
+		"specversion": "2.0",
+		"id": "evt-bad-specversion",
+		"type": "com.warehouse.wes.work-planning.workunit.WorkReleased",
+		"source": "/warehouse/wes-work-planning",
+		"subject": "wu-bad",
+		"time": "2026-08-21T22:00:00Z",
+		"datacontenttype": "application/json",
+		"data": {"path_id": "PICK", "work_unit_id": "wu-bad", "cpt": "2026-08-21T23:00:00Z", "ref": "release-1"}
+	}`)
+
+	err := c.HandleMessage(context.Background(), malformed)
+	if err == nil {
+		t.Fatal("expected an error for an unsupported specversion, got nil")
+	}
+	if got := totalPending(t, tasks); got != 0 {
+		t.Fatalf("expected no task to be created for an unsupported specversion, got %d", got)
 	}
 }
