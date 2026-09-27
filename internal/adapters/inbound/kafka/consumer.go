@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 
 	kafkago "github.com/segmentio/kafka-go"
@@ -28,13 +29,109 @@ import (
 )
 
 // Envelope is the CloudEvents-like wrapper shared across all four
-// warehouse-systems services.
+// warehouse-systems services. It is also the normalized internal shape
+// that decodeEnvelope produces from EITHER wire shape this consumer
+// accepts (see decodeEnvelope) — everything downstream of decode keys off
+// this struct and is unaware of which wire shape a message arrived in.
 type Envelope struct {
 	EventId    string           `json:"event_id"`
 	EventType  string           `json:"event_type"`
 	OccurredAt time.Time        `json:"occurred_at"`
 	Source     string           `json:"source"`
 	Data       WorkReleasedData `json:"data"`
+}
+
+// cloudEventsProbe is decoded first, from every message, solely to
+// discriminate the new CloudEvents 1.0 structured envelope (ADR-0027 /
+// wes-work-planning ADR-0021, Phase 2 dual-read) from today's flat
+// platform envelope. A non-empty specversion is the ONLY thing that picks
+// the CloudEvents decode path — the field is deliberately never added to
+// the flat envelope (see ADR-0027's design decision #3), so this
+// discriminator cannot go ambiguous.
+type cloudEventsProbe struct {
+	Specversion string `json:"specversion"`
+}
+
+// cloudEventsEnvelope is the CloudEvents 1.0 structured-mode shape from
+// ADR-0027's schema table. data is byte-identical to the flat envelope's
+// data — WorkReleasedData is not duplicated or changed by this shape.
+type cloudEventsEnvelope struct {
+	Specversion     string           `json:"specversion"`
+	Id              string           `json:"id"`
+	Type            string           `json:"type"`
+	Source          string           `json:"source"`
+	Subject         string           `json:"subject"`
+	Time            time.Time        `json:"time"`
+	Datacontenttype string           `json:"datacontenttype"`
+	Data            WorkReleasedData `json:"data"`
+}
+
+// cloudEventsTypePrefix is the reverse-DNS prefix wes-work-planning's
+// WorkReleased CloudEvents "type" field carries on the wire (ADR-0027's
+// field-mapping table; also already documented, unimplemented until this
+// migration, in wes-work-planning's own apis/asyncapi.yaml). Stripping it
+// back to the bare event name is what lets the existing, unchanged
+// switch/case-style dispatch in HandleMessage keep working unmodified for
+// either wire shape.
+const cloudEventsTypePrefix = "com.warehouse.wes.work-planning.workunit."
+
+// bareEventType strips a known CloudEvents reverse-DNS type prefix back to
+// the bare event name (e.g. "WorkReleased") the existing dispatch logic
+// already keys on. A type that doesn't carry the expected prefix falls
+// back to stripping everything up to the last '.', and failing that,
+// returns the value unchanged — HandleMessage's own "not WorkReleased, so
+// ignore" check is what actually guards against an unrecognized value, so
+// this never needs to itself decide validity.
+func bareEventType(t string) string {
+	if strings.HasPrefix(t, cloudEventsTypePrefix) {
+		return strings.TrimPrefix(t, cloudEventsTypePrefix)
+	}
+	if i := strings.LastIndex(t, "."); i >= 0 {
+		return t[i+1:]
+	}
+	return t
+}
+
+// decodeEnvelope accepts EITHER today's flat platform envelope or the new
+// CloudEvents 1.0 structured envelope on the same topic (ADR-0027 Phase 2
+// dual-read), discriminated solely by the presence of a specversion field,
+// and normalizes either shape to the same Envelope representation the
+// rest of this file's (unchanged) handling logic already expects. A
+// message that fails to decode under either shape — including one
+// carrying an unrecognized/malformed specversion value — fails exactly
+// the same way a malformed flat message always has here: a wrapped error
+// returned to the caller (Handle/Run then log it and route it to the
+// dead-letter sink when configured, per the Consumer type doc comment),
+// never a panic.
+func decodeEnvelope(raw []byte) (Envelope, error) {
+	var probe cloudEventsProbe
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return Envelope{}, fmt.Errorf("kafka: decode envelope: %w", err)
+	}
+
+	if probe.Specversion == "" {
+		var env Envelope
+		if err := json.Unmarshal(raw, &env); err != nil {
+			return Envelope{}, fmt.Errorf("kafka: decode envelope: %w", err)
+		}
+		return env, nil
+	}
+
+	if probe.Specversion != "1.0" {
+		return Envelope{}, fmt.Errorf("kafka: unsupported CloudEvents specversion %q", probe.Specversion)
+	}
+
+	var ce cloudEventsEnvelope
+	if err := json.Unmarshal(raw, &ce); err != nil {
+		return Envelope{}, fmt.Errorf("kafka: decode envelope: %w", err)
+	}
+	return Envelope{
+		EventId:    ce.Id,
+		EventType:  bareEventType(ce.Type),
+		OccurredAt: ce.Time,
+		Source:     ce.Source,
+		Data:       ce.Data,
+	}, nil
 }
 
 // WorkReleasedData is the payload of a WorkReleased event.
@@ -217,14 +314,15 @@ func (c *Consumer) Handle(ctx context.Context, msg kafkago.Message) error {
 	return nil
 }
 
-// HandleMessage decodes raw as an Envelope and, if it is a not-yet-processed
-// WorkReleased event, creates a Task via CreateTask. It is exported
-// separately from Run so tests can feed it a fake envelope without a live
-// broker.
+// HandleMessage decodes raw as either the flat platform envelope or the
+// new CloudEvents 1.0 structured envelope (ADR-0027 Phase 2 dual-read —
+// see decodeEnvelope) and, if it is a not-yet-processed WorkReleased
+// event, creates a Task via CreateTask. It is exported separately from Run
+// so tests can feed it a fake envelope without a live broker.
 func (c *Consumer) HandleMessage(ctx context.Context, raw []byte) error {
-	var env Envelope
-	if err := json.Unmarshal(raw, &env); err != nil {
-		return fmt.Errorf("kafka: decode envelope: %w", err)
+	env, err := decodeEnvelope(raw)
+	if err != nil {
+		return err
 	}
 	if env.EventType != "WorkReleased" {
 		return nil
