@@ -26,6 +26,20 @@ Feature: Pack and SLAM
     And no "WeightDiscrepancyDetected" domain event is recorded
     And no "PackageDiverted" domain event is recorded
 
+  # Derived from docs/docs/adr/0025-cpt-missed-sweep-and-package-manifested.md
+  # (PackageManifested is raised alongside LabelApplied on a successful
+  # SLAM pass) and .claude/rules/ubiquitous-language.md use case 6
+  # (RunSlam -> LabelApplied + PackageManifested, or
+  # WeightDiscrepancyDetected + PackageDiverted — not manifested).
+  @bdd
+  Scenario: A passing SLAM weigh-check manifests the package
+    Given Station "pack-01" sealed a Package for the claimed Task with scanned contents "sku-1"
+    When the SLAM weigh-check runs on the Package with an actual weight of 2.00 against an expected weight of 2.00
+    Then the response status is 204
+    And a "LabelApplied" domain event is recorded
+    And a "PackageManifested" domain event is recorded
+    And no "PackageDiverted" domain event is recorded
+
   @bdd
   Scenario: SLAM weigh-check outside tolerance diverts the package
     Given Station "pack-01" sealed a Package for the claimed Task with scanned contents "sku-1"

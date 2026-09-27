@@ -186,6 +186,39 @@ func TestComplete_RejectsWhenLeaseExpired(t *testing.T) {
 	}
 }
 
+// A Pending task has no active claim to complete from.
+func TestComplete_RejectsWhenNotClaimed(t *testing.T) {
+	tk := newPickTask()
+	err := tk.Complete(shared.StationId("s1"), now.Add(10*time.Second))
+	if !errors.Is(err, task.ErrNotClaimed) {
+		t.Fatalf("expected ErrNotClaimed on a never-claimed task, got %v", err)
+	}
+	if tk.Status() != task.Pending {
+		t.Fatalf("expected task to remain Pending, got %s", tk.Status())
+	}
+	if tk.Lease() != nil {
+		t.Fatalf("expected no lease to appear on a rejected completion, got %+v", tk.Lease())
+	}
+}
+
+// A rehydrated Claimed task with no lease (e.g. a row persisted by an
+// older writer before leases existed) must not be completable: the claim
+// itself is unverifiable, so it is treated as not claimed.
+func TestComplete_RejectsClaimedWithoutLease(t *testing.T) {
+	tk := task.Rehydrate(
+		shared.TaskId("t1"), task.Pick, task.Claimed,
+		shared.NewCPT(now.Add(time.Hour)), shared.OrderRef("order-1"),
+		shared.NewCapabilitySet("pick"), nil, false, false, &now,
+	)
+	err := tk.Complete(shared.StationId("s1"), now.Add(10*time.Second))
+	if !errors.Is(err, task.ErrNotClaimed) {
+		t.Fatalf("expected ErrNotClaimed when the claim has no lease, got %v", err)
+	}
+	if tk.Status() != task.Claimed {
+		t.Fatalf("expected status untouched (no lease to expire), got %s", tk.Status())
+	}
+}
+
 func TestRenewLease_RejectsAfterLeaseExpiredAndFreesTask(t *testing.T) {
 	tk := newPickTask()
 	_ = tk.Claim(shared.StationId("s1"), shared.NewCapabilitySet("pick"), now, time.Minute)

@@ -1576,3 +1576,67 @@ func TestCheckOutStation_RejectsWhenNotOccupied(t *testing.T) {
 		t.Fatalf("expected station.ErrNotOccupied, got %v", err)
 	}
 }
+
+func TestCheckInStation_PropagatesStationLookupError(t *testing.T) {
+	stations := newErrStationRepo()
+	stations.failFindById = true
+
+	uc := &usecases.CheckInStation{Stations: stations}
+	_, err := uc.Execute(context.Background(), "s1", "worker-1")
+	if !errors.Is(err, errFake) {
+		t.Fatalf("expected station lookup error to propagate, got %v", err)
+	}
+}
+
+// The station must be registered BEFORE Save is forced to fail, so the
+// use case reaches the persistence step rather than the lookup.
+//
+// No persisted-state assertion is possible here: the in-memory repo
+// stores and hands back the same *Station, so CheckIn's in-memory
+// mutation is visible through the repo even when Save fails — an
+// aliasing artifact of the test double, not of the use case (the
+// Postgres repo round-trips through serialization, so a failed Save
+// leaves persisted state untouched).
+func TestCheckInStation_PropagatesSaveError(t *testing.T) {
+	ctx := context.Background()
+	stations := newErrStationRepo()
+	_ = stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
+	stations.failSave = true
+
+	uc := &usecases.CheckInStation{Stations: stations}
+	_, err := uc.Execute(ctx, "s1", "worker-1")
+	if !errors.Is(err, errFake) {
+		t.Fatalf("expected save error to propagate, got %v", err)
+	}
+}
+
+func TestCheckOutStation_PropagatesStationLookupError(t *testing.T) {
+	stations := newErrStationRepo()
+	stations.failFindById = true
+
+	uc := &usecases.CheckOutStation{Stations: stations}
+	_, err := uc.Execute(context.Background(), "s1")
+	if !errors.Is(err, errFake) {
+		t.Fatalf("expected station lookup error to propagate, got %v", err)
+	}
+}
+
+// Check the occupant in BEFORE forcing Save to fail, so the use case
+// reaches the persistence step with a legitimately occupied station.
+// (See TestCheckInStation_PropagatesSaveError for why no persisted-state
+// assertion is possible against the aliasing in-memory repo.)
+func TestCheckOutStation_PropagatesSaveError(t *testing.T) {
+	ctx := context.Background()
+	stations := newErrStationRepo()
+	_ = stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
+	if _, err := (&usecases.CheckInStation{Stations: stations}).Execute(ctx, "s1", "worker-1"); err != nil {
+		t.Fatalf("check-in should succeed: %v", err)
+	}
+	stations.failSave = true
+
+	uc := &usecases.CheckOutStation{Stations: stations}
+	_, err := uc.Execute(ctx, "s1")
+	if !errors.Is(err, errFake) {
+		t.Fatalf("expected save error to propagate, got %v", err)
+	}
+}

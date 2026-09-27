@@ -7,6 +7,7 @@ import (
 
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
+	"github.com/claudioed/fulfillment-execution/internal/domain/consolidation"
 	pack "github.com/claudioed/fulfillment-execution/internal/domain/package"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
 	"github.com/claudioed/fulfillment-execution/internal/domain/station"
@@ -116,6 +117,33 @@ func (r *errPackageRepo) FindById(ctx context.Context, id shared.PackageId) (*pa
 		return nil, errFake
 	}
 	return r.PackageRepo.FindById(ctx, id)
+}
+
+// errConsolidationRepo wraps a memory.OrderConsolidationRepo, letting
+// individual methods be forced to fail so ArriveAtRebin's
+// error-propagation branches can be exercised.
+type errConsolidationRepo struct {
+	*memory.OrderConsolidationRepo
+	failSave           bool
+	failFindByOrderRef bool
+}
+
+func newErrConsolidationRepo() *errConsolidationRepo {
+	return &errConsolidationRepo{OrderConsolidationRepo: memory.NewOrderConsolidationRepo()}
+}
+
+func (r *errConsolidationRepo) Save(ctx context.Context, oc *consolidation.OrderConsolidation) error {
+	if r.failSave {
+		return errFake
+	}
+	return r.OrderConsolidationRepo.Save(ctx, oc)
+}
+
+func (r *errConsolidationRepo) FindByOrderRef(ctx context.Context, orderRef shared.OrderRef) (*consolidation.OrderConsolidation, error) {
+	if r.failFindByOrderRef {
+		return nil, errFake
+	}
+	return r.OrderConsolidationRepo.FindByOrderRef(ctx, orderRef)
 }
 
 // errPublisher forces Publish to fail, so use cases' event-publish error

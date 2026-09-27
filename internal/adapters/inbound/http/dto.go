@@ -1,6 +1,10 @@
 package http
 
-import "time"
+import (
+	"time"
+
+	"github.com/claudioed/fulfillment-execution/internal/domain/task"
+)
 
 type createTaskRequest struct {
 	Type                 string    `json:"type"`
@@ -10,12 +14,28 @@ type createTaskRequest struct {
 	Fragile              bool      `json:"fragile"`
 }
 
+// isValidTaskType reports whether v is one of the process-path task types
+// the published contract (apis/openapi.yaml's TaskType enum) defines. The
+// HTTP surface must not mint tasks carrying free-form type strings every
+// spec-generated client would reject (found by Schemathesis contract
+// testing — scripts/contract-test.sh).
+func isValidTaskType(v string) bool {
+	switch task.Type(v) {
+	case task.Pick, task.Pack, task.Slam, task.Rebin:
+		return true
+	default:
+		return false
+	}
+}
+
 // validate reports the first missing required field, or "" if the request
 // is well-formed enough to hand to the use case.
 func (r createTaskRequest) validate() string {
 	switch {
 	case r.Type == "":
 		return "type is required"
+	case !isValidTaskType(r.Type):
+		return "type must be one of PICK, PACK, SLAM, REBIN"
 	case r.CPT.IsZero():
 		return "cpt is required"
 	case r.OrderRef == "":

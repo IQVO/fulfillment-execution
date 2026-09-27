@@ -1,7 +1,7 @@
 ---
 id: tasktype
 title: "TaskType"
-description: "The process path a task belongs to."
+description: "The process path a task belongs to. REBIN tasks are not creatable through `POST /tasks` by HTTP-only callers in practice — they arrive via the WorkReleased Kafka event's rebin path (see the process-path catalogue) — but they exist in the task store and therefore appear in read-model responses alongside PICK/PACK/SLAM."
 sidebar_label: "TaskType"
 hide_title: true
 hide_table_of_contents: true
@@ -22,7 +22,8 @@ import Heading from "@theme/Heading";
 
 
 
-The process path a task belongs to.
+The process path a task belongs to. REBIN tasks are not creatable through `POST /tasks` by HTTP-only callers in practice — they arrive via the WorkReleased Kafka event's rebin path (see the process-path catalogue) — but they exist in the task store and therefore appear in read-model responses alongside PICK/PACK/SLAM.
+
 
 <Schema
   {...require("./tasktype.Schema.json")}

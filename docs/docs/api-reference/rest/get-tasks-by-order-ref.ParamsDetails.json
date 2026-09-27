@@ -1,1 +1,1 @@
-{"parameters":[{"name":"orderRef","in":"query","required":true,"description":"The order reference to look up (Task.orderRef, set at creation).","schema":{"type":"string","example":"order-42"}}]}
+{"parameters":[{"name":"orderRef","in":"query","required":true,"description":"The order reference to look up (Task.orderRef, set at creation). Must be non-empty — an empty value is treated as a missing parameter and rejected with 400.\n","schema":{"type":"string","minLength":1,"example":"order-42"}}]}

@@ -1,0 +1,61 @@
+---
+id: get-readyz
+title: "Readiness check"
+description: "Returns `200 {'status':'ready'}` while the service is ready to accept new traffic, and `503 {'status':'not_ready'}` once graceful shutdown has begun (ADR-0029) — the readiness gate is flipped as the FIRST step of shutdown, before the HTTP server stops accepting connections, so a Kubernetes readinessProbe pointed here has a window to stop routing new traffic before the listener closes. Distinct from `/healthz` (liveness, never flipped by shutdown)."
+sidebar_label: "Readiness check"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "get api-method"
+info_path: docs/api-reference/rest/fulfillment-execution-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Readiness check"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"get"}
+  path={"/readyz"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+Returns `200 {"status":"ready"}` while the service is ready to accept new traffic, and `503 {"status":"not_ready"}` once graceful shutdown has begun (ADR-0029) — the readiness gate is flipped as the FIRST step of shutdown, before the HTTP server stops accepting connections, so a Kubernetes readinessProbe pointed here has a window to stop routing new traffic before the listener closes. Distinct from `/healthz` (liveness, never flipped by shutdown).
+
+
+<ParamsDetails>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./get-readyz.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./get-readyz.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

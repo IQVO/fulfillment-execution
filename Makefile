@@ -10,7 +10,7 @@ COVERAGE_THRESHOLD    := 90
 COVERPKG              := ./internal/domain/...,./internal/application/...
 MUTATION_FAST_PKG     := ./internal/domain/task
 
-.PHONY: help build vet fmt fmt-check lint test coverage integration bdd arch-test mutation mutation-fast vuln check check-all
+.PHONY: help build vet fmt fmt-check lint test coverage integration bdd contract arch-test mutation mutation-fast vuln check check-all
 
 help: ## Show the available targets
 	@echo "Fulfillment Execution — make targets"
@@ -25,6 +25,9 @@ help: ## Show the available targets
 	@echo "  coverage      Coverage run + $(COVERAGE_THRESHOLD)% gate (same command as CI)"
 	@echo "  integration   Postgres integration tests — needs DATABASE_URL / a running Postgres"
 	@echo "  bdd           godog/Gherkin acceptance tests"
+	@echo "  contract      scripts/contract-test.sh — Schemathesis vs apis/openapi.yaml"
+	@echo "                (boots the service in-memory; needs st: pip install"
+	@echo "                 'schemathesis==4.28.0')"
 	@echo "  arch-test     Hexagonal architecture fitness tests (arch-go)"
 	@echo "  mutation-fast Fast blocking mutation subset ($(MUTATION_FAST_PKG)), honors .gremlins.yaml"
 	@echo "  mutation      Exhaustive mutation run over ./internal/domain (slow, ~scheduled CI job)"
@@ -84,6 +87,12 @@ integration: ## Postgres integration tests — requires DATABASE_URL and a reach
 
 bdd: ## godog/Gherkin acceptance tests
 	go test ./... -run TestFeatures -v
+
+# Property-based contract tests against apis/openapi.yaml — mirrors the
+# `contract` CI job. Not part of check/check-all (needs Python tooling
+# installed); CI runs it as its own job on every push and PR.
+contract: ## Schemathesis contract tests (needs `st` on PATH)
+	./scripts/contract-test.sh
 
 arch-test: ## Architecture fitness tests
 	go test ./internal/architecture/... -v

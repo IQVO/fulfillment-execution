@@ -1,0 +1,4 @@
+complete_task	false	true
+diagnose_stuck_tasks	true	false
+find_claimable_work	true	false
+get_queue_status	true	false
