@@ -34,6 +34,7 @@ import (
 	"github.com/claudioed/fulfillment-execution/internal/domain/pathcatalog"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
 	"github.com/claudioed/fulfillment-execution/internal/observability"
+	"github.com/claudioed/fulfillment-execution/internal/resilience"
 )
 
 // workReleasedTopic is the topic wes-work-planning publishes WorkReleased
@@ -223,8 +224,29 @@ func run() error {
 	publisher, relay, closePublisher := buildEventPublisher(pool, kafkaBrokers, taskRepo, stationRepo, logger)
 	defer closePublisher()
 	clock := memory.SystemClock{}
-	classificationLookup := buildClassificationLookup(getenv("PRODUCT_CLASSIFICATION_MODE", "permissive"), os.Getenv("INVENTORY_STORAGE_BASE_URL"), logger)
-	locationRoleLookup := buildLocationRoleLookup(getenv("LOCATION_ROLE_MODE", "permissive"), os.Getenv("FACILITY_LAYOUT_BASE_URL"), logger)
+
+	// readiness gates GET /readyz (ADR-0029 §graceful shutdown). The
+	// zero value is ready; SetNotReady is called as the FIRST step of
+	// the shutdown sequence below, before the HTTP server itself stops
+	// accepting connections, so a Kubernetes readinessProbe has a
+	// chance to observe the flip and stop routing new traffic during
+	// the drain window that follows.
+	readiness := &inboundhttp.Readiness{}
+
+	// circuitBreakerMetrics wires both outbound breakers' OnStateChange
+	// into the circuit_breaker.state gauge (ADR-0029), reusing the SAME
+	// OTel MeterProvider observability.Setup already installed above
+	// rather than standing up a second Prometheus registry. Errors here
+	// mirror NewMetrics' contract (invalid instrument name only, a
+	// programming error) -- non-fatal: a nil recorder just means this
+	// process runs without the gauge, never without the breaker itself.
+	circuitBreakerMetrics, cbmErr := observability.NewCircuitBreakerMetrics()
+	if cbmErr != nil {
+		logger.Warn("circuit breaker metrics unavailable; breakers will run without the circuit_breaker.state gauge", "error", cbmErr)
+	}
+
+	classificationLookup := buildClassificationLookup(getenv("PRODUCT_CLASSIFICATION_MODE", "permissive"), os.Getenv("INVENTORY_STORAGE_BASE_URL"), circuitBreakerMetrics, logger)
+	locationRoleLookup := buildLocationRoleLookup(getenv("LOCATION_ROLE_MODE", "permissive"), os.Getenv("FACILITY_LAYOUT_BASE_URL"), circuitBreakerMetrics, logger)
 
 	createTask := &usecases.CreateTask{Tasks: taskRepo, Publisher: publisher, Clock: clock, NewId: newTaskId, UnitOfWork: uow}
 
@@ -250,6 +272,10 @@ func run() error {
 		},
 		GetInstalledCapacity: &usecases.GetInstalledCapacity{Stations: stationRepo},
 		SweepCPTMisses:       &usecases.SweepCPTMisses{Tasks: taskRepo, Publisher: publisher, Clock: clock, UnitOfWork: uow},
+		// readiness backs GET /readyz (ADR-0029 §graceful shutdown):
+		// flipped to not-ready as the FIRST step of shutdown, below,
+		// before anything else stops.
+		Readiness: readiness,
 	}
 	router := inboundhttp.NewRouter(handlers, logger, inboundhttp.WithIdempotencyPool(pool))
 
@@ -287,7 +313,9 @@ func run() error {
 		}
 	}()
 
+	consumerDone := make(chan struct{})
 	go func() {
+		defer close(consumerDone)
 		logger.Info("kafka consumer starting", "topic", workReleasedTopic, "brokers", kafkaBrokers)
 		if err := consumer.Run(consumerCtx); err != nil {
 			logger.Error("kafka consumer stopped", "error", err)
@@ -316,11 +344,33 @@ func run() error {
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
 
-	cancelConsumer()
+	// Graceful shutdown (ADR-0029 §graceful shutdown), in order:
+	//
+	//  1. Flip readiness to not-ready FIRST, before anything else
+	//     stops — a Kubernetes readinessProbe polling /readyz needs a
+	//     window to observe this and stop routing NEW traffic to this
+	//     pod before step 2 below ever closes the listener, so a
+	//     request racing the SIGTERM is far less likely to be routed
+	//     here only to hit a closing connection.
+	//  2. Stop accepting new HTTP connections and drain in-flight
+	//     requests, bounded by shutdownCtx.
+	//  3. Stop the outbox relay and the WorkReleased Kafka consumer's
+	//     loop cleanly: cancel their contexts (no new message is
+	//     fetched/handled after this) and wait, bounded by the SAME
+	//     shutdownCtx, for their goroutines to actually finish
+	//     in-flight work rather than merely asking them to stop and
+	//     moving on.
+	//  4. Only THEN do the deferred consumer.Close()/kafkaCatalogue.
+	//     Close()/pool.Close() calls (registered earlier in this
+	//     function, so by defer's LIFO order they run AFTER every
+	//     consumer/relay goroutine above has already stopped touching
+	//     them, not before).
+	readiness.SetNotReady()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	err = srv.Shutdown(ctx)
+
 	// Let the relay finish its in-flight pass so an event committed by a
 	// request that completed just before shutdown is not stranded until
 	// the next pod boots; bounded by the same shutdown deadline.
@@ -330,6 +380,18 @@ func run() error {
 	case <-ctx.Done():
 		logger.Warn("outbox relay did not stop before the shutdown deadline")
 	}
+
+	// Stop the WorkReleased consumer's loop cleanly: cancel so no NEW
+	// message is fetched, then wait (bounded) for any message already
+	// being handled to finish before this function returns and the
+	// deferred consumer.Close()/kafkaCatalogue.Close() calls run.
+	cancelConsumer()
+	select {
+	case <-consumerDone:
+	case <-ctx.Done():
+		logger.Warn("kafka consumer did not stop before the shutdown deadline")
+	}
+
 	return err
 }
 
@@ -452,12 +514,19 @@ func getenv(key, fallback string) string {
 // inventory-storage's own LOCATION_LOOKUP_MODE=http|permissive pattern for
 // its facilitylayout adapter (see ADR-0010). "http" requires
 // INVENTORY_STORAGE_BASE_URL.
-func buildClassificationLookup(mode, inventoryStorageBaseURL string, logger *slog.Logger) ports.ProductClassificationLookup {
+//
+// In http mode the real Client is wrapped in retry (jittered, max 3
+// attempts -- GetClassification is a pure read, safe to retry) plus a
+// per-dependency circuit breaker (ADR-0029): on a trip, calls fall back
+// to the SAME fail-open behaviour this client already had. recorder
+// feeds the breaker's state transitions into the circuit_breaker.state
+// gauge; nil is fine (see resilience.RecordStateChange's doc comment).
+func buildClassificationLookup(mode, inventoryStorageBaseURL string, recorder resilience.StateRecorder, logger *slog.Logger) ports.ProductClassificationLookup {
 	if !strings.EqualFold(mode, "http") {
 		return productclassification.NewPermissiveLookup()
 	}
-	logger.Info("product classification lookup configured", "mode", "http", "inventory_storage_base_url", inventoryStorageBaseURL)
-	return productclassification.NewClient(inventoryStorageBaseURL, nil)
+	logger.Info("product classification lookup configured", "mode", "http", "inventory_storage_base_url", inventoryStorageBaseURL, "circuit_breaker", "enabled", "retry", "enabled")
+	return productclassification.NewBreakerClient(productclassification.NewClient(inventoryStorageBaseURL, nil), recorder)
 }
 
 // buildLocationRoleLookup selects the outbound ports.LocationRoleLookup
@@ -466,12 +535,19 @@ func buildClassificationLookup(mode, inventoryStorageBaseURL string, logger *slo
 // env var are unaffected — mirrors buildClassificationLookup's own
 // PRODUCT_CLASSIFICATION_MODE pattern exactly (see ADR-0024). "http"
 // requires FACILITY_LAYOUT_BASE_URL.
-func buildLocationRoleLookup(mode, facilityLayoutBaseURL string, logger *slog.Logger) ports.LocationRoleLookup {
+//
+// In http mode the real Client is wrapped in retry (jittered, max 3
+// attempts -- GetRole is a pure read, safe to retry) plus a
+// per-dependency circuit breaker (ADR-0029): on a trip, calls fall back
+// to the SAME fail-open behaviour this client already had. recorder
+// feeds the breaker's state transitions into the circuit_breaker.state
+// gauge; nil is fine.
+func buildLocationRoleLookup(mode, facilityLayoutBaseURL string, recorder resilience.StateRecorder, logger *slog.Logger) ports.LocationRoleLookup {
 	if !strings.EqualFold(mode, "http") {
 		return facilitylayout.NewPermissiveLookup()
 	}
-	logger.Info("location role lookup configured", "mode", "http", "facility_layout_base_url", facilityLayoutBaseURL)
-	return facilitylayout.NewClient(facilityLayoutBaseURL, nil)
+	logger.Info("location role lookup configured", "mode", "http", "facility_layout_base_url", facilityLayoutBaseURL, "circuit_breaker", "enabled", "retry", "enabled")
+	return facilitylayout.NewBreakerClient(facilitylayout.NewClient(facilityLayoutBaseURL, nil), recorder)
 }
 
 func newTaskId() shared.TaskId {

@@ -69,6 +69,7 @@ func NewRouter(h *Handlers, logger *slog.Logger, opts ...RouterOption) *chi.Mux 
 	r.Use(corsMiddleware())
 
 	r.Get("/healthz", h.GetHealthz)
+	r.Get("/readyz", h.GetReadyz)
 
 	r.Post("/stations", h.PostRegisterStation)
 	// POST /tasks is route-scoped (r.With, not r.Use) behind

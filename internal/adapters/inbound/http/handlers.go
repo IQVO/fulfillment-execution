@@ -32,6 +32,11 @@ type Handlers struct {
 	ArriveAtRebin        *usecases.ArriveAtRebin
 	GetInstalledCapacity *usecases.GetInstalledCapacity
 	SweepCPTMisses       *usecases.SweepCPTMisses
+	// Readiness backs GET /readyz (ADR-0029 §graceful shutdown): flipped
+	// to not-ready as the FIRST step of shutdown in cmd/execution. Nil is
+	// a documented "always ready" no-op — see Readiness.Ready — so every
+	// pre-existing test/caller that does not wire one is unaffected.
+	Readiness *Readiness
 }
 
 func toTaskResponse(t *task.Task) taskResponse {
