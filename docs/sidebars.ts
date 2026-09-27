@@ -107,6 +107,7 @@ const sidebars: SidebarsConfig = {
         'adr/0024-station-location-code-and-workcenter-role-check',
         'adr/0025-cpt-missed-sweep-and-package-manifested',
         'adr/0026-on-time-to-cpt-kpi',
+        'adr/0027-cloudevents-envelope-migration',
       ],
     },
   ],
