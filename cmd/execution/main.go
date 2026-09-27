@@ -251,7 +251,7 @@ func run() error {
 		GetInstalledCapacity: &usecases.GetInstalledCapacity{Stations: stationRepo},
 		SweepCPTMisses:       &usecases.SweepCPTMisses{Tasks: taskRepo, Publisher: publisher, Clock: clock, UnitOfWork: uow},
 	}
-	router := inboundhttp.NewRouter(handlers, logger)
+	router := inboundhttp.NewRouter(handlers, logger, inboundhttp.WithIdempotencyPool(pool))
 
 	srv := &http.Server{Addr: httpAddr, Handler: router, ReadHeaderTimeout: 5 * time.Second}
 
