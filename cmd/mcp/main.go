@@ -57,38 +57,19 @@ func run() error {
 
 	httpAddr := getenv("MCP_ADDR", ":8090")
 	databaseURL := os.Getenv("DATABASE_URL")
+	// See cmd/execution/main.go's identical fallback and openStorage's
+	// doc comment for the full "why" (session-scoped pg_advisory_lock vs
+	// PgBouncer transaction-pooling incompatibility, ADR-0031 and
+	// order-management's ADR-0029, the reference implementation this
+	// mirrors). This binary also runs migrations on start (buildTaskRepo
+	// below), so it needs the same direct-connection split.
+	migrationsDatabaseURL := getenv("MIGRATIONS_DATABASE_URL", databaseURL)
 
-	var taskRepo ports.TaskRepo
-	if databaseURL == "" {
-		logger.Info("database url not configured; using in-memory adapters")
-		taskRepo = memory.NewTaskRepo()
-	} else {
-		// Retried: this fleet's Istio native sidecars reset EVERY pod's
-		// first outbound TCP dial ~10s after the app starts
-		// (holdApplicationUntilProxyStarts is a no-op for native
-		// sidecars). A single attempt turns that transient condition
-		// into CrashLoopBackOff; the retry still fails closed once its
-		// budget is exhausted.
-		if err := bootretry.Retry(rootCtx, logger, "run migrations", func() error {
-			return postgres.Migrate(databaseURL, "migrations")
-		}); err != nil {
-			return err
-		}
-		pool, err := postgres.NewPool(rootCtx, databaseURL)
-		if err != nil {
-			return err
-		}
-		defer pool.Close()
-		// ParseConfig/NewWithConfig do not themselves establish a
-		// connection, so without this the first-dial reset would surface
-		// inside the first served request instead of at boot.
-		if err := bootretry.Retry(rootCtx, logger, "ping database", func() error {
-			return pool.Ping(rootCtx)
-		}); err != nil {
-			return err
-		}
-		taskRepo = postgres.NewTaskRepo(pool)
+	taskRepo, closeTaskRepo, err := buildTaskRepo(rootCtx, databaseURL, migrationsDatabaseURL, "migrations", logger)
+	if err != nil {
+		return err
 	}
+	defer closeTaskRepo()
 
 	// The MCP adapter reuses the SAME use cases the HTTP adapter uses:
 	// GetQueueDepth (read) and CompleteTask (write), plus the read-only query
@@ -158,4 +139,61 @@ func getenv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// buildTaskRepo selects the in-memory or Postgres outbound task repository.
+// The Postgres path runs the schema migrations, opens the pool, and
+// verifies it with a ping, each under boot retry: this fleet's Istio
+// native sidecars reset EVERY pod's first outbound TCP dial ~10s after
+// the app starts (holdApplicationUntilProxyStarts is a no-op for native
+// sidecars). A single attempt turns that transient condition into
+// CrashLoopBackOff; the retry still fails closed once its budget is
+// exhausted.
+//
+// migrationsDatabaseURL is used ONLY for the golang-migrate step below —
+// the pgxpool opened just after it (and used for every subsequent
+// request) always uses databaseURL. They are deliberately different
+// connection strings in a PgBouncer-fronted environment: golang-migrate's
+// postgres driver takes a session-scoped `SELECT pg_advisory_lock($1)` to
+// serialize concurrent migration runs across replicas starting at the
+// same time, and PgBouncer's transaction-pooling mode (this fleet's
+// pool_mode for every OLTP DATABASE_URL, warehouse-infra PR #43) does not
+// support session-scoped state — each statement in one logical client
+// session can land on a different physical backend connection, so the
+// advisory lock never behaves as a real mutex. See ADR-0031 (and
+// order-management's ADR-0029, the reference implementation this
+// mirrors) for the full incident and fix. Callers pass
+// MIGRATIONS_DATABASE_URL when set (warehouse-infra provisions it as a
+// direct, non-pooled DSN alongside DATABASE_URL for all 9 OLTP services,
+// PR #44) or fall back to databaseURL itself for any environment that
+// doesn't provision the split (local dev, CI integration tests) —
+// byte-identical to this function's behavior before this parameter
+// existed in that case.
+func buildTaskRepo(ctx context.Context, databaseURL, migrationsDatabaseURL, migrationsPath string, logger *slog.Logger) (ports.TaskRepo, func(), error) {
+	noop := func() {}
+
+	if databaseURL == "" {
+		logger.Info("database url not configured; using in-memory adapters")
+		return memory.NewTaskRepo(), noop, nil
+	}
+
+	if err := bootretry.Retry(ctx, logger, "run migrations", func() error {
+		return postgres.Migrate(migrationsDatabaseURL, migrationsPath)
+	}); err != nil {
+		return nil, noop, err
+	}
+	pool, err := postgres.NewPool(ctx, databaseURL)
+	if err != nil {
+		return nil, noop, err
+	}
+	// ParseConfig/NewWithConfig do not themselves establish a
+	// connection, so without this the first-dial reset would surface
+	// inside the first served request instead of at boot.
+	if err := bootretry.Retry(ctx, logger, "ping database", func() error {
+		return pool.Ping(ctx)
+	}); err != nil {
+		pool.Close()
+		return nil, noop, err
+	}
+	return postgres.NewTaskRepo(pool), pool.Close, nil
 }
