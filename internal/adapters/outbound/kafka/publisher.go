@@ -142,9 +142,18 @@ func NewPublisher(brokers []string, tasks ports.TaskRepo, stations ports.Station
 // in the given EnvelopeMode (ADR-0027 Phase 4).
 func NewPublisherWithMode(brokers []string, tasks ports.TaskRepo, stations ports.StationRepo, newId func() string, mode EnvelopeMode) *Publisher {
 	p := NewPublisherWithWriter(&kafkago.Writer{
-		Addr:                   kafkago.TCP(brokers...),
-		Topic:                  Topic,
-		Balancer:               &kafkago.LeastBytes{},
+		Addr:  kafkago.TCP(brokers...),
+		Topic: Topic,
+		// Balancer is kafkago.Hash (FNV-1a over Message.Key), not
+		// LeastBytes: this Publisher already sets a per-aggregate Key
+		// (TaskId/PackageId — see encodeTaskCompleted/encodeTaskCPTMissed/
+		// encodePackageManifested) on every message, but LeastBytes
+		// routes purely by cumulative byte volume and completely ignores
+		// Key — same-key messages can still land on different
+		// partitions. Hash is the balancer that actually gives "same Key
+		// always maps to the same partition", which is what per-aggregate
+		// event ordering on this multi-partition topic depends on.
+		Balancer:               &kafkago.Hash{},
 		AllowAutoTopicCreation: true,
 	}, tasks, stations, newId)
 	p.Mode = mode

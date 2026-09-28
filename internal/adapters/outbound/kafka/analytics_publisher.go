@@ -62,9 +62,15 @@ type AnalyticsPublisher struct {
 // to enrich task-scoped events with their process path.
 func NewAnalyticsPublisher(brokers []string, tasks ports.TaskRepo, newId func() string) *AnalyticsPublisher {
 	return NewAnalyticsPublisherWithWriter(&kafkago.Writer{
-		Addr:                   kafkago.TCP(brokers...),
-		Topic:                  AnalyticsTopic,
-		Balancer:               &kafkago.LeastBytes{},
+		Addr:  kafkago.TCP(brokers...),
+		Topic: AnalyticsTopic,
+		// Balancer is kafkago.Hash, matching Publisher's
+		// NewPublisherWithMode choice above: marshalData already keys
+		// every message by its aggregate id (TaskId/PackageId), but
+		// LeastBytes would silently discard that key for partition
+		// routing — Hash is what actually turns the key into a
+		// partition decision.
+		Balancer:               &kafkago.Hash{},
 		AllowAutoTopicCreation: true,
 	}, tasks, newId)
 }
