@@ -54,6 +54,22 @@ func run() error {
 	rootCtx := context.Background()
 	httpAddr := getenv("HTTP_ADDR", ":8080")
 	databaseURL := os.Getenv("DATABASE_URL")
+	// MIGRATIONS_DATABASE_URL, when set, is a DIRECT (non-pooled,
+	// session-mode) Postgres connection string used ONLY for the
+	// golang-migrate startup step inside openStorage below — the pgxpool
+	// this process serves requests through still uses databaseURL,
+	// unchanged. See openStorage's doc comment and ADR-0031 for the full
+	// "why": golang-migrate's postgres driver takes a session-scoped
+	// `SELECT pg_advisory_lock($1)` to serialize concurrent migration
+	// runs, which PgBouncer's transaction-pooling mode (this fleet's
+	// pool_mode for every OLTP DATABASE_URL, warehouse-infra PR #43)
+	// does not support — see order-management ADR-0029, the reference
+	// implementation this fix mirrors. Falls back to databaseURL when
+	// unset, which is every environment that doesn't provision the split
+	// (local dev, CI integration tests, a cluster whose Terraform
+	// predates this fix) — byte-identical to this service's behavior
+	// before this change in that case.
+	migrationsDatabaseURL := getenv("MIGRATIONS_DATABASE_URL", databaseURL)
 	kafkaBrokers := strings.Split(getenv("KAFKA_BROKERS", "localhost:9092"), ",")
 
 	// Telemetry comes up right after the logger and before any adapter, so
@@ -91,7 +107,7 @@ func run() error {
 		return err
 	}
 
-	storage, err := openStorage(rootCtx, logger, databaseURL)
+	storage, err := openStorage(rootCtx, logger, databaseURL, migrationsDatabaseURL, "migrations")
 	if err != nil {
 		return err
 	}
@@ -300,7 +316,29 @@ type storageAdapters struct {
 // sidecars). A single attempt turns that transient condition into
 // CrashLoopBackOff; the retry still fails closed once its budget is
 // exhausted.
-func openStorage(rootCtx context.Context, logger *slog.Logger, databaseURL string) (storageAdapters, error) {
+//
+// migrationsDatabaseURL is used ONLY for the golang-migrate step below —
+// the pgxpool opened just after it (and used for every subsequent
+// request) always uses databaseURL. They are deliberately different
+// connection strings in a PgBouncer-fronted environment: golang-migrate's
+// postgres driver takes a session-scoped `SELECT pg_advisory_lock($1)` to
+// serialize concurrent migration runs across replicas starting at the
+// same time, and PgBouncer's transaction-pooling mode (this fleet's
+// pool_mode for every OLTP DATABASE_URL, warehouse-infra PR #43) does not
+// support session-scoped state — each statement in one logical client
+// session can land on a different physical backend connection, so the
+// advisory lock never behaves as a real mutex. Losing replicas crash-loop
+// with `pq: unnamed prepared statement does not exist` / `pq: canceling
+// statement due to statement timeout` until one wins the race. See
+// ADR-0031 (and order-management's ADR-0029, the reference
+// implementation this mirrors) for the full incident and fix. Callers
+// pass MIGRATIONS_DATABASE_URL when set (warehouse-infra provisions it as
+// a direct, non-pooled DSN alongside DATABASE_URL for all 9 OLTP
+// services, PR #44) or fall back to databaseURL itself for any
+// environment that doesn't provision the split (local dev, CI
+// integration tests) — byte-identical to this function's behavior before
+// this parameter existed in that case.
+func openStorage(rootCtx context.Context, logger *slog.Logger, databaseURL, migrationsDatabaseURL, migrationsPath string) (storageAdapters, error) {
 	if databaseURL == "" {
 		logger.Info("database url not configured; using in-memory adapters")
 		return storageAdapters{
@@ -313,7 +351,7 @@ func openStorage(rootCtx context.Context, logger *slog.Logger, databaseURL strin
 	}
 
 	if err := bootretry.Retry(rootCtx, logger, "run migrations", func() error {
-		return postgres.Migrate(databaseURL, "migrations")
+		return postgres.Migrate(migrationsDatabaseURL, migrationsPath)
 	}); err != nil {
 		return storageAdapters{}, err
 	}
