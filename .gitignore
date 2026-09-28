@@ -9,3 +9,7 @@ bin/
 /mcp
 .env
 coverage.out
+
+# Local tool-run artifacts (Schemathesis contract runs, Spectral installs)
+.schemathesis/
+apis/tooling/node_modules/

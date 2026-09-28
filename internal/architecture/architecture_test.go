@@ -133,54 +133,69 @@ func assertPasses(t *testing.T, result *archgo.Result) {
 	}
 }
 
+// describeViolations renders every failing arch-go rule in result into a
+// human-readable block, delegating to one walker per rule kind.
 func describeViolations(result *archgo.Result) string {
 	var b strings.Builder
-
-	if result.DependenciesRuleResult != nil {
-		for _, r := range result.DependenciesRuleResult.Results {
-			if r.Passes {
-				continue
-			}
-
-			fmt.Fprintf(&b, "%s\n", r.Description)
-
-			for _, v := range r.Verifications {
-				if v.Passes {
-					continue
-				}
-
-				fmt.Fprintf(&b, "  package %s:\n", v.Package)
-
-				for _, d := range v.Details {
-					fmt.Fprintf(&b, "    - %s\n", d)
-				}
-			}
-		}
-	}
-
-	if result.NamingRuleResult != nil {
-		for _, r := range result.NamingRuleResult.Results {
-			if r.Passes {
-				continue
-			}
-
-			fmt.Fprintf(&b, "%s\n", r.Description)
-
-			for _, v := range r.Verifications {
-				if v.Passes {
-					continue
-				}
-
-				fmt.Fprintf(&b, "  package %s:\n", v.Package)
-
-				for _, d := range v.Details {
-					fmt.Fprintf(&b, "    - %s\n", d)
-				}
-			}
-		}
-	}
-
+	describeDependenciesViolations(&b, result)
+	describeNamingViolations(&b, result)
 	return b.String()
+}
+
+// describeDependenciesViolations appends every failing dependency rule,
+// with each rule's failing per-package verifications, to b.
+func describeDependenciesViolations(b *strings.Builder, result *archgo.Result) {
+	if result.DependenciesRuleResult == nil {
+		return
+	}
+	for _, r := range result.DependenciesRuleResult.Results {
+		if r.Passes {
+			continue
+		}
+
+		fmt.Fprintf(b, "%s\n", r.Description)
+
+		for _, v := range r.Verifications {
+			if v.Passes {
+				continue
+			}
+
+			fmt.Fprintf(b, "  package %s:\n", v.Package)
+
+			for _, d := range v.Details {
+				fmt.Fprintf(b, "    - %s\n", d)
+			}
+		}
+	}
+}
+
+// describeNamingViolations appends every failing naming rule, with each
+// rule's failing per-package verifications, to b. arch-go models
+// dependency and naming results as distinct internal types that share the
+// same shape, hence the parallel walker.
+func describeNamingViolations(b *strings.Builder, result *archgo.Result) {
+	if result.NamingRuleResult == nil {
+		return
+	}
+	for _, r := range result.NamingRuleResult.Results {
+		if r.Passes {
+			continue
+		}
+
+		fmt.Fprintf(b, "%s\n", r.Description)
+
+		for _, v := range r.Verifications {
+			if v.Passes {
+				continue
+			}
+
+			fmt.Fprintf(b, "  package %s:\n", v.Package)
+
+			for _, d := range v.Details {
+				fmt.Fprintf(b, "    - %s\n", d)
+			}
+		}
+	}
 }
 
 func stringPtr(s string) *string {

@@ -167,6 +167,20 @@ func TestEncode_CloudEventsMode_TaskCompleted_SchemaFields(t *testing.T) {
 	if err := json.Unmarshal(encoded[0].Value, &env); err != nil {
 		t.Fatalf("unmarshal cloudevent: %v", err)
 	}
+	assertCloudEventEnvelopeFields(t, env, completedAt)
+	if env.Data.TaskId != "task-golden" || env.Data.WorkUnitId != "wu-golden" || env.Data.AssociateId != "worker-golden" ||
+		env.Data.DurationSeconds != 45 || env.Data.TaskType != "PICK" {
+		t.Errorf("data payload changed vs. flat mode's own data: %+v", env.Data)
+	}
+	if string(encoded[0].Key) != "task-golden" {
+		t.Errorf("Key = %q, want task-golden (same as flat mode)", encoded[0].Key)
+	}
+}
+
+// assertCloudEventEnvelopeFields checks the fixed CloudEvents envelope
+// attributes of a TaskCompleted message in CloudEvents mode.
+func assertCloudEventEnvelopeFields(t *testing.T, env ceEnvelope[outboundkafka.TaskCompletedData], completedAt time.Time) {
+	t.Helper()
 	if env.SpecVersion != "1.0" {
 		t.Errorf("specversion = %q, want 1.0", env.SpecVersion)
 	}
@@ -187,13 +201,6 @@ func TestEncode_CloudEventsMode_TaskCompleted_SchemaFields(t *testing.T) {
 	}
 	if env.DataContentType != "application/json" {
 		t.Errorf("datacontenttype = %q, want application/json", env.DataContentType)
-	}
-	if env.Data.TaskId != "task-golden" || env.Data.WorkUnitId != "wu-golden" || env.Data.AssociateId != "worker-golden" ||
-		env.Data.DurationSeconds != 45 || env.Data.TaskType != "PICK" {
-		t.Errorf("data payload changed vs. flat mode's own data: %+v", env.Data)
-	}
-	if string(encoded[0].Key) != "task-golden" {
-		t.Errorf("Key = %q, want task-golden (same as flat mode)", encoded[0].Key)
 	}
 }
 
@@ -304,8 +311,16 @@ func TestEncode_DualMode_TaskCompleted_ProducesTwoMessagesSameKeyBothShapes(t *t
 	}
 
 	// message 1 must be the CloudEvents shape, structurally verified.
+	assertDualCloudEventShape(t, encoded[1].Value)
+	assertFlatMessageNotCloudEvent(t, encoded[0].Value)
+}
+
+// assertDualCloudEventShape checks that raw decodes as the TaskCompleted
+// CloudEvents envelope with the golden identity fields and payload.
+func assertDualCloudEventShape(t *testing.T, raw []byte) {
+	t.Helper()
 	var ce ceEnvelope[outboundkafka.TaskCompletedData]
-	if err := json.Unmarshal(encoded[1].Value, &ce); err != nil {
+	if err := json.Unmarshal(raw, &ce); err != nil {
 		t.Fatalf("unmarshal second message as a cloudevent: %v", err)
 	}
 	if ce.SpecVersion != "1.0" || ce.Id != "evt-golden-1" ||
@@ -316,12 +331,16 @@ func TestEncode_DualMode_TaskCompleted_ProducesTwoMessagesSameKeyBothShapes(t *t
 	if ce.Data.TaskId != "task-golden" || ce.Data.WorkUnitId != "wu-golden" {
 		t.Errorf("dual mode's cloudevents data changed: %+v", ce.Data)
 	}
+}
 
-	// Explicitly confirm message 0 is NOT itself a valid cloudevent (no
-	// specversion key at all) — proves the two messages are genuinely
-	// different shapes, not two copies of the same one.
+// assertFlatMessageNotCloudEvent explicitly confirms the flat message is
+// NOT itself a valid cloudevent (no specversion key at all) — proving the
+// two dual-mode messages are genuinely different shapes, not two copies
+// of the same one — while still carrying the flat event_id.
+func assertFlatMessageNotCloudEvent(t *testing.T, raw []byte) {
+	t.Helper()
 	var probe map[string]any
-	if err := json.Unmarshal(encoded[0].Value, &probe); err != nil {
+	if err := json.Unmarshal(raw, &probe); err != nil {
 		t.Fatalf("unmarshal flat message: %v", err)
 	}
 	if _, hasSpecVersion := probe["specversion"]; hasSpecVersion {

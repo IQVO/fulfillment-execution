@@ -90,36 +90,44 @@ func validInstanceFor(s *jsonschema.Schema) map[string]any {
 func TestEval_InputSchemasResolveAndConstrain(t *testing.T) {
 	for _, tool := range wireTools(t) {
 		t.Run(tool.Name, func(t *testing.T) {
-			s := schemaOf(t, tool.InputSchema)
-			if !hasType(s, "object") {
-				t.Fatalf("input schema type = %q, want object", s.Type)
-			}
-			resolved, err := s.Resolve(nil)
-			if err != nil {
-				t.Fatalf("input schema does not resolve: %v", err)
-			}
-
-			valid := validInstanceFor(s)
-			if err := resolved.Validate(valid); err != nil {
-				t.Fatalf("schema rejects its own shape of arguments (%v): %v", valid, err)
-			}
-
-			// Flip the first string property to a number; the schema must
-			// reject it. Tools without string properties skip this leg
-			// (diagnose_stuck_tasks declares only an integer).
-			// (float64, not json.Number — the validator type-checks Go
-			// kinds, and json.Number is a string kind.)
-			for name, prop := range s.Properties {
-				if !hasType(prop, "string") {
-					continue
-				}
-				wrong := map[string]any{name: float64(42)}
-				if err := resolved.Validate(wrong); err == nil {
-					t.Fatalf("schema accepts a numeric %q — it does not constrain model input", name)
-				}
-				break
-			}
+			assertInputSchemaResolvesAndConstrains(t, tool)
 		})
+	}
+}
+
+// assertInputSchemaResolvesAndConstrains applies the three evals above to
+// one advertised tool's input schema.
+func assertInputSchemaResolvesAndConstrains(t *testing.T, tool *sdk.Tool) {
+	t.Helper()
+
+	s := schemaOf(t, tool.InputSchema)
+	if !hasType(s, "object") {
+		t.Fatalf("input schema type = %q, want object", s.Type)
+	}
+	resolved, err := s.Resolve(nil)
+	if err != nil {
+		t.Fatalf("input schema does not resolve: %v", err)
+	}
+
+	valid := validInstanceFor(s)
+	if err := resolved.Validate(valid); err != nil {
+		t.Fatalf("schema rejects its own shape of arguments (%v): %v", valid, err)
+	}
+
+	// Flip the first string property to a number; the schema must
+	// reject it. Tools without string properties skip this leg
+	// (diagnose_stuck_tasks declares only an integer).
+	// (float64, not json.Number — the validator type-checks Go
+	// kinds, and json.Number is a string kind.)
+	for name, prop := range s.Properties {
+		if !hasType(prop, "string") {
+			continue
+		}
+		wrong := map[string]any{name: float64(42)}
+		if err := resolved.Validate(wrong); err == nil {
+			t.Fatalf("schema accepts a numeric %q — it does not constrain model input", name)
+		}
+		break
 	}
 }
 
