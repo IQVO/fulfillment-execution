@@ -60,57 +60,52 @@ func statusFor(err error) int {
 	}
 }
 
-// problemTypeAndTitle maps a typed domain/application error to its RFC 7807
+// problemCatalog maps each typed domain/application error to its RFC 7807
 // "type" slug and category-level "title". One entry per distinct error
 // CATEGORY, mirroring statusFor's error set exactly (see REST_AUDIT.md).
+// Entries are probed with errors.Is in catalog order, which matches the
+// arm order of the switch this table replaced, so the mapping is exactly
+// equivalent.
+var problemCatalog = []struct {
+	err   error
+	slug  string
+	title string
+}{
+	{usecases.ErrTaskNotFound, "task-not-found", "Task not found"},
+	{usecases.ErrStationNotFound, "station-not-found", "Station not found"},
+	{usecases.ErrPackageNotFound, "package-not-found", "Package not found"},
+
+	{task.ErrAlreadyClaimed, "task-already-claimed", "Task already claimed by another station"},
+	{task.ErrAlreadyCompleted, "task-already-completed", "Task already completed"},
+	{task.ErrNotClaimed, "task-not-claimed", "Task is not currently claimed"},
+	{task.ErrNotOwner, "task-not-owner", "Station does not own the active claim on this task"},
+	{station.ErrOccupied, "station-occupied", "Station is already occupied"},
+	{station.ErrNotOccupied, "station-not-occupied", "Station is not occupied"},
+	{pack.ErrAlreadySealed, "package-already-sealed", "Package already sealed"},
+	{pack.ErrAlreadyProcessed, "package-already-processed", "Package SLAM already processed"},
+	{pack.ErrNotSealed, "package-not-sealed", "Package must be sealed before SLAM"},
+	{pack.ErrPackageSegregationViolation, "package-segregation-violation", "Scanned item's DOT hazard class is incompatible with an already-scanned item"},
+	{usecases.ErrNoClaimableTask, "no-claimable-task", "No claimable task for station capabilities"},
+
+	{task.ErrCapabilityMismatch, "task-capability-mismatch", "Station capabilities do not match task requirements"},
+	{station.ErrCapabilityMismatch, "station-capability-mismatch", "Capabilities do not match"},
+	{pack.ErrNoScannedContents, "package-no-scanned-contents", "Cannot seal a package without scanned contents"},
+	{consolidation.ErrUnknownLine, "rebin-unknown-line", "Line is not part of this order's required consolidation set"},
+	{usecases.ErrWrongTaskType, "wrong-task-type", "Wrong task type for this operation"},
+	{usecases.ErrStationLocationNotWorkCenter, "station-location-not-workcenter", "Station's locationCode does not resolve to a facility-layout WorkCenter"},
+}
+
+// problemTypeAndTitle maps a typed domain/application error to its RFC 7807
+// "type" slug and category-level "title" by probing problemCatalog in
+// order, falling back to the internal-error pair exactly like statusFor's
+// default arm.
 func problemTypeAndTitle(err error) (slug, title string) {
-	switch {
-	case errors.Is(err, usecases.ErrTaskNotFound):
-		return "task-not-found", "Task not found"
-	case errors.Is(err, usecases.ErrStationNotFound):
-		return "station-not-found", "Station not found"
-	case errors.Is(err, usecases.ErrPackageNotFound):
-		return "package-not-found", "Package not found"
-
-	case errors.Is(err, task.ErrAlreadyClaimed):
-		return "task-already-claimed", "Task already claimed by another station"
-	case errors.Is(err, task.ErrAlreadyCompleted):
-		return "task-already-completed", "Task already completed"
-	case errors.Is(err, task.ErrNotClaimed):
-		return "task-not-claimed", "Task is not currently claimed"
-	case errors.Is(err, task.ErrNotOwner):
-		return "task-not-owner", "Station does not own the active claim on this task"
-	case errors.Is(err, station.ErrOccupied):
-		return "station-occupied", "Station is already occupied"
-	case errors.Is(err, station.ErrNotOccupied):
-		return "station-not-occupied", "Station is not occupied"
-	case errors.Is(err, pack.ErrAlreadySealed):
-		return "package-already-sealed", "Package already sealed"
-	case errors.Is(err, pack.ErrAlreadyProcessed):
-		return "package-already-processed", "Package SLAM already processed"
-	case errors.Is(err, pack.ErrNotSealed):
-		return "package-not-sealed", "Package must be sealed before SLAM"
-	case errors.Is(err, pack.ErrPackageSegregationViolation):
-		return "package-segregation-violation", "Scanned item's DOT hazard class is incompatible with an already-scanned item"
-	case errors.Is(err, usecases.ErrNoClaimableTask):
-		return "no-claimable-task", "No claimable task for station capabilities"
-
-	case errors.Is(err, task.ErrCapabilityMismatch):
-		return "task-capability-mismatch", "Station capabilities do not match task requirements"
-	case errors.Is(err, station.ErrCapabilityMismatch):
-		return "station-capability-mismatch", "Capabilities do not match"
-	case errors.Is(err, pack.ErrNoScannedContents):
-		return "package-no-scanned-contents", "Cannot seal a package without scanned contents"
-	case errors.Is(err, consolidation.ErrUnknownLine):
-		return "rebin-unknown-line", "Line is not part of this order's required consolidation set"
-	case errors.Is(err, usecases.ErrWrongTaskType):
-		return "wrong-task-type", "Wrong task type for this operation"
-	case errors.Is(err, usecases.ErrStationLocationNotWorkCenter):
-		return "station-location-not-workcenter", "Station's locationCode does not resolve to a facility-layout WorkCenter"
-
-	default:
-		return "internal-error", "Internal server error"
+	for _, entry := range problemCatalog {
+		if errors.Is(err, entry.err) {
+			return entry.slug, entry.title
+		}
 	}
+	return "internal-error", "Internal server error"
 }
 
 // writeError maps a typed domain/application error to an RFC 7807 response,

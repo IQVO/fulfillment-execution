@@ -49,6 +49,17 @@ spec:
                 secretKeyRef:
                   name: {{ include "fulfillment-execution.databaseSecretName" . }}
                   key: {{ .Values.database.existingSecretKey }}
+            {{- if .Values.database.migrationsExistingSecretKey }}
+            # See values.yaml's database.migrationsExistingSecretKey comment
+            # and ADR-0031: cmd/mcp also runs migrations on start (see the
+            # comment above), so it needs the same direct-connection split.
+            - name: MIGRATIONS_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "fulfillment-execution.databaseSecretName" . }}
+                  key: {{ .Values.database.migrationsExistingSecretKey }}
+                  optional: true
+            {{- end }}
             {{- end }}
             # The throughput report tool talks to the reports REST service
             # (never the analytical DB); it is only registered when the

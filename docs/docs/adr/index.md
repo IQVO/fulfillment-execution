@@ -121,3 +121,5 @@ gets a "Supersedes ADR-NNNN" line in its Context, the old one gets
 | [0027](./0027-cloudevents-envelope-migration.md) | Migrate `warehouse.fulfillment.events` to a CloudEvents 1.0 structured envelope via a dual-read/dual-write bake period; companion to wes-work-planning's own envelope-migration ADR-0021 | Accepted |
 | [0028](./0028-idempotency-key-middleware.md) | Transactional Idempotency-Key middleware for `POST /tasks`, direct port of order-management ADR-0023 | Accepted |
 | [0029](./0029-resilience-circuit-breakers-retry-dlq-shutdown.md) | Circuit breakers, jittered retry, dead-letter-queue hardening, and graceful shutdown for outbound dependencies, direct port of order-management ADR-0025 | Accepted |
+| [0030](./0030-horizontal-autoscaling-and-pgxpool-tuning.md) | Per-workload HorizontalPodAutoscaler and pgxpool MaxConns/statement_timeout tuning, direct port of order-management ADR-0026 | Accepted |
+| [0031](./0031-migrations-direct-postgres-connection.md) | Run golang-migrate against a direct Postgres connection, not PgBouncer — direct port of order-management ADR-0029 | Accepted |
