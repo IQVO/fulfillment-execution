@@ -1,6 +1,6 @@
 # API Surface & Cross-Service Integration
 
-## REST API (inbound adapter) — 15 operations in `apis/openapi.yaml`, 16 routes on the router
+## REST API (inbound adapter) — 17 operations in `apis/openapi.yaml`, 17 routes on the router
 
 - POST /tasks                                 -> CreateTask
 - GET  /tasks?orderRef=                       -> GetTasksByOrderRef
@@ -16,11 +16,20 @@
 - GET  /capacity/{capability}                 -> GetInstalledCapacity (ADR-0018)
 - POST /tasks/expire-leases                   -> ExpireLeases
 - POST /tasks/sweep-cpt-misses                 -> SweepCPTMisses (ADR-0025)
+- POST /rebin/arrivals                        -> ArriveAtRebin (ADR-0016; tag `Rebin`,
+  operationId `arriveAtRebin`). The pick->pack handoff: 204 on success
+  (idempotent per (orderRef, lineId); the first call fixes the order's
+  required line set; the PACK task is created exactly once, by the arrival
+  that completes the set), 400 `invalid-request` (no `instance`), 422
+  `rebin-unknown-line` (`consolidation.ErrUnknownLine`), 500.
 - GET  /healthz
-- POST /rebin/arrivals                        -> ArriveAtRebin (ADR-0016) — registered in
-  `internal/adapters/inbound/http/router.go` but **not declared in
-  `apis/openapi.yaml`**, so it has no generated reference page. Known
-  spec gap; fix the spec (then regenerate) rather than hand-writing docs.
+- GET  /readyz                                 (readiness; flips to 503 on shutdown, ADR-0029)
+
+Router and spec must stay in a two-way 1:1 match —
+`internal/adapters/inbound/http/openapi_routes_test.go` walks the chi
+router and fails on a route missing from the spec or a spec operation with
+no route. Adding a route means adding it to `apis/openapi.yaml` (then
+regenerating the docs reference) in the same change.
 
 `cmd/fulfillment-reports` serves a separate read-only surface
 (`GET /reports/throughput`, `GET /reports/throughput/freshness`,

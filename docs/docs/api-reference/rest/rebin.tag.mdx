@@ -1,0 +1,21 @@
+---
+id: rebin
+title: "Rebin"
+description: "Rebin"
+custom_edit_url: null
+---
+
+
+
+The OrderConsolidation aggregate: the Rebin / put-wall fan-in point between Pick and Pack (see [ADR-0016](/docs/adr/0016-rebin-and-order-consolidation)). A multi-line order picked from different pods produces independent PICK completions; each picked line is scanned into the order's consolidation slot (`POST /rebin/arrivals`), and the order's PACK task is created only once every required line has arrived. This is the only path from a completed pick to a PACK task over HTTP.
+
+
+
+
+```mdx-code-block
+import DocCardList from '@theme/DocCardList';
+import {useCurrentSidebarCategory} from '@docusaurus/theme-common';
+
+<DocCardList items={useCurrentSidebarCategory().items}/>
+```
+      

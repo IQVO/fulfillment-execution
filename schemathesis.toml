@@ -1,0 +1,21 @@
+# Schemathesis configuration for scripts/contract-test.sh (passed explicitly
+# via --config-file, so discovery quirks in git worktrees don't matter).
+#
+# Per-operation overrides only — every check stays enabled for every
+# operation; an override here may only widen the set of statuses a check
+# accepts for ONE operation, and each one must name the unexpressible
+# semantic that justifies it plus where that semantic is tested instead.
+
+# arriveAtRebin (POST /rebin/arrivals): a schema-valid body is correctly
+# rejected with 422 rebin-unknown-line when lineId is not a member of the
+# order's required line set — a cross-field rule (lineId ∈ requiredLineIds,
+# or ∈ the set fixed by the FIRST arrival for orderRef) that OpenAPI 3.0.3
+# cannot express. The 422 is documented on the operation. Tested by
+# TestPostArriveAtRebin_UnknownLine_Returns422
+# (internal/adapters/inbound/http/handlers_test.go) and the
+# consolidation.RecordArrival unit tests. Default positive_data_acceptance
+# statuses plus 422; status-code / response-schema conformance, negative
+# data rejection and not_a_server_error still run unchanged.
+[[operations]]
+include-operation-id = "arriveAtRebin"
+checks.positive_data_acceptance.expected-statuses = ["2xx", "401", "403", "404", "409", "422", "429", "5xx"]
