@@ -126,6 +126,18 @@ const sidebar: SidebarsConfig = {
         },
         {
           type: "doc",
+          id: "api-reference/rest/get-packages-by-order-ref",
+          label: "Look up every Package sealed for an order reference",
+          className: "api-method get",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/get-package",
+          label: "Read one Package, including its SLAM outcome",
+          className: "api-method get",
+        },
+        {
+          type: "doc",
           id: "api-reference/rest/run-slam",
           label: "Run the SLAM weigh-check on a sealed package",
           className: "api-method post",

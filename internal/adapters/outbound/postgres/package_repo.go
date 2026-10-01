@@ -42,7 +42,12 @@ func nonNilInts(s []int) []int {
 	return s
 }
 
-func (r *PackageRepo) FindById(ctx context.Context, id shared.PackageId) (*pack.Package, error) {
+// packageColumns is the column list every package read selects, in the
+// order scanPackage expects.
+const packageColumns = `id, order_ref, task_id, status, scanned_contents, fragile_handling, scanned_hazard_classes, gift_wrap_requested`
+
+// scanPackage rehydrates one packages row selected with packageColumns.
+func scanPackage(row rowScanner) (*pack.Package, error) {
 	var (
 		packageId, orderRef, status string
 		taskId                      *string
@@ -51,16 +56,33 @@ func (r *PackageRepo) FindById(ctx context.Context, id shared.PackageId) (*pack.
 		scannedHazardClasses        []int
 		giftWrapRequested           bool
 	)
-	err := querierFrom(ctx, r.pool).QueryRow(ctx, `
-		SELECT id, order_ref, task_id, status, scanned_contents, fragile_handling, scanned_hazard_classes, gift_wrap_requested FROM packages WHERE id = $1
-	`, string(id)).Scan(&packageId, &orderRef, &taskId, &status, &scannedContents, &fragileHandling, &scannedHazardClasses, &giftWrapRequested)
+	if err := row.Scan(&packageId, &orderRef, &taskId, &status, &scannedContents, &fragileHandling, &scannedHazardClasses, &giftWrapRequested); err != nil {
+		return nil, err
+	}
+	return pack.Rehydrate(shared.PackageId(packageId), shared.OrderRef(orderRef), shared.TaskId(deref(taskId)), pack.Status(status), scannedContents, fragileHandling, scannedHazardClasses, giftWrapRequested), nil
+}
+
+// Package read queries, built only from constants.
+const (
+	selectPackageById        = `SELECT ` + packageColumns + ` FROM packages WHERE id = $1`
+	selectPackageByTaskId    = `SELECT ` + packageColumns + ` FROM packages WHERE task_id = $1`
+	selectPackagesByOrderRef = `SELECT ` + packageColumns + ` FROM packages WHERE order_ref = $1 ORDER BY id`
+)
+
+// findOne runs a single-row package query, mapping "no row" to (nil, nil).
+func (r *PackageRepo) findOne(ctx context.Context, query, arg string) (*pack.Package, error) {
+	p, err := scanPackage(querierFrom(ctx, r.pool).QueryRow(ctx, query, arg))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	return pack.Rehydrate(shared.PackageId(packageId), shared.OrderRef(orderRef), shared.TaskId(deref(taskId)), pack.Status(status), scannedContents, fragileHandling, scannedHazardClasses, giftWrapRequested), nil
+	return p, nil
+}
+
+func (r *PackageRepo) FindById(ctx context.Context, id shared.PackageId) (*pack.Package, error) {
+	return r.findOne(ctx, selectPackageById, string(id))
 }
 
 // FindByTaskId returns the Package already sealed for taskId, backing
@@ -74,24 +96,29 @@ func (r *PackageRepo) FindByTaskId(ctx context.Context, taskId shared.TaskId) (*
 	if taskId == "" {
 		return nil, nil
 	}
-	var (
-		packageId, orderRef, status string
-		gotTaskId                   *string
-		scannedContents             []string
-		fragileHandling             bool
-		scannedHazardClasses        []int
-		giftWrapRequested           bool
-	)
-	err := querierFrom(ctx, r.pool).QueryRow(ctx, `
-		SELECT id, order_ref, task_id, status, scanned_contents, fragile_handling, scanned_hazard_classes, gift_wrap_requested FROM packages WHERE task_id = $1
-	`, string(taskId)).Scan(&packageId, &orderRef, &gotTaskId, &status, &scannedContents, &fragileHandling, &scannedHazardClasses, &giftWrapRequested)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
+	return r.findOne(ctx, selectPackageByTaskId, string(taskId))
+}
+
+// FindByOrderRef returns every package sealed for orderRef, ordered by id,
+// backing GET /packages?orderRef= (ADR-0033). Served by
+// idx_packages_order_ref (migration 0013). An unknown orderRef returns an
+// empty, non-nil slice.
+func (r *PackageRepo) FindByOrderRef(ctx context.Context, orderRef shared.OrderRef) ([]*pack.Package, error) {
+	rows, err := querierFrom(ctx, r.pool).Query(ctx, selectPackagesByOrderRef, string(orderRef))
 	if err != nil {
 		return nil, err
 	}
-	return pack.Rehydrate(shared.PackageId(packageId), shared.OrderRef(orderRef), shared.TaskId(deref(gotTaskId)), pack.Status(status), scannedContents, fragileHandling, scannedHazardClasses, giftWrapRequested), nil
+	defer rows.Close()
+
+	result := make([]*pack.Package, 0)
+	for rows.Next() {
+		p, err := scanPackage(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, p)
+	}
+	return result, rows.Err()
 }
 
 // nullableTaskId converts a domain shared.TaskId into the pointer form

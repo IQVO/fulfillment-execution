@@ -94,7 +94,9 @@ touching `internal/domain/` or `internal/application/usecases/`.
 - **OrderConsolidation**: incomplete until every required line has arrived;
   `IsComplete()` only after all recorded.
 - Read models (queue depth by task type, throughput, installed capacity) are
-  PROJECTIONS from events/registry state, never source-of-truth state.
+  PROJECTIONS from events/registry state, never source-of-truth state. The
+  Package read model (ADR-0033) is different: a side-effect-free direct read
+  of the Package aggregate's current state through `PackageRepo`.
 
 ## Domain events (past tense)
 
@@ -137,6 +139,11 @@ two, closing the promise-feedback-loop half of order-management's ADR
 14. ArriveAtRebin(orderRef, lineId, ...) -> records a line arrival on
     OrderConsolidation (ItemArrivedAtRebin); once complete, creates the
     order's PACK task via CreateTask and raises OrderConsolidated (ADR-0016)
+15. GetPackage(packageId) -> one Package, read-only; ErrPackageNotFound when
+    absent (backs `GET /packages/{id}`, ADR-0033 — how a caller learns the
+    SLAM outcome after `POST /packages/{id}/slam`'s 204)
+16. GetPackagesByOrderRef(orderRef) -> every Package for one order ref,
+    read-only (backs `GET /packages?orderRef=`, ADR-0033)
 
-`internal/application/usecases/` holds exactly these 15 structs (counting
+`internal/application/usecases/` holds exactly these 17 structs (counting
 CheckInStation and CheckOutStation separately).

@@ -60,8 +60,10 @@ func newTestHandlers() (*http.Handlers, *memory.TaskRepo, *memory.StationRepo, *
 			Publisher:      publisher,
 			Clock:          clock,
 		},
-		GetInstalledCapacity: &usecases.GetInstalledCapacity{Stations: stations},
-		SweepCPTMisses:       &usecases.SweepCPTMisses{Tasks: tasks, Publisher: publisher, Clock: clock},
+		GetInstalledCapacity:  &usecases.GetInstalledCapacity{Stations: stations},
+		SweepCPTMisses:        &usecases.SweepCPTMisses{Tasks: tasks, Publisher: publisher, Clock: clock},
+		GetPackage:            &usecases.GetPackage{Packages: packages},
+		GetPackagesByOrderRef: &usecases.GetPackagesByOrderRef{Packages: packages},
 	}
 	return h, tasks, stations, packages, clock
 }
