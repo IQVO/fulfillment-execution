@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"sort"
 	"sync"
 
 	pack "github.com/claudioed/fulfillment-execution/internal/domain/package"
@@ -54,4 +55,25 @@ func (r *PackageRepo) FindByTaskId(_ context.Context, taskId shared.TaskId) (*pa
 		}
 	}
 	return nil, nil
+}
+
+// FindByOrderRef returns every stored package whose OrderRef() matches,
+// sorted by id so the result is deterministic (the postgres adapter
+// orders by id too). Linear scan, like FindByTaskId — this repo only backs
+// tests and local/no-DB runs. An unknown orderRef yields an empty, non-nil
+// slice.
+func (r *PackageRepo) FindByOrderRef(_ context.Context, orderRef shared.OrderRef) ([]*pack.Package, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	result := make([]*pack.Package, 0)
+	for _, p := range r.packages {
+		if p.OrderRef() == orderRef {
+			result = append(result, p)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Id() < result[j].Id()
+	})
+	return result, nil
 }

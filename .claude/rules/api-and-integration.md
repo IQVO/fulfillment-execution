@@ -1,6 +1,6 @@
 # API Surface & Cross-Service Integration
 
-## REST API (inbound adapter) — 17 operations in `apis/openapi.yaml`, 17 routes on the router
+## REST API (inbound adapter) — 19 operations in `apis/openapi.yaml`, 19 routes on the router
 
 - POST /tasks                                 -> CreateTask
 - GET  /tasks?orderRef=                       -> GetTasksByOrderRef
@@ -11,7 +11,14 @@
 - POST /tasks/{id}/renew-lease                -> RenewLease
 - POST /tasks/{id}/complete                   -> CompleteTask
 - POST /tasks/{id}/seal-package                -> SealPackage
-- POST /packages/{id}/slam                    -> RunSlam
+- GET  /packages/{id}                         -> GetPackage (ADR-0033). 200 `PackageResponse`
+  (same DTO/schema as seal-package's 201); 404 `package-not-found`. Read
+  `status` here to learn the SLAM outcome (LABELED vs DIVERTED).
+- GET  /packages?orderRef=                    -> GetPackagesByOrderRef (ADR-0033). 200 array of
+  `PackageResponse` ordered by id (empty when none); 400 `invalid-request`
+  on missing/empty `orderRef` — same contract as `GET /tasks?orderRef=`.
+- POST /packages/{id}/slam                    -> RunSlam (204 in BOTH outcomes — label applied
+  or diverted; deliberately unchanged, see ADR-0033)
 - GET  /queues/{taskType}/depth               -> GetQueueDepth
 - GET  /capacity/{capability}                 -> GetInstalledCapacity (ADR-0018)
 - POST /tasks/expire-leases                   -> ExpireLeases

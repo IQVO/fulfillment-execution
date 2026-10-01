@@ -409,6 +409,10 @@ func buildHandlers(storage storageAdapters, publisher ports.EventPublisher, cloc
 		},
 		GetInstalledCapacity: &usecases.GetInstalledCapacity{Stations: storage.stationRepo},
 		SweepCPTMisses:       &usecases.SweepCPTMisses{Tasks: storage.taskRepo, Publisher: publisher, Clock: clock, UnitOfWork: storage.uow},
+		// Package read model (ADR-0033): GET /packages/{id} and
+		// GET /packages?orderRef=.
+		GetPackage:            &usecases.GetPackage{Packages: storage.packageRepo},
+		GetPackagesByOrderRef: &usecases.GetPackagesByOrderRef{Packages: storage.packageRepo},
 		// readiness backs GET /readyz (ADR-0029 §graceful shutdown):
 		// flipped to not-ready as the FIRST step of shutdown, below,
 		// before anything else stops.
