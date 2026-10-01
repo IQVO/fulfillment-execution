@@ -75,20 +75,22 @@ func (w *world) reset() {
 	}
 
 	h := &execmhttp.Handlers{
-		CreateTask:           &usecases.CreateTask{Tasks: tasks, Publisher: publisher, Clock: clock, NewId: newTaskId},
-		ClaimNext:            &usecases.ClaimNext{Tasks: tasks, Stations: stations, Publisher: publisher, Clock: clock},
-		RenewLease:           &usecases.RenewLease{Tasks: tasks, Clock: clock},
-		CompleteTask:         &usecases.CompleteTask{Tasks: tasks, Publisher: publisher, Clock: clock},
-		SealPackage:          &usecases.SealPackage{Tasks: tasks, Packages: packages, Publisher: publisher, Clock: clock, NewId: newPackageId},
-		RunSlam:              &usecases.RunSlam{Packages: packages, Publisher: publisher, Clock: clock},
-		GetQueueDepth:        &usecases.GetQueueDepth{Tasks: tasks},
-		ExpireLeases:         &usecases.ExpireLeases{Tasks: tasks, Publisher: publisher, Clock: clock},
-		RegisterStation:      &usecases.RegisterStation{Stations: stations, Publisher: publisher},
-		GetTasksByOrderRef:   &usecases.GetTasksByOrderRef{Tasks: tasks},
-		CheckInStation:       &usecases.CheckInStation{Stations: stations},
-		CheckOutStation:      &usecases.CheckOutStation{Stations: stations},
-		GetInstalledCapacity: &usecases.GetInstalledCapacity{Stations: stations},
-		SweepCPTMisses:       &usecases.SweepCPTMisses{Tasks: tasks, Publisher: publisher, Clock: clock},
+		CreateTask:            &usecases.CreateTask{Tasks: tasks, Publisher: publisher, Clock: clock, NewId: newTaskId},
+		ClaimNext:             &usecases.ClaimNext{Tasks: tasks, Stations: stations, Publisher: publisher, Clock: clock},
+		RenewLease:            &usecases.RenewLease{Tasks: tasks, Clock: clock},
+		CompleteTask:          &usecases.CompleteTask{Tasks: tasks, Publisher: publisher, Clock: clock},
+		SealPackage:           &usecases.SealPackage{Tasks: tasks, Packages: packages, Publisher: publisher, Clock: clock, NewId: newPackageId},
+		RunSlam:               &usecases.RunSlam{Packages: packages, Publisher: publisher, Clock: clock},
+		GetQueueDepth:         &usecases.GetQueueDepth{Tasks: tasks},
+		ExpireLeases:          &usecases.ExpireLeases{Tasks: tasks, Publisher: publisher, Clock: clock},
+		RegisterStation:       &usecases.RegisterStation{Stations: stations, Publisher: publisher},
+		GetTasksByOrderRef:    &usecases.GetTasksByOrderRef{Tasks: tasks},
+		CheckInStation:        &usecases.CheckInStation{Stations: stations},
+		CheckOutStation:       &usecases.CheckOutStation{Stations: stations},
+		GetInstalledCapacity:  &usecases.GetInstalledCapacity{Stations: stations},
+		SweepCPTMisses:        &usecases.SweepCPTMisses{Tasks: tasks, Publisher: publisher, Clock: clock},
+		GetPackage:            &usecases.GetPackage{Packages: packages},
+		GetPackagesByOrderRef: &usecases.GetPackagesByOrderRef{Packages: packages},
 	}
 
 	w.server = httptest.NewServer(execmhttp.NewRouter(h, nil))
@@ -300,6 +302,22 @@ func (w *world) tasksAreLookedUpWithoutAnOrderRef() error {
 	return w.do(http.MethodGet, "/tasks", nil)
 }
 
+func (w *world) thePackageIsReadBack() error {
+	return w.do(http.MethodGet, "/packages/"+url.PathEscape(w.packageId), nil)
+}
+
+func (w *world) thePackageIsRead(packageId string) error {
+	return w.do(http.MethodGet, "/packages/"+url.PathEscape(packageId), nil)
+}
+
+func (w *world) thePackagesForOrderAreLookedUp(orderRef string) error {
+	return w.do(http.MethodGet, "/packages?orderRef="+url.QueryEscape(orderRef), nil)
+}
+
+func (w *world) packagesAreLookedUpWithoutAnOrderRef() error {
+	return w.do(http.MethodGet, "/packages", nil)
+}
+
 func (w *world) workerChecksInAtStation(occupantId, stationId string) error {
 	return w.do(http.MethodPost, "/stations/"+stationId+"/check-in", map[string]any{
 		"occupantId": occupantId,
@@ -501,6 +519,43 @@ func (w *world) theLookupReturnsTasksForOrder(expected int, orderRef string) err
 	return nil
 }
 
+func (w *world) thePackageReadsBackWith(status, orderRef string) error {
+	var p struct {
+		Id       string `json:"id"`
+		OrderRef string `json:"orderRef"`
+		Status   string `json:"status"`
+	}
+	if err := w.decodeLast(&p); err != nil {
+		return err
+	}
+	if p.Id != w.packageId || p.OrderRef != orderRef || p.Status != status {
+		return fmt.Errorf("expected package %q for order %q with status %q, got %+v", w.packageId, orderRef, status, p)
+	}
+	return nil
+}
+
+func (w *world) thePackageLookupReturns(expected int, orderRef string) error {
+	var packages []struct {
+		Id       string `json:"id"`
+		OrderRef string `json:"orderRef"`
+	}
+	if err := w.decodeLast(&packages); err != nil {
+		return err
+	}
+	if len(packages) != expected {
+		return fmt.Errorf("expected %d package(s) for order %q, got %d: %s", expected, orderRef, len(packages), w.body)
+	}
+	for _, p := range packages {
+		if p.OrderRef != orderRef {
+			return fmt.Errorf("expected package %q to reference order %q, got %q", p.Id, orderRef, p.OrderRef)
+		}
+		if p.Id != w.packageId {
+			return fmt.Errorf("expected the sealed package %q, got %q", w.packageId, p.Id)
+		}
+	}
+	return nil
+}
+
 func (w *world) theInstalledCapacityForIs(capability string, expected int) error {
 	status, body, _, err := w.call(http.MethodGet, "/capacity/"+url.PathEscape(capability), nil)
 	if err != nil {
@@ -631,6 +686,12 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	sc.Step(`^the SLAM weigh-check runs on the Package with an actual weight of ([0-9.]+) against an expected weight of ([0-9.]+)$`, w.theSlamWeighCheckRuns)
 	sc.Step(`^the tasks for order "([^"]*)" are looked up$`, w.theTasksForOrderAreLookedUp)
 	sc.Step(`^tasks are looked up without an orderRef$`, w.tasksAreLookedUpWithoutAnOrderRef)
+	sc.Step(`^the Package is read back$`, w.thePackageIsReadBack)
+	sc.Step(`^the Package "([^"]*)" is read$`, w.thePackageIsRead)
+	sc.Step(`^the packages for order "([^"]*)" are looked up$`, w.thePackagesForOrderAreLookedUp)
+	sc.Step(`^packages are looked up without an orderRef$`, w.packagesAreLookedUpWithoutAnOrderRef)
+	sc.Step(`^the Package reads back with status "([^"]*)" for order "([^"]*)"$`, w.thePackageReadsBackWith)
+	sc.Step(`^the package lookup returns (\d+) packages? for order "([^"]*)"$`, w.thePackageLookupReturns)
 	sc.Step(`^worker "([^"]*)" has checked in at Station "([^"]*)"$`, w.workerHasCheckedInAtStation)
 	sc.Step(`^worker "([^"]*)" checks in at Station "([^"]*)"$`, w.workerChecksInAtStation)
 	sc.Step(`^Station "([^"]*)" checks out$`, w.stationChecksOut)

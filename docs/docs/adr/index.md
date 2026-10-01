@@ -124,3 +124,4 @@ gets a "Supersedes ADR-NNNN" line in its Context, the old one gets
 | [0030](./0030-horizontal-autoscaling-and-pgxpool-tuning.md) | Per-workload HorizontalPodAutoscaler and pgxpool MaxConns/statement_timeout tuning, direct port of order-management ADR-0026 | Accepted |
 | [0031](./0031-migrations-direct-postgres-connection.md) | Run golang-migrate against a direct Postgres connection, not PgBouncer — direct port of order-management ADR-0029 | Accepted |
 | [0032](./0032-cloudevents-mandatory-envelope.md) | CloudEvents 1.0 as the mandatory event envelope — every Kafka message (integration + analytics), SDK-built, no flat/dual modes | Accepted |
+| [0033](./0033-package-read-model.md) | Package read model — `GET /packages/{id}` and `GET /packages?orderRef=`; SLAM stays `204` | Accepted |

@@ -95,6 +95,8 @@ func NewRouter(h *Handlers, logger *slog.Logger, opts ...RouterOption) *chi.Mux 
 	r.Post("/tasks/{id}/renew-lease", h.PostRenewLease)
 	r.Post("/tasks/{id}/complete", h.PostCompleteTask)
 	r.Post("/tasks/{id}/seal-package", h.PostSealPackage)
+	r.Get("/packages", h.GetPackagesHandler)
+	r.Get("/packages/{id}", h.GetPackageHandler)
 	r.Post("/packages/{id}/slam", h.PostRunSlam)
 	r.Get("/queues/{taskType}/depth", h.GetQueueDepthHandler)
 	r.Get("/capacity/{capability}", h.GetInstalledCapacityHandler)

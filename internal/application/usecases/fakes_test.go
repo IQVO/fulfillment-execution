@@ -106,8 +106,9 @@ func (r *errStationRepo) FindById(ctx context.Context, id shared.StationId) (*st
 // forced to fail.
 type errPackageRepo struct {
 	*memory.PackageRepo
-	failSave     bool
-	failFindById bool
+	failSave           bool
+	failFindById       bool
+	failFindByOrderRef bool
 }
 
 func newErrPackageRepo() *errPackageRepo {
@@ -126,6 +127,13 @@ func (r *errPackageRepo) FindById(ctx context.Context, id shared.PackageId) (*pa
 		return nil, errFake
 	}
 	return r.PackageRepo.FindById(ctx, id)
+}
+
+func (r *errPackageRepo) FindByOrderRef(ctx context.Context, orderRef shared.OrderRef) ([]*pack.Package, error) {
+	if r.failFindByOrderRef {
+		return nil, errFake
+	}
+	return r.PackageRepo.FindByOrderRef(ctx, orderRef)
 }
 
 // errConsolidationRepo wraps a memory.OrderConsolidationRepo, letting

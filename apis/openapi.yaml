@@ -67,7 +67,9 @@ tags:
       become a sealed carton (`seal-package`, driven by a Pack task's active
       claim), then the SLAM weigh-check either applies a shipping label or
       diverts the package if the actual weight is outside tolerance of the
-      expected weight.
+      expected weight. Read model: `GET /packages/{id}` and
+      `GET /packages?orderRef=` expose a package's current status (and so
+      the SLAM outcome) without side effects.
   - name: Rebin
     description: >
       The OrderConsolidation aggregate: the Rebin / put-wall fan-in point
@@ -705,6 +707,116 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /packages:
+    get:
+      operationId: getPackagesByOrderRef
+      tags: [Packages]
+      summary: Look up every Package sealed for an order reference
+      description: >
+        Read-only query returning every Package sealed for `orderRef` — the
+        Package-side twin of `GET /tasks?orderRef=` (same query-parameter
+        contract, same 400 on a missing or empty `orderRef`, same empty
+        array for an unrecognized one). An order normally yields one carton,
+        but a multi-carton order or a re-pack after a SLAM diversion yields
+        several, so treat the response as a set. Ordered by package id.
+        Side-effect-free (see
+        [ADR-0033](/docs/adr/0033-package-read-model)).
+      parameters:
+        - name: orderRef
+          in: query
+          required: true
+          description: >
+            The order reference to look up (Package.orderRef, copied from
+            the owning Pack task at seal time). Must be non-empty — an empty
+            value is treated as a missing parameter and rejected with 400.
+          schema:
+            type: string
+            minLength: 1
+            example: order-42
+      responses:
+        "200":
+          description: Every Package sealed for `orderRef` (possibly empty).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PackageResponse"
+              example:
+                - id: 20260101T120200.000000000
+                  orderRef: order-42
+                  status: LABELED
+                  scannedContents: [sku-1, sku-2]
+                  fragileHandling: false
+                  giftWrapRequested: false
+                  sortLane: STANDARD
+        "400":
+          description: The required `orderRef` query parameter is missing or empty.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/invalid-request
+                title: The request is malformed or missing a required field
+                status: 400
+                detail: orderRef is required
+                instance: /packages
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /packages/{id}:
+    get:
+      operationId: getPackage
+      tags: [Packages]
+      summary: Read one Package, including its SLAM outcome
+      description: >
+        Read-only view of a single Package, in exactly the shape
+        `POST /tasks/{id}/seal-package` returns on 201. This is how the SLAM
+        operator and the outbound dock loader learn the SLAM outcome:
+        `POST /packages/{id}/slam` answers `204` both when a label was
+        applied and when the package was diverted, so read `status` here —
+        `LABELED` means the carton goes to the truck by its `sortLane`,
+        `DIVERTED` means it goes to problem-solve. Side-effect-free (see
+        [ADR-0033](/docs/adr/0033-package-read-model)).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The package id, as returned by `POST /tasks/{id}/seal-package`.
+          schema:
+            type: string
+            example: 20260101T120200.000000000
+      responses:
+        "200":
+          description: The package.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PackageResponse"
+              example:
+                id: 20260101T120200.000000000
+                orderRef: order-42
+                status: DIVERTED
+                scannedContents: [sku-1, sku-2]
+                fragileHandling: false
+                giftWrapRequested: false
+                sortLane: STANDARD
+        "404":
+          description: No package exists with this id.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/package-not-found
+                title: Package not found
+                status: 404
+                detail: "usecases: package not found"
+                instance: /packages/20260101T120200.000000000
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /packages/{id}/slam:
     post:
       operationId: runSlam
@@ -741,9 +853,9 @@ paths:
           description: >
             Weigh-check recorded (label applied or the package diverted —
             both are successful outcomes of this call). No response body;
-            inspect `GET` on the package resource in a future version of
-            this API to see which outcome occurred (not currently exposed —
-            out of scope for this iteration).
+            read `GET /packages/{id}` afterwards to see which outcome
+            occurred (`status` `LABELED` or `DIVERTED`, see
+            [ADR-0033](/docs/adr/0033-package-read-model)).
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
