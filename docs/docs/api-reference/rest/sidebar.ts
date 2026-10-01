@@ -134,6 +134,22 @@ const sidebar: SidebarsConfig = {
     },
     {
       type: "category",
+      label: "Rebin",
+      link: {
+        type: "doc",
+        id: "api-reference/rest/rebin",
+      },
+      items: [
+        {
+          type: "doc",
+          id: "api-reference/rest/arrive-at-rebin",
+          label: "Record one picked line arriving at the order's Rebin consolidation slot",
+          className: "api-method post",
+        },
+      ],
+    },
+    {
+      type: "category",
       label: "System",
       link: {
         type: "doc",
@@ -276,6 +292,12 @@ const sidebar: SidebarsConfig = {
           type: "doc",
           id: "api-reference/rest/schemas/checkinstationrequest",
           label: "CheckInStationRequest",
+          className: "schema",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/schemas/arriveatrebinrequest",
+          label: "ArriveAtRebinRequest",
           className: "schema",
         },
       ],
