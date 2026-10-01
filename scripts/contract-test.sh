@@ -84,7 +84,13 @@ curl -sf "${BASE_URL}/healthz" >/dev/null # fail loudly if it never came up
 # (features/pack_slam.feature, features/task_guards.feature) — this
 # exclusion only stops Schemathesis generating the
 # unexpressible-but-invalid combinations.
-st run apis/openapi.yaml \
+#
+# schemathesis.toml (repo root, passed explicitly — discovery stops at a
+# .git DIRECTORY, which a git worktree doesn't have) holds narrowly-scoped
+# per-operation check overrides, each justified inline. Today: arriveAtRebin
+# may 422 rebin-unknown-line on a schema-valid body (lineId must be in the
+# order's required set — a cross-field rule OpenAPI 3.0.3 cannot express).
+st --config-file schemathesis.toml run apis/openapi.yaml \
   --url "${BASE_URL}" \
   --max-examples "${MAX_EXAMPLES}" \
   --workers 4 \

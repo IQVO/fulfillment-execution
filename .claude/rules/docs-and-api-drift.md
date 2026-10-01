@@ -28,8 +28,12 @@ git diff --exit-code -- docs/api-reference/rest
 
 and fails if regeneration changes anything. Run the same three commands
 locally to reproduce it. Note it only guards `apis/openapi.yaml` — a route
-that exists on the chi router but is missing from the spec (today:
-`POST /rebin/arrivals`) is invisible to it. Manual cross-checks:
+that exists on the chi router but is missing from the spec is invisible to
+it. That gap is covered by `TestOpenAPISpec_CoversEveryRouterRoute` /
+`TestOpenAPISpec_DeclaresNoUnroutedOperation`
+(`internal/adapters/inbound/http/openapi_routes_test.go`, part of `make
+test`), which diff the chi router's routes against the spec's `paths:` in
+both directions. Manual cross-checks:
 
 1. Count `operationId:` occurrences in `apis/openapi.yaml` vs. the number of
    `*.api.mdx` files (excluding `*.info.mdx` and `*.tag.mdx`) in
@@ -37,8 +41,8 @@ that exists on the chi router but is missing from the spec (today:
 2. Cross-check each operationId against the sidebar
    (`docs/docs/api-reference/rest/sidebar.ts`) and each schema in
    `components/schemas` against `docs/docs/api-reference/rest/schemas/`.
-3. Diff the routes in `internal/adapters/inbound/http/router.go` against
-   the spec's `paths:` — the drift job cannot see a route the spec omits.
+3. Router-vs-spec route diff — automated by `openapi_routes_test.go`
+   (see above); no longer a manual step.
 
 ## How to regenerate (when stale)
 
