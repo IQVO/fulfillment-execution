@@ -98,6 +98,11 @@ func (r *scopedTaskRepo) Save(ctx context.Context, t *task.Task) error {
 	return r.TaskRepo.Save(ctx, t)
 }
 
+func (r *scopedTaskRepo) SaveClaim(ctx context.Context, t *task.Task, now time.Time) (bool, error) {
+	r.savesInScope = append(r.savesInScope, inScope(ctx))
+	return r.TaskRepo.SaveClaim(ctx, t, now)
+}
+
 type scopedPackageRepo struct {
 	*memory.PackageRepo
 	savesInScope []bool

@@ -41,6 +41,9 @@ func (r fakeTaskRepo) FindById(_ context.Context, id shared.TaskId) (*task.Task,
 	return task.New(id, r.taskType, shared.NewCPT(time.Now()), "order-1", shared.NewCapabilitySet(), false, false), nil
 }
 func (fakeTaskRepo) Save(context.Context, *task.Task) error { return nil }
+func (fakeTaskRepo) SaveClaim(context.Context, *task.Task, time.Time) (bool, error) {
+	return true, nil
+}
 func (fakeTaskRepo) FindClaimableByType(context.Context, task.Type, time.Time) ([]*task.Task, error) {
 	return nil, nil
 }
