@@ -32,6 +32,10 @@ type Handlers struct {
 	ArriveAtRebin        *usecases.ArriveAtRebin
 	GetInstalledCapacity *usecases.GetInstalledCapacity
 	SweepCPTMisses       *usecases.SweepCPTMisses
+	// GetPackage and GetPackagesByOrderRef back the Package read model
+	// (ADR-0033): GET /packages/{id} and GET /packages?orderRef=.
+	GetPackage            *usecases.GetPackage
+	GetPackagesByOrderRef *usecases.GetPackagesByOrderRef
 	// Readiness backs GET /readyz (ADR-0029 §graceful shutdown): flipped
 	// to not-ready as the FIRST step of shutdown in cmd/execution. Nil is
 	// a documented "always ready" no-op — see Readiness.Ready — so every
@@ -213,6 +217,44 @@ func (h *Handlers) PostRunSlam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// GetPackageHandler handles GET /packages/{id} (ADR-0033): the read side of
+// the Package aggregate, returning the same Package shape seal-package's
+// 201 returns. This is how a caller learns the SLAM outcome — LABELED vs
+// DIVERTED — after POST /packages/{id}/slam's outcome-agnostic 204. An
+// unknown id is 404 package-not-found.
+func (h *Handlers) GetPackageHandler(w http.ResponseWriter, r *http.Request) {
+	packageId := chi.URLParam(r, "id")
+	p, err := h.GetPackage.Execute(r.Context(), shared.PackageId(packageId))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toPackageResponse(p))
+}
+
+// GetPackagesHandler handles GET /packages?orderRef=<ref> (ADR-0033),
+// mirroring GetTasksHandler: orderRef is required (400 invalid-request if
+// missing or empty) and an unknown orderRef returns an empty array.
+func (h *Handlers) GetPackagesHandler(w http.ResponseWriter, r *http.Request) {
+	orderRef := r.URL.Query().Get("orderRef")
+	if orderRef == "" {
+		writeBadRequest(w, r, "orderRef is required")
+		return
+	}
+
+	packages, err := h.GetPackagesByOrderRef.Execute(r.Context(), shared.OrderRef(orderRef))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	resp := make([]packageResponse, 0, len(packages))
+	for _, p := range packages {
+		resp = append(resp, toPackageResponse(p))
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // GetQueueDepthHandler handles GET /queues/{taskType}/depth.

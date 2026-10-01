@@ -7,7 +7,7 @@ custom_edit_url: null
 
 
 
-The Package aggregate: Pack-path output. An order's scanned contents become a sealed carton (`seal-package`, driven by a Pack task's active claim), then the SLAM weigh-check either applies a shipping label or diverts the package if the actual weight is outside tolerance of the expected weight.
+The Package aggregate: Pack-path output. An order's scanned contents become a sealed carton (`seal-package`, driven by a Pack task's active claim), then the SLAM weigh-check either applies a shipping label or diverts the package if the actual weight is outside tolerance of the expected weight. Read model: `GET /packages/{id}` and `GET /packages?orderRef=` expose a package's current status (and so the SLAM outcome) without side effects.
 
 
 

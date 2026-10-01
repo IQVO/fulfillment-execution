@@ -396,7 +396,30 @@ curl -sX POST localhost:8080/packages/{packageId}/slam \
 ```
 
 Applies the shipping label if the actual weight is within tolerance of
-expected; otherwise the package is diverted.
+expected; otherwise the package is diverted. Returns `204` in both cases.
+Read the package back (below) to see which outcome occurred.
+
+### Read a package (SLAM outcome)
+
+```sh
+curl -s localhost:8080/packages/{packageId}
+```
+
+Returns the same Package shape seal-package returns (`id`, `orderRef`,
+`status`, `scannedContents`, `fragileHandling`, `giftWrapRequested`,
+`sortLane`). `status` is `LABELED` when the carton goes to the truck by
+its `sortLane` and `DIVERTED` when it goes to problem-solve. Unknown id:
+`404` `package-not-found`. See `docs/docs/adr/0033-package-read-model.md`.
+
+### Packages for an order
+
+```sh
+curl -s 'localhost:8080/packages?orderRef=order-42'
+```
+
+Returns an array of Packages for that order, ordered by id. The array is
+empty when the order has none. A missing or empty `orderRef` returns `400`
+`invalid-request`, the same as `GET /tasks?orderRef=`.
 
 ### Queue depth (read model)
 

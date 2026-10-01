@@ -65,6 +65,13 @@ type PackageRepo interface {
 	// idempotent: a retried call returns the already-sealed Package
 	// instead of creating a duplicate (see SealPackage.Execute).
 	FindByTaskId(ctx context.Context, taskId shared.TaskId) (*pack.Package, error)
+	// FindByOrderRef returns every Package sealed for orderRef — normally
+	// one carton per order, but a multi-carton order (or a re-pack after a
+	// SLAM diversion) yields several, so callers must treat this as a set.
+	// Ordered by package id for a deterministic response; an unknown
+	// orderRef returns an empty slice, not an error. Backs
+	// GET /packages?orderRef= (ADR-0033), mirroring TaskRepo.FindByOrderRef.
+	FindByOrderRef(ctx context.Context, orderRef shared.OrderRef) ([]*pack.Package, error)
 }
 
 // OrderConsolidationRepo persists and retrieves OrderConsolidation
