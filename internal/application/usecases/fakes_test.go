@@ -39,6 +39,15 @@ func (r *errTaskRepo) Save(ctx context.Context, t *task.Task) error {
 	return r.TaskRepo.Save(ctx, t)
 }
 
+// SaveClaim honours failSave too: claiming is a save, and the existing
+// ClaimNext error-propagation tests force it through failSave.
+func (r *errTaskRepo) SaveClaim(ctx context.Context, t *task.Task, now time.Time) (bool, error) {
+	if r.failSave {
+		return false, errFake
+	}
+	return r.TaskRepo.SaveClaim(ctx, t, now)
+}
+
 func (r *errTaskRepo) FindById(ctx context.Context, id shared.TaskId) (*task.Task, error) {
 	if r.failFindById {
 		return nil, errFake

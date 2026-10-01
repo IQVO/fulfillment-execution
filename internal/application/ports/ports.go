@@ -22,6 +22,14 @@ type TaskRepo interface {
 	// FindClaimableByType returns Pending or lease-expired tasks of the
 	// given type, ordered by earliest CPT first, for ClaimNext to scan.
 	FindClaimableByType(ctx context.Context, taskType task.Type, now time.Time) ([]*task.Task, error)
+	// SaveClaim persists t's new Claimed state ONLY if the stored task is
+	// still claimable at now (Pending, or Claimed with a lease expired at
+	// or before now) -- a compare-and-set on the row. It reports false,
+	// with no error and nothing written, when another station's claim got
+	// there first. This is what makes the claim at-most-once across
+	// concurrent ClaimNext calls: FindClaimableByType is a plain read, so
+	// several stations can load the same Pending task at the same instant.
+	SaveClaim(ctx context.Context, t *task.Task, now time.Time) (bool, error)
 	// FindAllClaimed returns every task currently in the Claimed state, for
 	// the lease-expiry sweep.
 	FindAllClaimed(ctx context.Context) ([]*task.Task, error)
