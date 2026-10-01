@@ -5,6 +5,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -77,6 +78,26 @@ func (r *TaskRepo) FindClaimableByType(ctx context.Context, taskType task.Type, 
 	}
 	defer rows.Close()
 	return scanTasks(rows)
+}
+
+// SaveClaim is the compare-and-set behind at-most-once claiming: the
+// UPDATE only matches while the row is still claimable at now, so of N
+// stations racing for one task exactly one gets RowsAffected == 1.
+func (r *TaskRepo) SaveClaim(ctx context.Context, t *task.Task, now time.Time) (bool, error) {
+	lease := t.Lease()
+	if lease == nil {
+		return false, fmt.Errorf("postgres: SaveClaim on task %s with no lease", t.Id())
+	}
+	tag, err := querierFrom(ctx, r.pool).Exec(ctx, `
+		UPDATE tasks
+		SET status = $2, lease_station_id = $3, lease_expiry = $4, claimed_at = $5
+		WHERE id = $1
+		  AND (status = 'PENDING' OR (status = 'CLAIMED' AND lease_expiry <= $6))
+	`, string(t.Id()), string(t.Status()), string(lease.StationId), lease.Expiry, t.ClaimedAt(), now)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 func (r *TaskRepo) FindAllClaimed(ctx context.Context) ([]*task.Task, error) {
