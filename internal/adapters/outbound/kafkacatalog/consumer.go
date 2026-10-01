@@ -25,7 +25,7 @@ package kafkacatalog
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -35,14 +35,14 @@ import (
 
 	kafkago "github.com/segmentio/kafka-go"
 
+	"github.com/claudioed/fulfillment-execution/internal/adapters/kafka/cloudevents"
 	"github.com/claudioed/fulfillment-execution/internal/domain/pathcatalog"
 )
 
 // Topic is process-path-management's publish topic — this service has no
 // business knowing anything else about that service beyond this topic
-// name and the envelope/payload shape below, mirroring how this
-// service's own outbound Kafka adapter documents its Envelope shape as
-// "shared across the fleet" without importing the other repo's code.
+// name, the CloudEvents `type` strings, and the payload shape below,
+// without importing the other repo's code.
 const Topic = "warehouse.process-path-management.events"
 
 // consumerGroupPrefix names this service's dedicated, PER-PROCESS
@@ -53,22 +53,15 @@ const Topic = "warehouse.process-path-management.events"
 // of Topic into its own in-memory cache, every single start.
 const consumerGroupPrefix = "fulfillment-execution-process-path-catalogue"
 
-// Event types this consumer acts on — process-path-management's own
-// past-tense domain events, verbatim (see that service's
-// internal/adapters/outbound/kafka/publisher.go for the authoritative
-// definition this consumer must stay in sync with).
+// Full CloudEvents `type` strings this consumer acts on —
+// process-path-management's ProcessPath* events, byte-identical to the
+// fleet cross-service contract (ADR-0032). Dispatch is on the exact string,
+// never a short name or a suffix match.
 const (
-	eventTypeCreated     = "ProcessPathCreated"
-	eventTypeUpdated     = "ProcessPathUpdated"
-	eventTypeDeactivated = "ProcessPathDeactivated"
+	TypeProcessPathCreated     = "com.warehouse.wes.process-path-management.processpath.ProcessPathCreated"
+	TypeProcessPathUpdated     = "com.warehouse.wes.process-path-management.processpath.ProcessPathUpdated"
+	TypeProcessPathDeactivated = "com.warehouse.wes.process-path-management.processpath.ProcessPathDeactivated"
 )
-
-// envelope is the CloudEvents-like wrapper shared across every
-// warehouse-systems publisher.
-type envelope struct {
-	EventType string          `json:"event_type"`
-	Data      json.RawMessage `json:"data"`
-}
 
 // pathData is the payload shape for all three event types on Topic.
 // RequiredCapabilities/MatchPrefix are absent (not empty-arrayed) on a
@@ -322,7 +315,9 @@ func (c *Consumer) Ids() []string {
 // Run consumes Topic until ctx is cancelled or the reader returns a
 // fatal error. A handling error is logged and the loop continues, so one
 // malformed message cannot wedge this consumer (matching
-// labor-performance's AnalyticsConsumer.Run convention).
+// labor-performance's AnalyticsConsumer.Run convention). A message that is
+// not a valid CloudEvents 1.0 event (including the retired flat envelope)
+// is logged at WARN and committed past — never parsed any other way.
 func (c *Consumer) Run(ctx context.Context) error {
 	for {
 		msg, err := c.Reader.ReadMessage(ctx)
@@ -333,7 +328,11 @@ func (c *Consumer) Run(ctx context.Context) error {
 			return err
 		}
 		if err := c.handle(msg); err != nil {
-			c.Logger.ErrorContext(ctx, "process-path catalogue message handling failed",
+			level := slog.LevelError
+			if errors.Is(err, cloudevents.ErrNotCloudEvent) {
+				level = slog.LevelWarn
+			}
+			c.Logger.Log(ctx, level, "process-path catalogue message handling failed",
 				"topic", msg.Topic, "offset", msg.Offset, "partition", msg.Partition, "error", err)
 		}
 		c.checkReady(msg)
@@ -363,28 +362,28 @@ func (c *Consumer) checkReady(msg kafkago.Message) {
 }
 
 func (c *Consumer) handle(msg kafkago.Message) error {
-	var env envelope
-	if err := json.Unmarshal(msg.Value, &env); err != nil {
-		return fmt.Errorf("kafkacatalog: unmarshal envelope: %w", err)
+	e, err := cloudevents.Decode(msg.Value)
+	if err != nil {
+		return fmt.Errorf("kafkacatalog: %w", err)
 	}
 
-	switch env.EventType {
-	case eventTypeCreated, eventTypeUpdated:
+	switch e.Type() {
+	case TypeProcessPathCreated, TypeProcessPathUpdated:
 		var data pathData
-		if err := json.Unmarshal(env.Data, &data); err != nil {
-			return fmt.Errorf("kafkacatalog: unmarshal %s data: %w", env.EventType, err)
+		if err := e.DataAs(&data); err != nil {
+			return fmt.Errorf("kafkacatalog: decode %s data: %w", e.Type(), err)
 		}
 		c.applyUpsert(data)
-	case eventTypeDeactivated:
+	case TypeProcessPathDeactivated:
 		var data pathData
-		if err := json.Unmarshal(env.Data, &data); err != nil {
-			return fmt.Errorf("kafkacatalog: unmarshal %s data: %w", env.EventType, err)
+		if err := e.DataAs(&data); err != nil {
+			return fmt.Errorf("kafkacatalog: decode %s data: %w", e.Type(), err)
 		}
 		c.applyDeactivated(data.PathId)
 	default:
-		// An event type outside this consumer's contract — ignored,
-		// same convention as every other consumer in this fleet that
-		// reads a shared/fan-out-shaped topic.
+		// An event type outside this consumer's contract — ignored
+		// (forward compatibility), same convention as every other
+		// consumer in this fleet that reads a shared topic.
 	}
 	return nil
 }

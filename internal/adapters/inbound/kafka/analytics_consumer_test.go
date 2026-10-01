@@ -2,12 +2,13 @@ package kafka_test
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"log/slog"
 	"testing"
 	"time"
 
 	inboundkafka "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/kafka"
+	"github.com/claudioed/fulfillment-execution/internal/adapters/kafka/cloudevents"
 )
 
 // call captures one projection-store method invocation.
@@ -63,25 +64,18 @@ func (p *fakeProcessed) MarkProcessed(_ context.Context, eventId string) (bool, 
 	return true, nil
 }
 
-func envelope(t *testing.T, eventId, eventType string, at time.Time, data map[string]any) []byte {
+// envelope builds an analytics-stream CloudEvent (ADR-0032) of the given
+// event name, exactly as AnalyticsPublisher emits it: full type, the
+// analytics dataschema, and subject = the aggregate id.
+func envelope(t *testing.T, eventId, eventName string, at time.Time, data map[string]any) []byte {
 	t.Helper()
-	raw, err := json.Marshal(data)
-	if err != nil {
-		t.Fatalf("marshal data: %v", err)
+	entity, subject := "task", data["task_id"]
+	if pkg, ok := data["package_id"]; ok {
+		entity, subject = "package", pkg
 	}
-	env := map[string]any{
-		"event_id":       eventId,
-		"event_type":     eventType,
-		"occurred_at":    at.Format(time.RFC3339Nano),
-		"source":         "fulfillment-execution",
-		"schema_version": 1,
-		"data":           json.RawMessage(raw),
-	}
-	b, err := json.Marshal(env)
-	if err != nil {
-		t.Fatalf("marshal envelope: %v", err)
-	}
-	return b
+	return cloudEvent(eventId, "/warehouse/fulfillment-execution",
+		"com.warehouse.wes.fulfillment-execution."+entity+"."+eventName, subject.(string), at,
+		"urn:warehouse:fulfillment-execution:analytics:"+eventName+":v1", data)
 }
 
 func TestAnalyticsConsumer_RoutesEachEventType(t *testing.T) {
@@ -117,7 +111,10 @@ func TestAnalyticsConsumer_RoutesEachEventType(t *testing.T) {
 				t.Errorf("method = %q, want %q", proj.calls[0].method, tt.wantMethod)
 			}
 			if !proj.calls[0].at.Equal(at) {
-				t.Errorf("at = %v, want %v", proj.calls[0].at, at)
+				t.Errorf("at = %v, want %v (the CloudEvents time attribute)", proj.calls[0].at, at)
+			}
+			if proj.calls[0].eventId != "e-"+tt.name {
+				t.Errorf("eventId = %q, want the CloudEvents id %q", proj.calls[0].eventId, "e-"+tt.name)
 			}
 		})
 	}
@@ -227,5 +224,43 @@ func TestAnalyticsConsumer_PackageManifested_RoutesOnTimeVerdict(t *testing.T) {
 				t.Errorf("taskType = %q, want SLAM", proj.calls[0].taskType)
 			}
 		})
+	}
+}
+
+// A short-name type (the retired flat envelope's event_type value) must
+// not project: dispatch is on the FULL CloudEvents type string only.
+func TestAnalyticsConsumer_ShortNameType_IsIgnored(t *testing.T) {
+	proj := &fakeProjection{}
+	c := &inboundkafka.AnalyticsConsumer{Projection: proj, Processed: newFakeProcessed(), Logger: slog.Default()}
+
+	raw := cloudEvent("e-short", "/warehouse/fulfillment-execution", "TaskCompleted", "T1", time.Now(),
+		"urn:warehouse:fulfillment-execution:analytics:TaskCompleted:v1", map[string]any{"task_id": "T1"})
+	if err := c.HandleMessage(context.Background(), raw); err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+	if len(proj.calls) != 0 {
+		t.Fatalf("expected no projection for a short-name type, got %d", len(proj.calls))
+	}
+}
+
+// The retired flat analytics envelope (event_id/event_type/occurred_at/
+// schema_version) is rejected with cloudevents.ErrNotCloudEvent — Run logs
+// it at WARN and commits past it — never parsed, never projected, never
+// marked processed.
+func TestAnalyticsConsumer_LegacyFlatEnvelope_IsRejectedNotParsed(t *testing.T) {
+	proj := &fakeProjection{}
+	processed := newFakeProcessed()
+	c := &inboundkafka.AnalyticsConsumer{Projection: proj, Processed: processed, Logger: slog.Default()}
+
+	flat := []byte(`{"event_id":"flat-1","event_type":"TaskCompleted","occurred_at":"2026-05-01T08:00:00Z","source":"fulfillment-execution","schema_version":1,"data":{"task_id":"T1","station_id":"st1"}}`)
+	err := c.HandleMessage(context.Background(), flat)
+	if !errors.Is(err, cloudevents.ErrNotCloudEvent) {
+		t.Fatalf("err = %v, want ErrNotCloudEvent", err)
+	}
+	if len(proj.calls) != 0 {
+		t.Fatalf("expected no projection from a legacy flat message, got %d", len(proj.calls))
+	}
+	if processed.seen["flat-1"] {
+		t.Error("a legacy flat message must not be marked processed")
 	}
 }

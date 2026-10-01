@@ -12,6 +12,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tckafka "github.com/testcontainers/testcontainers-go/modules/kafka"
 
+	"github.com/claudioed/fulfillment-execution/internal/adapters/kafka/cloudevents"
 	adapter "github.com/claudioed/fulfillment-execution/internal/adapters/outbound/kafka"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
 )
@@ -99,7 +100,16 @@ func createTopicWithPartitions(t *testing.T, brokers []string, topic string, num
 // whole scan.
 func readAllPartitionsOnce(t *testing.T, brokers []string, topic string, numPartitions int) map[string]map[int]int {
 	t.Helper()
+	byKey, _ := readAllPartitionsWithMessages(t, brokers, topic, numPartitions)
+	return byKey
+}
+
+// readAllPartitionsWithMessages is readAllPartitionsOnce that also returns
+// every message read, so a test can assert on the real wire format.
+func readAllPartitionsWithMessages(t *testing.T, brokers []string, topic string, numPartitions int) (map[string]map[int]int, []kafkago.Message) {
+	t.Helper()
 	partitionOf := map[string]map[int]int{}
+	var all []kafkago.Message
 	for p := 0; p < numPartitions; p++ {
 		reader := kafkago.NewReader(kafkago.ReaderConfig{
 			Brokers:     brokers,
@@ -117,6 +127,7 @@ func readAllPartitionsOnce(t *testing.T, brokers []string, topic string, numPart
 				if err != nil {
 					return // timeout/EOF: no more messages on this partition
 				}
+				all = append(all, msg)
 				key := string(msg.Key)
 				if partitionOf[key] == nil {
 					partitionOf[key] = map[int]int{}
@@ -125,7 +136,37 @@ func readAllPartitionsOnce(t *testing.T, brokers []string, topic string, numPart
 			}
 		}()
 	}
-	return partitionOf
+	return partitionOf, all
+}
+
+// assertCloudEventsOnTheWire fails t unless every message read off the real
+// broker is a valid CloudEvents 1.0 event of the wantType, whose subject is
+// the message key, carrying the structured-mode content-type header
+// (ADR-0032).
+func assertCloudEventsOnTheWire(t *testing.T, msgs []kafkago.Message, wantTypes ...string) {
+	t.Helper()
+	if len(msgs) == 0 {
+		t.Fatal("no messages read off the broker")
+	}
+	allowed := map[string]bool{}
+	for _, w := range wantTypes {
+		allowed[w] = true
+	}
+	for i, m := range msgs {
+		e, err := cloudevents.Decode(m.Value)
+		if err != nil {
+			t.Fatalf("message %d is not a valid CloudEvent: %v (%s)", i, err, m.Value)
+		}
+		if !allowed[e.Type()] {
+			t.Fatalf("message %d: type = %q, want one of %v", i, e.Type(), wantTypes)
+		}
+		if e.Subject() != string(m.Key) {
+			t.Fatalf("message %d: subject %q != key %q", i, e.Subject(), m.Key)
+		}
+		if !hasContentTypeHeader(m.Headers) {
+			t.Fatalf("message %d: missing content-type header, got %v", i, m.Headers)
+		}
+	}
 }
 
 // assertSingleKeyPartition fails t unless key was observed on exactly one
@@ -160,11 +201,11 @@ func TestPublisherKeysSameTaskCPTMissedOntoTheSamePartition(t *testing.T) {
 
 	ids := []string{"evt-1", "evt-2", "evt-3"}
 	i := 0
-	publisher := adapter.NewPublisherWithMode(brokers, nil, nil, func() string {
+	publisher := adapter.NewPublisher(brokers, nil, nil, func() string {
 		id := ids[i]
 		i++
 		return id
-	}, adapter.EnvelopeModeFlat)
+	})
 	t.Cleanup(func() { _ = publisher.Close() })
 
 	occurredAt := time.Now().UTC().Truncate(time.Second)
@@ -183,9 +224,10 @@ func TestPublisherKeysSameTaskCPTMissedOntoTheSamePartition(t *testing.T) {
 		}
 	}
 
-	byKey := readAllPartitionsOnce(t, brokers, adapter.Topic, numPartitions)
+	byKey, msgs := readAllPartitionsWithMessages(t, brokers, adapter.Topic, numPartitions)
 	assertSingleKeyPartition(t, byKey, string(sameTask), 2)
 	assertSingleKeyPartition(t, byKey, string(otherTask), 1)
+	assertCloudEventsOnTheWire(t, msgs, "com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed")
 }
 
 // TestAnalyticsPublisherKeysSameTaskOntoTheSamePartition mirrors the above
@@ -222,9 +264,12 @@ func TestAnalyticsPublisherKeysSameTaskOntoTheSamePartition(t *testing.T) {
 		}
 	}
 
-	byKey := readAllPartitionsOnce(t, brokers, adapter.AnalyticsTopic, numPartitions)
+	byKey, msgs := readAllPartitionsWithMessages(t, brokers, adapter.AnalyticsTopic, numPartitions)
 	assertSingleKeyPartition(t, byKey, string(sameTask), 2)
 	assertSingleKeyPartition(t, byKey, string(otherTask), 1)
+	assertCloudEventsOnTheWire(t, msgs,
+		"com.warehouse.wes.fulfillment-execution.task.TaskCreated",
+		"com.warehouse.wes.fulfillment-execution.task.TaskClaimed")
 }
 
 // TestRelaySinkKeysSamePackageOntoTheSamePartition mirrors the above for

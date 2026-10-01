@@ -24,7 +24,8 @@ import (
 // TestRun_PoisonMessage_GoesToDeadLetterTopicAndLoopContinues is the
 // end-to-end proof for the DLQ escape hatch ADR-0004 flagged as missing: a
 // message that fails processing (here, an unknown path_id — see Handle's
-// doc comment) must land on <topic>.dlq instead of being silently dropped
+// doc comment — and a legacy flat-envelope message that is not a valid
+// CloudEvent, ADR-0032) must land on <topic>.dlq instead of being silently dropped
 // after a log line, AND the consumer's main loop must keep going and
 // process the next, valid message rather than getting wedged.
 func TestRun_PoisonMessage_GoesToDeadLetterTopicAndLoopContinues(t *testing.T) {
@@ -55,13 +56,19 @@ func TestRun_PoisonMessage_GoesToDeadLetterTopicAndLoopContinues(t *testing.T) {
 	// processed -- the loop was never blocked.
 	poison := kafkago.Message{
 		Key:   []byte("poison"),
-		Value: []byte(`{"event_id":"evt-poison","event_type":"WorkReleased","data":{"path_id":"NOT-A-REAL-PATH","work_unit_id":"order-poison","cpt":"2026-01-01T12:00:00Z"}}`),
+		Value: workReleasedCE("evt-poison", kafka.TypeWorkReleased, "order-poison", map[string]any{"path_id": "NOT-A-REAL-PATH", "work_unit_id": "order-poison", "cpt": "2026-01-01T12:00:00Z"}),
 	}
 	good := kafkago.Message{
 		Key:   []byte("good"),
-		Value: []byte(`{"event_id":"evt-good","event_type":"WorkReleased","data":{"path_id":"PICK","work_unit_id":"order-good","cpt":"2026-01-01T12:00:00Z"}}`),
+		Value: workReleasedCE("evt-good", kafka.TypeWorkReleased, "order-good", map[string]any{"path_id": "PICK", "work_unit_id": "order-good", "cpt": "2026-01-01T12:00:00Z"}),
 	}
-	if err := producer.WriteMessages(ctx, poison, good); err != nil {
+	// The retired flat envelope is a deterministic poison message too
+	// (ADR-0032): dead-lettered, never parsed into a Task.
+	legacyFlat := kafkago.Message{
+		Key:   []byte("legacy-flat"),
+		Value: []byte(`{"event_id":"evt-flat","event_type":"WorkReleased","occurred_at":"2026-01-01T11:00:00Z","source":"wes-work-planning","data":{"path_id":"PICK","work_unit_id":"order-flat","cpt":"2026-01-01T12:00:00Z"}}`),
+	}
+	if err := producer.WriteMessages(ctx, poison, legacyFlat, good); err != nil {
 		t.Fatalf("seed publish: %v", err)
 	}
 
@@ -93,21 +100,24 @@ func TestRun_PoisonMessage_GoesToDeadLetterTopicAndLoopContinues(t *testing.T) {
 	t.Cleanup(func() { _ = dlqReader.Close() })
 	dlqCtx, dlqCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer dlqCancel()
-	dlqMsg, err := dlqReader.ReadMessage(dlqCtx)
-	if err != nil {
-		t.Fatalf("expected the poison message on the dead-letter topic, got error: %v", err)
-	}
-	if string(dlqMsg.Key) != "poison" {
-		t.Fatalf("expected the poison message's key on the DLQ, got %q", dlqMsg.Key)
-	}
-	foundErrorHeader := false
-	for _, h := range dlqMsg.Headers {
-		if h.Key == "x-dlq-error" {
-			foundErrorHeader = true
+	wantDLQ := []string{"poison", "legacy-flat"}
+	for _, wantKey := range wantDLQ {
+		dlqMsg, err := dlqReader.ReadMessage(dlqCtx)
+		if err != nil {
+			t.Fatalf("expected the %q message on the dead-letter topic, got error: %v", wantKey, err)
 		}
-	}
-	if !foundErrorHeader {
-		t.Fatalf("expected x-dlq-error header on the dead-lettered message, got headers %+v", dlqMsg.Headers)
+		if string(dlqMsg.Key) != wantKey {
+			t.Fatalf("expected key %q on the DLQ, got %q", wantKey, dlqMsg.Key)
+		}
+		foundErrorHeader := false
+		for _, h := range dlqMsg.Headers {
+			if h.Key == "x-dlq-error" {
+				foundErrorHeader = true
+			}
+		}
+		if !foundErrorHeader {
+			t.Fatalf("expected x-dlq-error header on the dead-lettered message, got headers %+v", dlqMsg.Headers)
+		}
 	}
 
 	// Assert the loop was not blocked: the good message right after the

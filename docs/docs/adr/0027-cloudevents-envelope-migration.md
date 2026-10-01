@@ -3,16 +3,23 @@ id: 0027-cloudevents-envelope-migration
 title: ADR-0027 — CloudEvents 1.0 envelope migration for the integration topics
 sidebar_label: 0027 · CloudEvents envelope migration
 sidebar_position: 27
-description: Migrate warehouse.fulfillment.events and warehouse.work-planning.events from the flat platform envelope to a CloudEvents 1.0 structured envelope, via a dual-read/dual-write bake period, with zero consumer-facing breakage. (Accepted)
+description: Migrate warehouse.fulfillment.events and warehouse.work-planning.events from the flat platform envelope to a CloudEvents 1.0 structured envelope, via a dual-read/dual-write bake period, with zero consumer-facing breakage. (Superseded by ADR-0032)
 ---
 
 # ADR-0027 — CloudEvents 1.0 envelope migration for the integration topics
 
 ## Status
 
-**Accepted** (2026-09-26). Companion to wes-work-planning ADR-0021.
-Implementation (Phase 2+) follows in subsequent PRs, per the phase
-sequence below.
+**Superseded by [ADR-0032](./0032-cloudevents-mandatory-envelope.md)**
+(2026-09-30). The fleet replaced this gradual dual-read/dual-write plan
+with a single coordinated cutover: CloudEvents 1.0 is mandatory on every
+topic, built with the official sdk-go event package, and the
+`EVENT_ENVELOPE_MODE` toggle, the hand-rolled `CloudEvent[T]` struct, the
+flat envelope and all dual-read code described below were deleted. The
+text below is kept as the historical record only — do not implement it.
+
+Originally **Accepted** (2026-09-26) as a companion to wes-work-planning
+ADR-0021.
 
 ## Context
 

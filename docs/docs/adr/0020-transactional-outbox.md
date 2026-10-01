@@ -178,7 +178,8 @@ untouched.
   Completed in Postgres but neither topic will ever hear of it, nor any
   state in which one topic heard and the other did not.
 - *At-least-once*: a crash between the relay's `Send` and its `UPDATE`
-  republishes that row on the next pass. The envelope `event_id` is
+  republishes that row on the next pass. The envelope id (the CloudEvents
+  `id` since [ADR-0032](./0032-cloudevents-mandatory-envelope.md)) is
   minted at encode time and persisted with the row, so a redelivery
   carries the **same** id — and every consumer on both topics already
   dedupes on it (this repo's own projector and `WorkReleased` consumer

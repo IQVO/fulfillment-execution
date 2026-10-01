@@ -12,6 +12,7 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/claudioed/fulfillment-execution/internal/adapters/kafka/cloudevents"
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
 	"github.com/claudioed/fulfillment-execution/internal/domain/task"
@@ -24,27 +25,17 @@ import (
 // (ADR-0012).
 const AnalyticsTopic = "warehouse.fulfillment.analytics"
 
-// analyticsSchemaVersion is the schema version stamped onto every analytics
-// envelope this publisher emits.
+// analyticsSchemaVersion is the dataschema version
+// (urn:warehouse:fulfillment-execution:analytics:<Event>:v1) stamped onto
+// every analytics CloudEvent this publisher emits. It replaces the retired
+// flat analytics envelope's schema-version field (ADR-0032).
 const analyticsSchemaVersion = 1
 
-// AnalyticsEnvelope is the shared Envelope v1 wrapper for the analytics
-// stream. Unlike the integration Envelope it carries the payload as a
-// json.RawMessage so a single publisher can emit the event_type-specific
-// data object for all nine domain events without a bespoke struct per type.
-type AnalyticsEnvelope struct {
-	EventId       string          `json:"event_id"`
-	EventType     string          `json:"event_type"`
-	OccurredAt    time.Time       `json:"occurred_at"`
-	Source        string          `json:"source"`
-	SchemaVersion int             `json:"schema_version"`
-	Data          json.RawMessage `json:"data"`
-}
-
 // AnalyticsPublisher publishes every fulfillment-execution domain event onto
-// AnalyticsTopic as an AnalyticsEnvelope. It satisfies ports.EventPublisher
-// and is a SEPARATE adapter from Publisher: the integration publisher
-// (publisher.go) forwards only TaskCompleted and is left untouched.
+// AnalyticsTopic as a CloudEvents 1.0 structured-mode message (ADR-0032),
+// with the same `type` as the occurrence on the integration topic and an
+// analytics `dataschema`. It satisfies ports.EventPublisher and is a
+// SEPARATE adapter from Publisher.
 //
 // Task-scoped events are enriched with the owning task's process path
 // (task_type) via a TaskRepo lookup — the same repo-lookup-enrichment pattern
@@ -58,14 +49,14 @@ type AnalyticsPublisher struct {
 }
 
 // NewAnalyticsPublisher constructs an AnalyticsPublisher writing to
-// AnalyticsTopic on brokers. newId mints the envelope event_id; tasks is used
+// AnalyticsTopic on brokers. newId mints the CloudEvents id; tasks is used
 // to enrich task-scoped events with their process path.
 func NewAnalyticsPublisher(brokers []string, tasks ports.TaskRepo, newId func() string) *AnalyticsPublisher {
 	return NewAnalyticsPublisherWithWriter(&kafkago.Writer{
 		Addr:  kafkago.TCP(brokers...),
 		Topic: AnalyticsTopic,
 		// Balancer is kafkago.Hash, matching Publisher's
-		// NewPublisherWithMode choice above: marshalData already keys
+		// NewPublisher choice: marshalData already keys
 		// every message by its aggregate id (TaskId/PackageId), but
 		// LeastBytes would silently discard that key for partition
 		// routing — Hash is what actually turns the key into a
@@ -82,33 +73,40 @@ func NewAnalyticsPublisherWithWriter(w Writer, tasks ports.TaskRepo, newId func(
 	return &AnalyticsPublisher{Writer: w, Tasks: tasks, NewId: newId}
 }
 
-// Encode builds the AnalyticsEnvelope wire form of every event in evts
-// WITHOUT sending it. Events with no analytics payload (an unrecognised
-// type) are skipped rather than erroring, so the caller can hand it the
-// full event stream indiscriminately. The task_type enrichment lookup
-// happens here, so inside a use case's transaction (the outbox path) it
-// sees the just-saved task. The active span on ctx is injected into each
-// message's headers.
+// Encode builds the CloudEvents wire form of every event in evts WITHOUT
+// sending it. Events with no analytics payload (an unrecognised type) are
+// skipped rather than erroring, so the caller can hand it the full event
+// stream indiscriminately. The task_type enrichment lookup happens here, so
+// inside a use case's transaction (the outbox path) it sees the just-saved
+// task. Every message carries the CloudEvents content-type header and the
+// active span on ctx injected as W3C trace context.
 func (p *AnalyticsPublisher) Encode(ctx context.Context, evts ...shared.DomainEvent) ([]Encoded, error) {
 	var out []Encoded
 	for _, e := range evts {
-		eventType, key, data, ok := p.marshalData(ctx, e)
+		entity, eventName, key, data, ok := p.marshalData(ctx, e)
 		if !ok {
 			continue
 		}
-		env := AnalyticsEnvelope{
-			EventId:       p.NewId(),
-			EventType:     eventType,
-			OccurredAt:    e.OccurredAt(),
-			Source:        "fulfillment-execution",
-			SchemaVersion: analyticsSchemaVersion,
-			Data:          data,
-		}
-		payload, err := json.Marshal(env)
+		payload, err := cloudevents.New(cloudevents.Spec{
+			ID:        p.NewId(),
+			Entity:    entity,
+			EventName: eventName,
+			Subject:   key,
+			Time:      e.OccurredAt(),
+			Stream:    cloudevents.StreamAnalytics,
+			Version:   analyticsSchemaVersion,
+			Data:      data,
+		})
 		if err != nil {
-			return nil, fmt.Errorf("kafka: marshal analytics envelope: %w", err)
+			return nil, fmt.Errorf("kafka: encode analytics %s: %w", eventName, err)
 		}
-		enc := Encoded{Topic: AnalyticsTopic, EventType: eventType, Key: []byte(key), Value: payload}
+		enc := Encoded{
+			Topic:     AnalyticsTopic,
+			EventType: cloudevents.Type(entity, eventName),
+			Key:       []byte(key),
+			Value:     payload,
+			Headers:   []kafkago.Header{cloudevents.ContentTypeHeader()},
+		}
 		observability.InjectKafkaTrace(ctx, &enc.Headers)
 		out = append(out, enc)
 	}
@@ -228,60 +226,60 @@ func (p *AnalyticsPublisher) onTimeToCPTFields(ctx context.Context, orderRef sha
 	return "", "", false, false
 }
 
-// marshalData maps a domain event to its analytics event_type, aggregate-id
-// message key, and snake_case JSON payload. The bool return is false for an
+// marshalData maps a domain event to its CloudEvents entity segment and
+// event name, aggregate-id message key/subject, and snake_case JSON payload. The bool return is false for an
 // event type outside the analytics contract, so Publish can skip it.
 // Task-scoped events are enriched with task_type via a TaskRepo lookup.
-func (p *AnalyticsPublisher) marshalData(ctx context.Context, e shared.DomainEvent) (eventType, key string, data json.RawMessage, ok bool) {
+func (p *AnalyticsPublisher) marshalData(ctx context.Context, e shared.DomainEvent) (entity, eventName, key string, data json.RawMessage, ok bool) {
 	switch ev := e.(type) {
 	case shared.TaskCreated:
-		return "TaskCreated", string(ev.TaskId), mustMarshal(map[string]any{
+		return entityTask, "TaskCreated", string(ev.TaskId), mustMarshal(map[string]any{
 			"task_id":   string(ev.TaskId),
 			"task_type": p.taskType(ctx, ev.TaskId),
 		}), true
 	case shared.TaskClaimed:
-		return "TaskClaimed", string(ev.TaskId), mustMarshal(map[string]any{
+		return entityTask, "TaskClaimed", string(ev.TaskId), mustMarshal(map[string]any{
 			"task_id":    string(ev.TaskId),
 			"task_type":  p.taskType(ctx, ev.TaskId),
 			"station_id": string(ev.StationId),
 		}), true
 	case shared.LeaseExpired:
-		return "LeaseExpired", string(ev.TaskId), mustMarshal(map[string]any{
+		return entityTask, "LeaseExpired", string(ev.TaskId), mustMarshal(map[string]any{
 			"task_id":   string(ev.TaskId),
 			"task_type": p.taskType(ctx, ev.TaskId),
 		}), true
 	case shared.TaskCompleted:
-		return "TaskCompleted", string(ev.TaskId), mustMarshal(map[string]any{
+		return entityTask, "TaskCompleted", string(ev.TaskId), mustMarshal(map[string]any{
 			"task_id":    string(ev.TaskId),
 			"task_type":  p.taskType(ctx, ev.TaskId),
 			"station_id": string(ev.StationId),
 		}), true
 	case shared.ItemPicked:
-		return "ItemPicked", string(ev.TaskId), mustMarshal(map[string]any{
+		return entityTask, "ItemPicked", string(ev.TaskId), mustMarshal(map[string]any{
 			"task_id":   string(ev.TaskId),
 			"task_type": p.taskType(ctx, ev.TaskId),
 		}), true
 	case shared.PackageSealed:
-		return "PackageSealed", string(ev.PackageId), mustMarshal(map[string]any{
+		return entityPackage, "PackageSealed", string(ev.PackageId), mustMarshal(map[string]any{
 			"package_id": string(ev.PackageId),
 		}), true
 	case shared.WeightDiscrepancyDetected:
-		return "WeightDiscrepancyDetected", string(ev.PackageId), mustMarshal(map[string]any{
+		return entityPackage, "WeightDiscrepancyDetected", string(ev.PackageId), mustMarshal(map[string]any{
 			"package_id": string(ev.PackageId),
 			"expected_g": ev.ExpectedWeight,
 			"actual_g":   ev.ActualWeight,
 		}), true
 	case shared.LabelApplied:
-		return "LabelApplied", string(ev.PackageId), mustMarshal(map[string]any{
+		return entityPackage, "LabelApplied", string(ev.PackageId), mustMarshal(map[string]any{
 			"package_id": string(ev.PackageId),
 		}), true
 	case shared.PackageDiverted:
-		return "PackageDiverted", string(ev.PackageId), mustMarshal(map[string]any{
+		return entityPackage, "PackageDiverted", string(ev.PackageId), mustMarshal(map[string]any{
 			"package_id": string(ev.PackageId),
 		}), true
 	case shared.PackageManifested:
 		taskType, stationId, onTime, resolved := p.onTimeToCPTFields(ctx, ev.OrderRef, ev.OccurredAt())
-		return "PackageManifested", string(ev.PackageId), mustMarshal(map[string]any{
+		return entityPackage, "PackageManifested", string(ev.PackageId), mustMarshal(map[string]any{
 			"package_id": string(ev.PackageId),
 			"order_ref":  string(ev.OrderRef),
 			"task_type":  taskType,
@@ -290,7 +288,7 @@ func (p *AnalyticsPublisher) marshalData(ctx context.Context, e shared.DomainEve
 			"resolved":   resolved,
 		}), true
 	default:
-		return "", "", nil, false
+		return "", "", "", nil, false
 	}
 }
 

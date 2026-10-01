@@ -2,7 +2,6 @@ package kafka_test
 
 import (
 	"context"
-	"encoding/json"
 	"sync"
 	"testing"
 	"time"
@@ -63,34 +62,34 @@ func TestPublish_PublishesTaskCompletedEnrichedWithOrderRef(t *testing.T) {
 		t.Fatalf("expected exactly 1 published message, got %d", len(w.msgs))
 	}
 
-	var env outboundkafka.Envelope
-	if err := json.Unmarshal(w.msgs[0].Value, &env); err != nil {
-		t.Fatalf("unmarshal envelope: %v", err)
-	}
+	env, data := decodeCE[outboundkafka.TaskCompletedData](t, w.msgs[0].Value)
 
-	if env.EventId != "evt-1" {
-		t.Errorf("EventId = %q, want %q", env.EventId, "evt-1")
+	if env.ID() != "evt-1" {
+		t.Errorf("EventId = %q, want %q", env.ID(), "evt-1")
 	}
-	if env.EventType != "TaskCompleted" {
-		t.Errorf("EventType = %q, want %q", env.EventType, "TaskCompleted")
+	if env.Type() != "com.warehouse.wes.fulfillment-execution.task.TaskCompleted" {
+		t.Errorf("Type = %q", env.Type())
 	}
-	if env.Source != "fulfillment-execution" {
-		t.Errorf("Source = %q, want %q", env.Source, "fulfillment-execution")
+	if env.Source() != "/warehouse/fulfillment-execution" {
+		t.Errorf("Source = %q, want %q", env.Source(), "/warehouse/fulfillment-execution")
 	}
-	if !env.OccurredAt.Equal(epoch) {
-		t.Errorf("OccurredAt = %v, want %v", env.OccurredAt, epoch)
+	if env.Subject() != "task-1" {
+		t.Errorf("Subject = %q, want task-1", env.Subject())
 	}
-	if env.Data.TaskId != "task-1" {
-		t.Errorf("Data.TaskId = %q, want %q", env.Data.TaskId, "task-1")
+	if !env.Time().Equal(epoch) {
+		t.Errorf("OccurredAt = %v, want %v", env.Time(), epoch)
 	}
-	if env.Data.StationId != "station-1" {
-		t.Errorf("Data.StationId = %q, want %q", env.Data.StationId, "station-1")
+	if data.TaskId != "task-1" {
+		t.Errorf("Data.TaskId = %q, want %q", data.TaskId, "task-1")
 	}
-	if env.Data.WorkUnitId != "wu-original" {
-		t.Errorf("Data.WorkUnitId = %q, want %q — enrichment via TaskRepo lookup failed", env.Data.WorkUnitId, "wu-original")
+	if data.StationId != "station-1" {
+		t.Errorf("Data.StationId = %q, want %q", data.StationId, "station-1")
 	}
-	if env.Data.TaskType != "PICK" {
-		t.Errorf("Data.TaskType = %q, want %q — enrichment via TaskRepo lookup failed", env.Data.TaskType, "PICK")
+	if data.WorkUnitId != "wu-original" {
+		t.Errorf("Data.WorkUnitId = %q, want %q — enrichment via TaskRepo lookup failed", data.WorkUnitId, "wu-original")
+	}
+	if data.TaskType != "PICK" {
+		t.Errorf("Data.TaskType = %q, want %q — enrichment via TaskRepo lookup failed", data.TaskType, "PICK")
 	}
 }
 
@@ -127,15 +126,12 @@ func TestPublish_PublishesTaskCPTMissed(t *testing.T) {
 		t.Fatalf("expected exactly 1 published message, got %d", len(w.msgs))
 	}
 
-	var env outboundkafka.TaskCPTMissedEnvelope
-	if err := json.Unmarshal(w.msgs[0].Value, &env); err != nil {
-		t.Fatalf("unmarshal envelope: %v", err)
+	env, data := decodeCE[outboundkafka.TaskCPTMissedData](t, w.msgs[0].Value)
+	if env.Type() != "com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed" {
+		t.Errorf("Type = %q", env.Type())
 	}
-	if env.EventType != "TaskCPTMissed" {
-		t.Errorf("EventType = %q, want TaskCPTMissed", env.EventType)
-	}
-	if env.Data.TaskId != "task-1" || env.Data.OrderRef != "order-1" || env.Data.TaskType != "PICK" {
-		t.Errorf("Data = %+v", env.Data)
+	if data.TaskId != "task-1" || data.OrderRef != "order-1" || data.TaskType != "PICK" {
+		t.Errorf("Data = %+v", data)
 	}
 }
 
@@ -153,15 +149,12 @@ func TestPublish_PublishesPackageManifested(t *testing.T) {
 		t.Fatalf("expected exactly 1 published message, got %d", len(w.msgs))
 	}
 
-	var env outboundkafka.PackageManifestedEnvelope
-	if err := json.Unmarshal(w.msgs[0].Value, &env); err != nil {
-		t.Fatalf("unmarshal envelope: %v", err)
+	env, data := decodeCE[outboundkafka.PackageManifestedData](t, w.msgs[0].Value)
+	if env.Type() != "com.warehouse.wes.fulfillment-execution.package.PackageManifested" {
+		t.Errorf("Type = %q", env.Type())
 	}
-	if env.EventType != "PackageManifested" {
-		t.Errorf("EventType = %q, want PackageManifested", env.EventType)
-	}
-	if env.Data.PackageId != "pkg-1" || env.Data.OrderRef != "order-1" {
-		t.Errorf("Data = %+v", env.Data)
+	if data.PackageId != "pkg-1" || data.OrderRef != "order-1" {
+		t.Errorf("Data = %+v", data)
 	}
 }
 
@@ -205,15 +198,12 @@ func TestPublish_EnrichesWithAssociateIdAndDurationSeconds(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var env outboundkafka.Envelope
-	if err := json.Unmarshal(w.msgs[0].Value, &env); err != nil {
-		t.Fatalf("unmarshal envelope: %v", err)
+	_, data := decodeCE[outboundkafka.TaskCompletedData](t, w.msgs[0].Value)
+	if data.AssociateId != "worker-42" {
+		t.Errorf("Data.AssociateId = %q, want %q", data.AssociateId, "worker-42")
 	}
-	if env.Data.AssociateId != "worker-42" {
-		t.Errorf("Data.AssociateId = %q, want %q", env.Data.AssociateId, "worker-42")
-	}
-	if env.Data.DurationSeconds != 90 {
-		t.Errorf("Data.DurationSeconds = %d, want 90", env.Data.DurationSeconds)
+	if data.DurationSeconds != 90 {
+		t.Errorf("Data.DurationSeconds = %d, want 90", data.DurationSeconds)
 	}
 }
 
@@ -237,12 +227,9 @@ func TestPublish_AssociateIdEmptyWhenStationHasNoOccupant(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var env outboundkafka.Envelope
-	if err := json.Unmarshal(w.msgs[0].Value, &env); err != nil {
-		t.Fatalf("unmarshal envelope: %v", err)
-	}
-	if env.Data.AssociateId != "" {
-		t.Errorf("Data.AssociateId = %q, want empty (no occupant)", env.Data.AssociateId)
+	_, data := decodeCE[outboundkafka.TaskCompletedData](t, w.msgs[0].Value)
+	if data.AssociateId != "" {
+		t.Errorf("Data.AssociateId = %q, want empty (no occupant)", data.AssociateId)
 	}
 }
 
@@ -267,12 +254,9 @@ func TestPublish_DurationSecondsZeroWhenClaimedAtNil(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var env outboundkafka.Envelope
-	if err := json.Unmarshal(w.msgs[0].Value, &env); err != nil {
-		t.Fatalf("unmarshal envelope: %v", err)
-	}
-	if env.Data.DurationSeconds != 0 {
-		t.Errorf("Data.DurationSeconds = %d, want 0 when ClaimedAt is nil", env.Data.DurationSeconds)
+	_, data := decodeCE[outboundkafka.TaskCompletedData](t, w.msgs[0].Value)
+	if data.DurationSeconds != 0 {
+		t.Errorf("Data.DurationSeconds = %d, want 0 when ClaimedAt is nil", data.DurationSeconds)
 	}
 }
 
@@ -308,12 +292,9 @@ func TestPublish_EnrichesWithTaskType(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
-			var env outboundkafka.Envelope
-			if err := json.Unmarshal(w.msgs[0].Value, &env); err != nil {
-				t.Fatalf("unmarshal envelope: %v", err)
-			}
-			if env.Data.TaskType != string(tt.taskType) {
-				t.Errorf("Data.TaskType = %q, want %q", env.Data.TaskType, string(tt.taskType))
+			_, data := decodeCE[outboundkafka.TaskCompletedData](t, w.msgs[0].Value)
+			if data.TaskType != string(tt.taskType) {
+				t.Errorf("Data.TaskType = %q, want %q", data.TaskType, string(tt.taskType))
 			}
 		})
 	}
@@ -333,11 +314,8 @@ func TestPublish_TaskTypeEmptyWhenTaskNotFound(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var env outboundkafka.Envelope
-	if err := json.Unmarshal(w.msgs[0].Value, &env); err != nil {
-		t.Fatalf("unmarshal envelope: %v", err)
-	}
-	if env.Data.TaskType != "" {
-		t.Errorf("Data.TaskType = %q, want empty when the task cannot be found", env.Data.TaskType)
+	_, data := decodeCE[outboundkafka.TaskCompletedData](t, w.msgs[0].Value)
+	if data.TaskType != "" {
+		t.Errorf("Data.TaskType = %q, want empty when the task cannot be found", data.TaskType)
 	}
 }

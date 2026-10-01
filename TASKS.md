@@ -44,7 +44,8 @@ Build the full bounded context described in CLAUDE.md, in order. Keep
 ## Task 7 — Cross-service integration (additive, see CLAUDE.md's new section)
 - Add `github.com/segmentio/kafka-go` dependency.
 - New Kafka inbound consumer on warehouse.work-planning.events, filtering
-  event_type "WorkReleased", mapping into a CreateTask call (see CLAUDE.md for
+  WorkReleased (today: the full CloudEvents type
+  com.warehouse.wes.work-planning.workunit.WorkReleased, ADR-0032), mapping into a CreateTask call (see CLAUDE.md for
   the path_id-prefix task-type derivation simplification — document it).
 - Idempotency via a new processed_events table (Postgres migration) / map
   (memory); unit test double-delivery creates exactly one Task.
@@ -59,7 +60,8 @@ Build the full bounded context described in CLAUDE.md, in order. Keep
 - Publish TaskCompleted to warehouse.fulfillment.events when CompleteTask
   succeeds, enriching with OrderRef via a TaskRepo lookup (the domain event
   itself only has TaskId/StationId).
-- Unit test the envelope shape including the OrderRef enrichment.
+- Unit test the message shape including the OrderRef enrichment (today a
+  CloudEvents 1.0 event, ADR-0032).
 - README's Integration section gains this new topic. REAL smoke test: create,
   claim, complete a task over the running binary's HTTP API with
   EVENT_PUBLISHER=kafka and confirm the message lands on the topic.
