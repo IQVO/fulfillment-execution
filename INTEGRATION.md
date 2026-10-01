@@ -7,22 +7,28 @@
 > error), and the publisher now also emits `TaskCPTMissed` and
 > `PackageManifested` (ADR-0025). For the current contract see
 > `.claude/rules/api-and-integration.md` or the docs site's
-> *Integration contracts* page.
+> *Integration contracts* page. The flat `event_id`/`event_type`/
+> `occurred_at` envelope this brief originally specified is retired: every
+> Kafka message is now a CloudEvents 1.0 event (ADR-0032), shown below.
 
 This service CONSUMES `WorkReleased` from wes-work-planning and turns each one
 into a Task via the existing `CreateTask` use case — this IS the intended use
 of that use case, so call it directly (no new use case needed). Strictly
 additive: new adapter only, no change to existing aggregates/invariants.
 
-## Envelope (identical across all four warehouse-systems services)
+## Envelope (CloudEvents 1.0, fleet-wide — ADR-0032)
 
 ```json
 {
-  "event_id": "uuid-v4",
-  "event_type": "WorkReleased",
-  "occurred_at": "2026-08-21T22:00:00Z",
-  "source": "wes-work-planning",
-  "data": {"path_id": "...", "work_unit_id": "...", "cpt": "RFC3339", "ref": "..."}
+  "specversion": "1.0",
+  "id": "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b",
+  "source": "/warehouse/wes-work-planning",
+  "type": "com.warehouse.wes.work-planning.workunit.WorkReleased",
+  "subject": "wu-8a1f",
+  "time": "2026-08-21T22:00:00Z",
+  "datacontenttype": "application/json",
+  "dataschema": "urn:warehouse:wes-work-planning:events:WorkReleased:v1",
+  "data": {"path_id": "...", "work_unit_id": "...", "cpt": "RFC3339", "ref": "...", "fragile": false}
 }
 ```
 
@@ -33,7 +39,8 @@ additive: new adapter only, no change to existing aggregates/invariants.
   already runs in the `warehouse-infra` kind cluster (host listener
   `localhost:9092`) — connect to it, do not add your own Kafka service to this repo's docker-compose.yml.
 - New inbound package `internal/adapters/inbound/kafka/` — a consumer on topic
-  `warehouse.work-planning.events`, filtering for `event_type == "WorkReleased"`.
+  `warehouse.work-planning.events`, dispatching on the full CloudEvents `type`
+  `com.warehouse.wes.work-planning.workunit.WorkReleased`.
 - Mapping: `WorkReleased.data.path_id` → task type is NOT derivable from
   path_id alone in general, but for this integration assume the path_id string
   itself carries the task type as a prefix convention (e.g. "pick-*" → Pick,
@@ -48,10 +55,10 @@ additive: new adapter only, no change to existing aggregates/invariants.
 
 Add a new Postgres table `processed_events (event_id TEXT PRIMARY KEY,
 processed_at TIMESTAMPTZ)` via a new migration. Before calling `CreateTask` for
-a consumed message, attempt to insert its `event_id`; if it already exists,
+a consumed message, attempt to insert its CloudEvents `id`; if it already exists,
 skip (ack/commit anyway) — do not create a duplicate Task for the same
 `WorkReleased` event. In-memory adapter: thread-safe `map[string]struct{}`.
-Unit-test: consuming the same `WorkReleased` event_id twice creates exactly
+Unit-test: consuming the same `WorkReleased` id twice creates exactly
 one Task.
 
 ---
@@ -74,8 +81,8 @@ generic `CapabilitySet` mechanism.
 
 ## Definition of done for Task 7
 
-- New consumer adapter compiles and is unit-tested (feed it a fake envelope,
-  assert exactly one Task created; feed the same event_id twice, assert still
+- New consumer adapter compiles and is unit-tested (feed it a CloudEvent,
+  assert exactly one Task created; feed the same id twice, assert still
   exactly one).
 - Existing full suite (`go build ./...`, `go vet ./...`, `go test ./...`,
   `go test ./... -race`) still green, unchanged.
@@ -101,11 +108,16 @@ alter its logic, only add a publish call using its existing return value).
 
 ```json
 {
-  "event_id": "uuid-v4",
-  "event_type": "TaskCompleted",
-  "occurred_at": "2026-08-21T22:00:00Z",
-  "source": "fulfillment-execution",
-  "data": {"task_id": "...", "station_id": "...", "work_unit_id": "..."}
+  "specversion": "1.0",
+  "id": "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b",
+  "source": "/warehouse/fulfillment-execution",
+  "type": "com.warehouse.wes.fulfillment-execution.task.TaskCompleted",
+  "subject": "task-8a1f",
+  "time": "2026-08-21T22:00:00Z",
+  "datacontenttype": "application/json",
+  "dataschema": "urn:warehouse:fulfillment-execution:events:TaskCompleted:v1",
+  "data": {"task_id": "task-8a1f", "station_id": "station-03", "work_unit_id": "wu-8a1f",
+           "associate_id": "worker-42", "duration_seconds": 245, "task_type": "PICK"}
 }
 ```
 

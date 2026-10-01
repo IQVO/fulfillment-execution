@@ -38,7 +38,7 @@ and ADR-0025 (this service) closed the feedback loop by raising
 `TaskCPTMissed` and `PackageManifested` onto the integration topic. What
 is still missing is the measurement itself: nobody yet asks "of the
 packages that shipped, what fraction made their CPT?" — the fact exists
-on the wire (`PackageManifested`'s `occurred_at` versus the originating
+on the wire (`PackageManifested`'s occurred-at instant versus the originating
 task's `CPT`) but nothing aggregates it into a KPI.
 
 This service's throughput analytics data product (ADR-0012) is exactly

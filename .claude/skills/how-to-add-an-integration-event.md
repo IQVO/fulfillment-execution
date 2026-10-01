@@ -12,37 +12,43 @@ shared-broker reality has already caused a real incident once
 
 Not every domain event this service raises belongs on the wire. Check
 `internal/adapters/outbound/kafka/publisher.go`'s doc comment — this
-service forwards only `TaskCompleted`; `TaskCreated`, `TaskClaimed`, and
-the rest go only through the transactional outbox to the Postgres table
-for audit (ADR-0020), not broadcast. Before adding a new event to the
+service forwards only `TaskCompleted`, `TaskCPTMissed` and
+`PackageManifested` on the integration topic; the rest go only to the
+internal analytics topic (ADR-0012), not to sibling contexts. Before adding a new event to the
 Kafka publisher, confirm a sibling context genuinely needs to react to
 it — `TaskCompleted` is forwarded because wes-work-planning calls
 `RecordCompletion(WorkUnitId)` off it and labor-performance consumes its
 `AssociateId`/`DurationSeconds`/`TaskType` fields (ADR-0014, ADR-0023).
 
-### 2. Envelope: CloudEvents-like JSON, structured mode
+### 2. Envelope: CloudEvents 1.0, structured mode — mandatory (ADR-0032)
 
-Every message is a JSON envelope matching the shape every service in
-this fleet shares (see `internal/adapters/outbound/kafka/publisher.go`'s
-`Envelope`):
+Every message is a CloudEvents 1.0 event, built ONLY through
+`internal/adapters/kafka/cloudevents` (`cloudevents.New(Spec)` — the official
+`sdk-go/v2/event` package under the hood). Never hand-roll an envelope
+struct, never add a flat/dual mode or an envelope env var:
 
 ```json
 {
-  "event_id": "<uuid>",
-  "event_type": "TaskCompleted",
-  "occurred_at": "<RFC3339>",
-  "source": "fulfillment-execution",
+  "specversion": "1.0",
+  "id": "<uuid v4, minted once in Encode>",
+  "source": "/warehouse/fulfillment-execution",
+  "type": "com.warehouse.wes.fulfillment-execution.task.TaskCompleted",
+  "subject": "<aggregate id == Kafka key>",
+  "time": "<occurred-at, RFC3339 UTC>",
+  "datacontenttype": "application/json",
+  "dataschema": "urn:warehouse:fulfillment-execution:events:TaskCompleted:v1",
   "data": { "task_id": "...", "station_id": "...", "work_unit_id": "...",
             "associate_id": "...", "duration_seconds": 123, "task_type": "PICK" }
 }
 ```
 
-The full DDD-coordinate `type` convention
-(`com.warehouse.<subdomain>.<bounded-context>.<entity>.<EventName>`, e.g.
-`com.warehouse.wes.fulfillment-execution.task.TaskCompleted`) is
-documented in this repo's own `apis/asyncapi.yaml` — check that file's
-intro section for the exact subdomain slug (`wes` for this service)
-before writing a new one; don't guess it.
+`type` = `com.warehouse.wes.fulfillment-execution.<entity>.<EventName>`,
+where `<entity>` is the raising aggregate (`task`, `package`; already
+catalogued in `apis/asyncapi.yaml`). Analytics events use the same `type`
+with `dataschema` `...:analytics:<EventName>:v1`. A breaking payload change
+is a new `.v2` type plus a new dataschema version. Every produced message
+also carries `cloudevents.ContentTypeHeader()`
+(`content-type: application/cloudevents+json; charset=UTF-8`).
 
 ### 3. Implementation
 
@@ -52,9 +58,10 @@ publishing wires an EXISTING domain event onto Kafka, it doesn't invent a
 new payload shape at the adapter layer. In the Kafka publisher adapter
 (`internal/adapters/outbound/kafka/publisher.go`):
 
-- Add the event's marshal-to-envelope case inside `Encode` (a type switch
-  on `shared.DomainEvent`, see the `tc, ok := e.(shared.TaskCompleted)`
-  pattern)
+- Add the event's case inside `Encode` (a type switch on
+  `shared.DomainEvent`) that builds the payload struct and calls
+  `p.encodeIntegration(entity, "<EventName>", subject, occurredAt, data)` —
+  which mints the `id` and wraps the payload with `cloudevents.New`
 - Enrich via repo lookups where the domain event itself doesn't carry
   enough (this service resolves `OrderRef`, `AssociateId`, and
   `DurationSeconds` via `Tasks.FindById`/`Stations.FindById` at encode
@@ -87,8 +94,10 @@ new payload shape at the adapter layer. In the Kafka publisher adapter
 
 ### 5. Test
 
-Unit test the marshal shape against a fake `Writer` (see
-`publisher_test.go` — never a real broker in a unit test). If this event
+Add a golden exact-JSON test for the new `type` in
+`internal/adapters/outbound/kafka/golden_test.go` (every attribute, key and
+`content-type` header) and unit-test the payload via `decodeCE` against a
+fake `Writer` (see `publisher_test.go` — never a real broker in a unit test). If this event
 now needs a `_integration_test.go` asserting real delivery, it MUST use
 testcontainers — see `internal/architecture/fitness_test.go`'s
 `TestKafkaIntegrationTestsUseTestcontainers`, which statically fails CI
@@ -101,8 +110,13 @@ This repo's own working recipe already exists at
 
 ### 1. Never import the sibling's Go packages
 
-This service knows a sibling's topic name and payload shape ONLY — never
-its Go types. `internal/adapters/inbound/kafka/consumer.go`'s own
+This service knows a sibling's topic name, its exact CloudEvents `type`
+strings, and its payload shape ONLY — never its Go types. Decode with
+`cloudevents.Decode`, dispatch on the FULL `type` constant (e.g.
+`inboundkafka.TypeWorkReleased`), read the payload with `e.DataAs`, dedupe on
+`e.ID()`, and treat `cloudevents.ErrNotCloudEvent` as a deterministic poison
+message (DLQ if the consumer has one, else WARN + skip). Add a
+legacy-flat-message-rejected test. `internal/adapters/inbound/kafka/consumer.go`'s own
 `WorkReleasedData` struct hand-mirrors wes-work-planning's published
 `WorkReleased` payload locally rather than importing that repo's Go
 module. Do the same for any new consumer.
@@ -161,9 +175,10 @@ message to trigger it — use `OffsetFetch` against the group's committed
 offset, or (simpler and less bug-prone) just use the per-process-unique
 group pattern, which sidesteps the whole class of bug. This service's own
 `WorkReleased` consumer instead relies on `ports.ProcessedEvents.MarkProcessed`
-for exactly-once application (idempotency by `event_id`, not readiness
-gating) — see `HandleMessage`'s `isNew, err := c.Processed.MarkProcessed(ctx, env.EventId)`
-check before creating a Task.
+for exactly-once application (idempotency by the CloudEvents `id`, not
+readiness gating) — see `HandleMessage`'s
+`isNew, err := c.Processed.MarkProcessed(ctx, env.EventId)` check before
+creating a Task.
 
 ## Verify before opening the PR
 

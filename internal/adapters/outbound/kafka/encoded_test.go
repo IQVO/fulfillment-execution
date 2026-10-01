@@ -2,7 +2,6 @@ package kafka_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -20,7 +19,7 @@ import (
 
 // Encode is the half of Publish the transactional outbox persists (ADR
 // 0020): it must produce exactly the bytes Publish would have written —
-// topic, key, event_type and the enriched envelope — without touching the
+// topic, key, CloudEvents type and the enriched CloudEvent — without touching the
 // writer at all.
 
 func TestPublisher_Encode_ProducesIntegrationMessageWithoutWriting(t *testing.T) {
@@ -52,24 +51,23 @@ func TestPublisher_Encode_ProducesIntegrationMessageWithoutWriting(t *testing.T)
 	if enc.Topic != outboundkafka.Topic {
 		t.Errorf("Topic = %q, want %q", enc.Topic, outboundkafka.Topic)
 	}
-	if enc.EventType != "TaskCompleted" {
-		t.Errorf("EventType = %q, want TaskCompleted", enc.EventType)
+	if enc.EventType != "com.warehouse.wes.fulfillment-execution.task.TaskCompleted" {
+		t.Errorf("EventType = %q", enc.EventType)
 	}
 	if string(enc.Key) != "task-1" {
 		t.Errorf("Key = %q, want task-1", enc.Key)
 	}
-	var env outboundkafka.Envelope
-	if err := json.Unmarshal(enc.Value, &env); err != nil {
-		t.Fatalf("unmarshal envelope: %v", err)
-	}
-	if env.EventId != "evt-1" || env.Source != "fulfillment-execution" || !env.OccurredAt.Equal(completedAt) {
+	env, data := decodeCE[outboundkafka.TaskCompletedData](t, enc.Value)
+	if env.ID() != "evt-1" || env.Source() != "/warehouse/fulfillment-execution" || !env.Time().Equal(completedAt) {
 		t.Errorf("envelope = %+v", env)
 	}
-	if env.Data.WorkUnitId != "wu-1" || env.Data.AssociateId != "worker-7" || env.Data.DurationSeconds != 30 {
-		t.Errorf("enrichment: work_unit_id=%q associate_id=%q duration=%d", env.Data.WorkUnitId, env.Data.AssociateId, env.Data.DurationSeconds)
+	if data.WorkUnitId != "wu-1" || data.AssociateId != "worker-7" || data.DurationSeconds != 30 {
+		t.Errorf("enrichment: work_unit_id=%q associate_id=%q duration=%d", data.WorkUnitId, data.AssociateId, data.DurationSeconds)
 	}
-	if len(enc.Headers) != 0 {
-		t.Errorf("no span active on ctx, expected no trace headers, got %v", enc.Headers)
+	// No span is active on ctx, so the only header is the CloudEvents
+	// structured-mode content-type — no trace headers.
+	if len(enc.Headers) != 1 || !hasContentTypeHeader(enc.Headers) {
+		t.Errorf("expected only the content-type header, got %v", enc.Headers)
 	}
 }
 
@@ -125,21 +123,18 @@ func TestPublisher_Encode_ProducesTaskCPTMissedMessageWithoutWriting(t *testing.
 	if enc.Topic != outboundkafka.Topic {
 		t.Errorf("Topic = %q, want %q", enc.Topic, outboundkafka.Topic)
 	}
-	if enc.EventType != "TaskCPTMissed" {
-		t.Errorf("EventType = %q, want TaskCPTMissed", enc.EventType)
+	if enc.EventType != "com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed" {
+		t.Errorf("EventType = %q", enc.EventType)
 	}
 	if string(enc.Key) != "task-1" {
 		t.Errorf("Key = %q, want task-1", enc.Key)
 	}
-	var env outboundkafka.TaskCPTMissedEnvelope
-	if err := json.Unmarshal(enc.Value, &env); err != nil {
-		t.Fatalf("unmarshal envelope: %v", err)
-	}
-	if env.EventId != "evt-cpt" || env.Source != "fulfillment-execution" || !env.OccurredAt.Equal(epoch) {
+	env, data := decodeCE[outboundkafka.TaskCPTMissedData](t, enc.Value)
+	if env.ID() != "evt-cpt" || env.Source() != "/warehouse/fulfillment-execution" || !env.Time().Equal(epoch) {
 		t.Errorf("envelope = %+v", env)
 	}
-	if env.Data.TaskId != "task-1" || env.Data.OrderRef != "order-1" || env.Data.TaskType != "PICK" || !env.Data.Cpt.Equal(cpt) {
-		t.Errorf("data = %+v", env.Data)
+	if data.TaskId != "task-1" || data.OrderRef != "order-1" || data.TaskType != "PICK" || !data.Cpt.Equal(cpt) {
+		t.Errorf("data = %+v", data)
 	}
 }
 
@@ -158,21 +153,18 @@ func TestPublisher_Encode_ProducesPackageManifestedMessageWithoutWriting(t *test
 	if enc.Topic != outboundkafka.Topic {
 		t.Errorf("Topic = %q, want %q", enc.Topic, outboundkafka.Topic)
 	}
-	if enc.EventType != "PackageManifested" {
-		t.Errorf("EventType = %q, want PackageManifested", enc.EventType)
+	if enc.EventType != "com.warehouse.wes.fulfillment-execution.package.PackageManifested" {
+		t.Errorf("EventType = %q", enc.EventType)
 	}
 	if string(enc.Key) != "pkg-1" {
 		t.Errorf("Key = %q, want pkg-1", enc.Key)
 	}
-	var env outboundkafka.PackageManifestedEnvelope
-	if err := json.Unmarshal(enc.Value, &env); err != nil {
-		t.Fatalf("unmarshal envelope: %v", err)
-	}
-	if env.EventId != "evt-manifest" || env.Source != "fulfillment-execution" || !env.OccurredAt.Equal(epoch) {
+	env, data := decodeCE[outboundkafka.PackageManifestedData](t, enc.Value)
+	if env.ID() != "evt-manifest" || env.Source() != "/warehouse/fulfillment-execution" || !env.Time().Equal(epoch) {
 		t.Errorf("envelope = %+v", env)
 	}
-	if env.Data.PackageId != "pkg-1" || env.Data.OrderRef != "order-1" {
-		t.Errorf("data = %+v", env.Data)
+	if data.PackageId != "pkg-1" || data.OrderRef != "order-1" {
+		t.Errorf("data = %+v", data)
 	}
 }
 
@@ -207,21 +199,16 @@ func TestAnalyticsPublisher_Encode_ProducesOneMessagePerContractEvent(t *testing
 	if encoded[0].Topic != outboundkafka.AnalyticsTopic || encoded[1].Topic != outboundkafka.AnalyticsTopic {
 		t.Errorf("topics = %q, %q; want %q", encoded[0].Topic, encoded[1].Topic, outboundkafka.AnalyticsTopic)
 	}
-	if encoded[0].EventType != "TaskCreated" || string(encoded[0].Key) != "t1" {
+	if encoded[0].EventType != "com.warehouse.wes.fulfillment-execution.task.TaskCreated" || string(encoded[0].Key) != "t1" {
 		t.Errorf("first = %s/%s, want TaskCreated/t1", encoded[0].EventType, encoded[0].Key)
 	}
-	if encoded[1].EventType != "PackageSealed" || string(encoded[1].Key) != "p1" {
+	if encoded[1].EventType != "com.warehouse.wes.fulfillment-execution.package.PackageSealed" || string(encoded[1].Key) != "p1" {
 		t.Errorf("second = %s/%s, want PackageSealed/p1", encoded[1].EventType, encoded[1].Key)
 	}
-	var env outboundkafka.AnalyticsEnvelope
-	if err := json.Unmarshal(encoded[0].Value, &env); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if env.EventId != "evt-a" || env.SchemaVersion != 1 || env.Source != "fulfillment-execution" {
+	env, data := decodeCE[map[string]any](t, encoded[0].Value)
+	if env.ID() != "evt-a" || env.DataSchema() != "urn:warehouse:fulfillment-execution:analytics:TaskCreated:v1" || env.Source() != "/warehouse/fulfillment-execution" {
 		t.Errorf("envelope = %+v", env)
 	}
-	var data map[string]any
-	_ = json.Unmarshal(env.Data, &data)
 	if data["task_type"] != "PACK" {
 		t.Errorf("task_type enrichment = %v, want PACK", data["task_type"])
 	}

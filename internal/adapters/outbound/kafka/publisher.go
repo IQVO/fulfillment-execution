@@ -15,11 +15,14 @@
 // TaskCPTMissed and PackageManifested need no repo enrichment: both carry
 // every field their wire payload needs directly on the domain event
 // itself (see ADR-0025).
+//
+// Every message is a CloudEvents 1.0 event in structured content mode
+// built by internal/adapters/kafka/cloudevents (ADR-0032); there is no
+// other envelope.
 package kafka
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -29,6 +32,7 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/claudioed/fulfillment-execution/internal/adapters/kafka/cloudevents"
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
 	"github.com/claudioed/fulfillment-execution/internal/observability"
@@ -38,15 +42,14 @@ import (
 // integration events to.
 const Topic = "warehouse.fulfillment.events"
 
-// Envelope is the CloudEvents-like wrapper shared across all four
-// warehouse-systems services.
-type Envelope struct {
-	EventId    string            `json:"event_id"`
-	EventType  string            `json:"event_type"`
-	OccurredAt time.Time         `json:"occurred_at"`
-	Source     string            `json:"source"`
-	Data       TaskCompletedData `json:"data"`
-}
+// Entity segments of the CloudEvents `type` attribute
+// (com.warehouse.wes.fulfillment-execution.<entity>.<EventName>): the
+// aggregate that raised the event, as already catalogued in
+// apis/asyncapi.yaml.
+const (
+	entityTask    = "task"
+	entityPackage = "package"
+)
 
 // TaskCompletedData is the payload of a published TaskCompleted event,
 // enriched with the completed Task's OrderRef as work_unit_id so Work
@@ -67,17 +70,6 @@ type TaskCompletedData struct {
 	TaskType        string `json:"task_type,omitempty"`
 }
 
-// TaskCPTMissedEnvelope is the CloudEvents-like wrapper for a published
-// TaskCPTMissed event (ADR-0025) — the fulfillment-execution half of
-// order-management ADR 0014 §5's promise feedback loop.
-type TaskCPTMissedEnvelope struct {
-	EventId    string            `json:"event_id"`
-	EventType  string            `json:"event_type"`
-	OccurredAt time.Time         `json:"occurred_at"`
-	Source     string            `json:"source"`
-	Data       TaskCPTMissedData `json:"data"`
-}
-
 // TaskCPTMissedData is the payload of a published TaskCPTMissed event: a
 // task still open (Pending or Claimed) past its CPT deadline. OrderRef is
 // what order-management's RepromiseOrder consumer (ADR 0014 §5) keys its
@@ -90,17 +82,6 @@ type TaskCPTMissedData struct {
 	OrderRef string    `json:"order_ref"`
 	TaskType string    `json:"task_type,omitempty"`
 	Cpt      time.Time `json:"cpt"`
-}
-
-// PackageManifestedEnvelope is the CloudEvents-like wrapper for a
-// published PackageManifested event (ADR-0025) — the SLAM-pass half of
-// order-management ADR 0014 §5's promise feedback loop.
-type PackageManifestedEnvelope struct {
-	EventId    string                `json:"event_id"`
-	EventType  string                `json:"event_type"`
-	OccurredAt time.Time             `json:"occurred_at"`
-	Source     string                `json:"source"`
-	Data       PackageManifestedData `json:"data"`
 }
 
 // PackageManifestedData is the payload of a published PackageManifested
@@ -117,63 +98,42 @@ type Writer interface {
 	WriteMessages(ctx context.Context, msgs ...kafkago.Message) error
 }
 
-// Publisher publishes fulfillment-execution domain events onto Kafka. It
-// satisfies ports.EventPublisher. Event types other than TaskCompleted are
-// not yet part of the published integration contract and are skipped.
+// Publisher publishes fulfillment-execution domain events onto Kafka as
+// CloudEvents 1.0 structured-mode messages (ADR-0032). It satisfies
+// ports.EventPublisher. Event types other than TaskCompleted,
+// TaskCPTMissed, and PackageManifested are not part of the published
+// integration contract and are skipped.
 type Publisher struct {
 	Writer   Writer
 	Tasks    ports.TaskRepo
 	Stations ports.StationRepo
-	NewId    func() string
-	// Mode selects the wire envelope shape(s) Encode produces
-	// (ADR-0027 Phase 4). The zero value behaves as EnvelopeModeFlat, so
-	// every existing test/caller building a Publisher via a bare struct
-	// literal is unaffected.
-	Mode EnvelopeMode
+	// NewId mints the CloudEvents `id`, exactly once per domain event, in
+	// Encode — so the outbox persists, and the relay republishes, the
+	// same id on every redelivery.
+	NewId func() string
 }
 
-// NewPublisher constructs a Publisher writing to Topic on brokers, in
-// EnvelopeModeFlat. Use NewPublisherWithMode to select a different mode.
+// NewPublisher constructs a Publisher writing to Topic on brokers.
 func NewPublisher(brokers []string, tasks ports.TaskRepo, stations ports.StationRepo, newId func() string) *Publisher {
-	return NewPublisherWithMode(brokers, tasks, stations, newId, EnvelopeModeFlat)
-}
-
-// NewPublisherWithMode constructs a Publisher writing to Topic on brokers
-// in the given EnvelopeMode (ADR-0027 Phase 4).
-func NewPublisherWithMode(brokers []string, tasks ports.TaskRepo, stations ports.StationRepo, newId func() string, mode EnvelopeMode) *Publisher {
-	p := NewPublisherWithWriter(&kafkago.Writer{
+	return NewPublisherWithWriter(&kafkago.Writer{
 		Addr:  kafkago.TCP(brokers...),
 		Topic: Topic,
 		// Balancer is kafkago.Hash (FNV-1a over Message.Key), not
-		// LeastBytes: this Publisher already sets a per-aggregate Key
-		// (TaskId/PackageId — see encodeTaskCompleted/encodeTaskCPTMissed/
-		// encodePackageManifested) on every message, but LeastBytes
-		// routes purely by cumulative byte volume and completely ignores
-		// Key — same-key messages can still land on different
-		// partitions. Hash is the balancer that actually gives "same Key
-		// always maps to the same partition", which is what per-aggregate
-		// event ordering on this multi-partition topic depends on.
+		// LeastBytes: this Publisher sets a per-aggregate Key
+		// (TaskId/PackageId) on every message, but LeastBytes routes
+		// purely by cumulative byte volume and ignores Key. Hash is the
+		// balancer that actually gives "same Key always maps to the same
+		// partition", which per-aggregate event ordering depends on.
 		Balancer:               &kafkago.Hash{},
 		AllowAutoTopicCreation: true,
 	}, tasks, stations, newId)
-	p.Mode = mode
-	return p
 }
 
-// NewPublisherWithWriter constructs a Publisher over an explicit Writer, in
-// EnvelopeModeFlat. When used only as an Encoder (the outbox configuration,
-// ADR 0020) the writer may be nil — Encode never touches it. Use
-// NewPublisherWithWriterAndMode to select a different mode.
+// NewPublisherWithWriter constructs a Publisher over an explicit Writer.
+// When used only as an Encoder (the outbox configuration, ADR 0020) the
+// writer may be nil — Encode never touches it.
 func NewPublisherWithWriter(w Writer, tasks ports.TaskRepo, stations ports.StationRepo, newId func() string) *Publisher {
 	return &Publisher{Writer: w, Tasks: tasks, Stations: stations, NewId: newId}
-}
-
-// NewPublisherWithWriterAndMode constructs a Publisher over an explicit
-// Writer in the given EnvelopeMode (ADR-0027 Phase 4).
-func NewPublisherWithWriterAndMode(w Writer, tasks ports.TaskRepo, stations ports.StationRepo, newId func() string, mode EnvelopeMode) *Publisher {
-	p := NewPublisherWithWriter(w, tasks, stations, newId)
-	p.Mode = mode
-	return p
 }
 
 // Encode builds the wire form of every TaskCompleted, TaskCPTMissed, and
@@ -209,6 +169,7 @@ func (p *Publisher) Encode(ctx context.Context, evts ...shared.DomainEvent) ([]E
 			return nil, err
 		}
 		for i := range encs {
+			encs[i].Headers = append(encs[i].Headers, cloudevents.ContentTypeHeader())
 			observability.InjectKafkaTrace(ctx, &encs[i].Headers)
 		}
 		out = append(out, encs...)
@@ -237,7 +198,6 @@ func (p *Publisher) encodeTaskCompleted(ctx context.Context, tc shared.TaskCompl
 		return nil, fmt.Errorf("kafka: lookup station %s for enrichment: %w", tc.StationId, err)
 	}
 
-	eventId := p.NewId()
 	data := TaskCompletedData{
 		TaskId:          string(tc.TaskId),
 		StationId:       string(tc.StationId),
@@ -246,99 +206,63 @@ func (p *Publisher) encodeTaskCompleted(ctx context.Context, tc shared.TaskCompl
 		DurationSeconds: durationSeconds,
 		TaskType:        taskType,
 	}
-
-	var out []Encoded
-	if mode := p.effectiveMode(); mode == EnvelopeModeFlat || mode == EnvelopeModeDual {
-		env := Envelope{
-			EventId:    eventId,
-			EventType:  "TaskCompleted",
-			OccurredAt: tc.OccurredAt(),
-			Source:     "fulfillment-execution",
-			Data:       data,
-		}
-		payload, err := json.Marshal(env)
-		if err != nil {
-			return nil, fmt.Errorf("kafka: marshal envelope: %w", err)
-		}
-		out = append(out, Encoded{Topic: Topic, EventType: env.EventType, Key: []byte(tc.TaskId), Value: payload})
+	enc, err := p.encodeIntegration(entityTask, "TaskCompleted", string(tc.TaskId), tc.OccurredAt(), data)
+	if err != nil {
+		return nil, err
 	}
-	if mode := p.effectiveMode(); mode == EnvelopeModeCloudEvents || mode == EnvelopeModeDual {
-		ce := newCloudEvent(eventId, "task", "TaskCompleted", string(tc.TaskId), tc.OccurredAt(), data)
-		payload, err := json.Marshal(ce)
-		if err != nil {
-			return nil, fmt.Errorf("kafka: marshal cloudevent: %w", err)
-		}
-		out = append(out, Encoded{Topic: Topic, EventType: "TaskCompleted", Key: []byte(tc.TaskId), Value: payload})
-	}
-	return out, nil
+	return []Encoded{enc}, nil
 }
 
 func (p *Publisher) encodeTaskCPTMissed(ev shared.TaskCPTMissed) ([]Encoded, error) {
-	eventId := p.NewId()
 	data := TaskCPTMissedData{
 		TaskId:   string(ev.TaskId),
 		OrderRef: string(ev.OrderRef),
 		TaskType: ev.TaskType,
 		Cpt:      ev.CPT,
 	}
-
-	var out []Encoded
-	if mode := p.effectiveMode(); mode == EnvelopeModeFlat || mode == EnvelopeModeDual {
-		env := TaskCPTMissedEnvelope{
-			EventId:    eventId,
-			EventType:  "TaskCPTMissed",
-			OccurredAt: ev.OccurredAt(),
-			Source:     "fulfillment-execution",
-			Data:       data,
-		}
-		payload, err := json.Marshal(env)
-		if err != nil {
-			return nil, fmt.Errorf("kafka: marshal TaskCPTMissed envelope: %w", err)
-		}
-		out = append(out, Encoded{Topic: Topic, EventType: env.EventType, Key: []byte(ev.TaskId), Value: payload})
+	enc, err := p.encodeIntegration(entityTask, "TaskCPTMissed", string(ev.TaskId), ev.OccurredAt(), data)
+	if err != nil {
+		return nil, err
 	}
-	if mode := p.effectiveMode(); mode == EnvelopeModeCloudEvents || mode == EnvelopeModeDual {
-		ce := newCloudEvent(eventId, "task", "TaskCPTMissed", string(ev.TaskId), ev.OccurredAt(), data)
-		payload, err := json.Marshal(ce)
-		if err != nil {
-			return nil, fmt.Errorf("kafka: marshal TaskCPTMissed cloudevent: %w", err)
-		}
-		out = append(out, Encoded{Topic: Topic, EventType: "TaskCPTMissed", Key: []byte(ev.TaskId), Value: payload})
-	}
-	return out, nil
+	return []Encoded{enc}, nil
 }
 
 func (p *Publisher) encodePackageManifested(ev shared.PackageManifested) ([]Encoded, error) {
-	eventId := p.NewId()
 	data := PackageManifestedData{
 		PackageId: string(ev.PackageId),
 		OrderRef:  string(ev.OrderRef),
 	}
+	enc, err := p.encodeIntegration(entityPackage, "PackageManifested", string(ev.PackageId), ev.OccurredAt(), data)
+	if err != nil {
+		return nil, err
+	}
+	return []Encoded{enc}, nil
+}
 
-	var out []Encoded
-	if mode := p.effectiveMode(); mode == EnvelopeModeFlat || mode == EnvelopeModeDual {
-		env := PackageManifestedEnvelope{
-			EventId:    eventId,
-			EventType:  "PackageManifested",
-			OccurredAt: ev.OccurredAt(),
-			Source:     "fulfillment-execution",
-			Data:       data,
-		}
-		payload, err := json.Marshal(env)
-		if err != nil {
-			return nil, fmt.Errorf("kafka: marshal PackageManifested envelope: %w", err)
-		}
-		out = append(out, Encoded{Topic: Topic, EventType: env.EventType, Key: []byte(ev.PackageId), Value: payload})
+// encodeIntegration wraps data in the CloudEvents 1.0 envelope for the
+// integration stream (dataschema urn:warehouse:fulfillment-execution:
+// events:<EventName>:v1). subject is the raising aggregate's id, which is
+// also the Kafka message key — so partition affinity is unchanged.
+func (p *Publisher) encodeIntegration(entity, eventName, subject string, occurredAt time.Time, data any) (Encoded, error) {
+	payload, err := cloudevents.New(cloudevents.Spec{
+		ID:        p.NewId(),
+		Entity:    entity,
+		EventName: eventName,
+		Subject:   subject,
+		Time:      occurredAt,
+		Stream:    cloudevents.StreamEvents,
+		Version:   1,
+		Data:      data,
+	})
+	if err != nil {
+		return Encoded{}, fmt.Errorf("kafka: encode %s: %w", eventName, err)
 	}
-	if mode := p.effectiveMode(); mode == EnvelopeModeCloudEvents || mode == EnvelopeModeDual {
-		ce := newCloudEvent(eventId, "package", "PackageManifested", string(ev.PackageId), ev.OccurredAt(), data)
-		payload, err := json.Marshal(ce)
-		if err != nil {
-			return nil, fmt.Errorf("kafka: marshal PackageManifested cloudevent: %w", err)
-		}
-		out = append(out, Encoded{Topic: Topic, EventType: "PackageManifested", Key: []byte(ev.PackageId), Value: payload})
-	}
-	return out, nil
+	return Encoded{
+		Topic:     Topic,
+		EventType: cloudevents.Type(entity, eventName),
+		Key:       []byte(subject),
+		Value:     payload,
+	}, nil
 }
 
 // Publish forwards every TaskCompleted, TaskCPTMissed, and
@@ -393,7 +317,7 @@ func (p *Publisher) publishOne(ctx context.Context, e shared.DomainEvent) error 
 		if err := p.Writer.WriteMessages(ctx, enc.message()); err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
-			return fmt.Errorf("kafka: publish TaskCompleted: %w", err)
+			return fmt.Errorf("kafka: publish %s: %w", enc.EventType, err)
 		}
 	}
 	return nil

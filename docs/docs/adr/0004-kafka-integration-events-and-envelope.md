@@ -10,9 +10,16 @@ description: Integrate with sibling contexts over Kafka using a shared envelope,
 
 ## Status
 
-**Accepted**, with a known unresolved gap between the published AsyncAPI
-contract and the current publisher — documented in Consequences below rather
-than glossed over.
+**Superseded by [ADR-0032](./0032-cloudevents-mandatory-envelope.md)** for
+everything about the event envelope (2026-09-30): the flat
+`event_id`/`event_type`/`occurred_at` envelope described below is retired,
+and the spec-vs-wire gap recorded under Consequences is closed — every
+message is now a CloudEvents 1.0 event. The rest of this record (Kafka as
+the transport, the idempotency port, adapter-side enrichment, the `type`
+convention) still stands.
+
+Originally **Accepted**, with a known unresolved gap between the published
+AsyncAPI contract and the then-current publisher.
 
 ## Context
 
@@ -60,8 +67,10 @@ rather than in the domain.**
   `KAFKA_BROKERS` (default `localhost:9092`), against the platform's shared
   broker. This repo's `docker-compose.yml` deliberately defines **only
   Postgres** — a second broker would fragment integration testing.
-- Consume `warehouse.work-planning.events`, filtering `event_type ==
-  "WorkReleased"`, consumer group `fulfillment-execution`.
+- Consume `warehouse.work-planning.events`, filtering on the CloudEvents
+  `type` `com.warehouse.wes.work-planning.workunit.WorkReleased` (ADR-0032;
+  originally a flat `event_type == "WorkReleased"` filter), consumer group
+  `fulfillment-execution`.
 - Publish `TaskCompleted` to `warehouse.fulfillment.events`, keyed by task id
   so all events for one task share a partition and preserve order.
 - Publisher selection is env-driven — `EVENT_PUBLISHER=log|kafka`, default
@@ -177,6 +186,14 @@ convention rather than a local improvisation.
 - **In-memory idempotency does not survive restart.** Running with
   `EVENT_PUBLISHER=kafka` but no `DATABASE_URL` gives process-lifetime
   deduplication only.
+
+## Addendum (2026-09-30)
+
+Superseded for the envelope by
+[ADR-0032](./0032-cloudevents-mandatory-envelope.md): CloudEvents 1.0 is
+now mandatory for every Kafka message this service produces or consumes,
+with no flat or dual mode. The "published spec and the wire format have
+diverged" consequence above no longer holds.
 
 ## Addendum (2026-09-26)
 

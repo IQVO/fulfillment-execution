@@ -3,10 +3,17 @@ package kafkacatalog
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
 	"testing"
 	"time"
 
+	ce "github.com/cloudevents/sdk-go/v2/event"
 	kafkago "github.com/segmentio/kafka-go"
+
+	"github.com/claudioed/fulfillment-execution/internal/adapters/kafka/cloudevents"
 
 	"github.com/claudioed/fulfillment-execution/internal/domain/pathcatalog"
 )
@@ -35,23 +42,31 @@ func (r *fakeReader) Close() error {
 	return nil
 }
 
+// envelopeMsg builds a CloudEvents 1.0 structured-mode message exactly as
+// process-path-management publishes it (ADR-0032), via the official SDK.
 func envelopeMsg(t *testing.T, partition int, offset int64, eventType string, data any) kafkago.Message {
 	t.Helper()
-	rawData, err := json.Marshal(data)
-	if err != nil {
-		t.Fatalf("marshal data: %v", err)
+	e := ce.New(ce.CloudEventsVersionV1)
+	e.SetID(fmt.Sprintf("evt-%d-%d", partition, offset))
+	e.SetSource("/warehouse/process-path-management")
+	e.SetType(eventType)
+	e.SetSubject("path")
+	e.SetTime(time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC))
+	e.SetDataSchema("urn:warehouse:process-path-management:events:X:v1")
+	if err := e.SetData(ce.ApplicationJSON, data); err != nil {
+		t.Fatalf("set data: %v", err)
 	}
-	env := envelope{EventType: eventType, Data: rawData}
-	rawEnv, err := json.Marshal(env)
+	raw, err := json.Marshal(e)
 	if err != nil {
-		t.Fatalf("marshal envelope: %v", err)
+		t.Fatalf("marshal cloudevent: %v", err)
 	}
-	return kafkago.Message{Partition: partition, Offset: offset, Value: rawEnv}
+	return kafkago.Message{Partition: partition, Offset: offset, Value: raw}
 }
 
 func newTestConsumer(reader Reader, target targetOffsets) *Consumer {
 	c := &Consumer{
 		Reader:  reader,
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 		paths:   make(map[string]pathcatalog.PathDefinition),
 		readyCh: make(chan struct{}),
 		target:  target,
@@ -72,8 +87,8 @@ func TestConsumer_NoTargetOffsets_IsReadyImmediately(t *testing.T) {
 func TestConsumer_Run_BecomesReadyAfterCatchingUpSinglePartition(t *testing.T) {
 	reader := &fakeReader{
 		messages: []kafkago.Message{
-			envelopeMsg(t, 0, 0, eventTypeCreated, pathData{PathId: "PICK", MatchPrefix: "pick", Direct: true, RequiredCapabilities: []string{"pick"}}),
-			envelopeMsg(t, 0, 1, eventTypeCreated, pathData{PathId: "PACK", MatchPrefix: "pack", Direct: true, RequiredCapabilities: []string{"pack"}}),
+			envelopeMsg(t, 0, 0, TypeProcessPathCreated, pathData{PathId: "PICK", MatchPrefix: "pick", Direct: true, RequiredCapabilities: []string{"pick"}}),
+			envelopeMsg(t, 0, 1, TypeProcessPathCreated, pathData{PathId: "PACK", MatchPrefix: "pack", Direct: true, RequiredCapabilities: []string{"pack"}}),
 		},
 	}
 	// target[0] = 2 means "caught up once offset 1 has been processed"
@@ -109,7 +124,7 @@ func TestConsumer_Run_BecomesReadyAfterCatchingUpSinglePartition(t *testing.T) {
 func TestConsumer_MultiPartition_ReadyOnlyAfterBothCaughtUp(t *testing.T) {
 	reader := &fakeReader{
 		messages: []kafkago.Message{
-			envelopeMsg(t, 0, 0, eventTypeCreated, pathData{PathId: "PICK", MatchPrefix: "pick", Direct: true, RequiredCapabilities: []string{"pick"}}),
+			envelopeMsg(t, 0, 0, TypeProcessPathCreated, pathData{PathId: "PICK", MatchPrefix: "pick", Direct: true, RequiredCapabilities: []string{"pick"}}),
 			// Partition 1 not yet caught up (target[1]=1, need offset 0).
 		},
 	}
@@ -127,8 +142,8 @@ func TestConsumer_MultiPartition_ReadyOnlyAfterBothCaughtUp(t *testing.T) {
 func TestConsumer_Deactivated_RemovesPathFromCache(t *testing.T) {
 	reader := &fakeReader{
 		messages: []kafkago.Message{
-			envelopeMsg(t, 0, 0, eventTypeCreated, pathData{PathId: "PICK", MatchPrefix: "pick", Direct: true, RequiredCapabilities: []string{"pick"}}),
-			envelopeMsg(t, 0, 1, eventTypeDeactivated, pathData{PathId: "PICK"}),
+			envelopeMsg(t, 0, 0, TypeProcessPathCreated, pathData{PathId: "PICK", MatchPrefix: "pick", Direct: true, RequiredCapabilities: []string{"pick"}}),
+			envelopeMsg(t, 0, 1, TypeProcessPathDeactivated, pathData{PathId: "PICK"}),
 		},
 	}
 	c := newTestConsumer(reader, targetOffsets{0: 2})
@@ -149,8 +164,8 @@ func TestConsumer_Deactivated_RemovesPathFromCache(t *testing.T) {
 func TestConsumer_Revised_UpdatesMatchPrefix(t *testing.T) {
 	reader := &fakeReader{
 		messages: []kafkago.Message{
-			envelopeMsg(t, 0, 0, eventTypeCreated, pathData{PathId: "PICK", MatchPrefix: "pick", Direct: true, RequiredCapabilities: []string{"pick"}}),
-			envelopeMsg(t, 0, 1, eventTypeUpdated, pathData{PathId: "PICK", MatchPrefix: "pick-zone-a", Direct: true, RequiredCapabilities: []string{"pick", "hazmat"}}),
+			envelopeMsg(t, 0, 0, TypeProcessPathCreated, pathData{PathId: "PICK", MatchPrefix: "pick", Direct: true, RequiredCapabilities: []string{"pick"}}),
+			envelopeMsg(t, 0, 1, TypeProcessPathUpdated, pathData{PathId: "PICK", MatchPrefix: "pick-zone-a", Direct: true, RequiredCapabilities: []string{"pick", "hazmat"}}),
 		},
 	}
 	c := newTestConsumer(reader, targetOffsets{0: 2})
@@ -180,7 +195,7 @@ func TestConsumer_Revised_UpdatesMatchPrefix(t *testing.T) {
 func TestConsumer_DecodesDestinationLocationRole(t *testing.T) {
 	reader := &fakeReader{
 		messages: []kafkago.Message{
-			envelopeMsg(t, 0, 0, eventTypeCreated, pathData{PathId: "PACK", MatchPrefix: "pack", Direct: true, RequiredCapabilities: []string{"pack"}, DestinationLocationRole: "Drop"}),
+			envelopeMsg(t, 0, 0, TypeProcessPathCreated, pathData{PathId: "PACK", MatchPrefix: "pack", Direct: true, RequiredCapabilities: []string{"pack"}, DestinationLocationRole: "Drop"}),
 		},
 	}
 	c := newTestConsumer(reader, targetOffsets{0: 1})
@@ -208,7 +223,7 @@ func TestConsumer_DecodesDestinationLocationRole(t *testing.T) {
 func TestConsumer_NoDestinationLocationRole_DecodesToEmptyString(t *testing.T) {
 	reader := &fakeReader{
 		messages: []kafkago.Message{
-			envelopeMsg(t, 0, 0, eventTypeCreated, pathData{PathId: "PICK", MatchPrefix: "pick", Direct: true, RequiredCapabilities: []string{"pick"}}),
+			envelopeMsg(t, 0, 0, TypeProcessPathCreated, pathData{PathId: "PICK", MatchPrefix: "pick", Direct: true, RequiredCapabilities: []string{"pick"}}),
 		},
 	}
 	c := newTestConsumer(reader, targetOffsets{0: 1})
@@ -233,7 +248,7 @@ func TestConsumer_NoDestinationLocationRole_DecodesToEmptyString(t *testing.T) {
 func TestConsumer_UnknownEventType_IsIgnored(t *testing.T) {
 	reader := &fakeReader{
 		messages: []kafkago.Message{
-			envelopeMsg(t, 0, 0, "SomeFutureEventType", map[string]any{}),
+			envelopeMsg(t, 0, 0, "com.warehouse.wes.process-path-management.processpath.SomeFutureEvent", map[string]any{}),
 		},
 	}
 	c := newTestConsumer(reader, targetOffsets{0: 1})
@@ -244,5 +259,40 @@ func TestConsumer_UnknownEventType_IsIgnored(t *testing.T) {
 
 	if err := c.WaitReady(ctx); err != nil {
 		t.Fatalf("expected Ready before timeout even for an unrecognized event type, got: %v", err)
+	}
+}
+
+// A short-name type (the retired flat envelope's event_type value) must
+// not match: dispatch is on the FULL CloudEvents type string only.
+func TestConsumer_ShortNameType_IsIgnored(t *testing.T) {
+	c := newTestConsumer(&fakeReader{}, targetOffsets{})
+	msg := envelopeMsg(t, 0, 0, "ProcessPathCreated", pathData{PathId: "PICK", MatchPrefix: "pick"})
+	if err := c.handle(msg); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if _, err := c.Lookup("pick"); err == nil {
+		t.Fatal("a short-name type must not be applied")
+	}
+}
+
+// A legacy flat-envelope message is rejected as not-a-CloudEvent (logged
+// and committed past by Run), never parsed into the catalogue — and it
+// still counts toward readiness so it cannot wedge startup.
+func TestConsumer_LegacyFlatEnvelope_IsRejectedNotParsed(t *testing.T) {
+	flat := kafkago.Message{Partition: 0, Offset: 0, Value: []byte(`{"event_id":"e1","event_type":"ProcessPathCreated","occurred_at":"2026-01-01T00:00:00Z","source":"process-path-management","data":{"path_id":"PICK","match_prefix":"pick"}}`)}
+	c := newTestConsumer(&fakeReader{messages: []kafkago.Message{flat}}, targetOffsets{0: 1})
+
+	if err := c.handle(flat); !errors.Is(err, cloudevents.ErrNotCloudEvent) {
+		t.Fatalf("handle(flat) err = %v, want ErrNotCloudEvent", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go func() { _ = c.Run(ctx) }()
+	if err := c.WaitReady(ctx); err != nil {
+		t.Fatalf("expected Ready after skipping the legacy message, got: %v", err)
+	}
+	if _, err := c.Lookup("pick"); err == nil {
+		t.Fatal("legacy flat message must not populate the catalogue")
 	}
 }

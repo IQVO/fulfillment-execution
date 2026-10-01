@@ -15,7 +15,10 @@ store (arch-test enforces this).
 - Three processes:
   - `cmd/execution` (OLTP)
   - `cmd/fulfillment-projector` — the ONLY writer of the analytical DB;
-    consumes the analytics topic from FirstOffset, idempotent on `event_id`
+    consumes the analytics topic from FirstOffset, idempotent on the
+    CloudEvents `id` (every analytics message is a CloudEvents 1.0 event,
+    `dataschema` `urn:warehouse:fulfillment-execution:analytics:<Event>:v1`,
+    ADR-0032)
   - `cmd/fulfillment-reports` — read-only reader
 - Report: Throughput & Lease-Health, keyed task-type × station × hour.
   - `GET /reports/throughput?from&to&taskType&stationId&granularity` (reports binary)
