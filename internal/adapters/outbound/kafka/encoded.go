@@ -57,7 +57,8 @@ type RelaySink struct {
 func NewRelaySink(brokers []string) *RelaySink {
 	return &RelaySink{
 		Writer: &kafkago.Writer{
-			Addr: kafkago.TCP(brokers...),
+			BatchTimeout: syncWriterBatchTimeout,
+			Addr:         kafkago.TCP(brokers...),
 			// Balancer is kafkago.Hash, not LeastBytes: see the comment
 			// on NewPublisher/NewAnalyticsPublisher — the
 			// relay forwards each Encoded's already-set aggregate-id

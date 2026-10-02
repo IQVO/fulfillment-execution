@@ -116,8 +116,9 @@ type Publisher struct {
 // NewPublisher constructs a Publisher writing to Topic on brokers.
 func NewPublisher(brokers []string, tasks ports.TaskRepo, stations ports.StationRepo, newId func() string) *Publisher {
 	return NewPublisherWithWriter(&kafkago.Writer{
-		Addr:  kafkago.TCP(brokers...),
-		Topic: Topic,
+		BatchTimeout: syncWriterBatchTimeout,
+		Addr:         kafkago.TCP(brokers...),
+		Topic:        Topic,
 		// Balancer is kafkago.Hash (FNV-1a over Message.Key), not
 		// LeastBytes: this Publisher sets a per-aggregate Key
 		// (TaskId/PackageId) on every message, but LeastBytes routes
