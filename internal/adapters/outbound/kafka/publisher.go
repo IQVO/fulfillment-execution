@@ -117,6 +117,7 @@ type Publisher struct {
 func NewPublisher(brokers []string, tasks ports.TaskRepo, stations ports.StationRepo, newId func() string) *Publisher {
 	return NewPublisherWithWriter(&kafkago.Writer{
 		BatchTimeout: syncWriterBatchTimeout,
+		RequiredAcks: syncWriterRequiredAcks,
 		Addr:         kafkago.TCP(brokers...),
 		Topic:        Topic,
 		// Balancer is kafkago.Hash (FNV-1a over Message.Key), not

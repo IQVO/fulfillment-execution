@@ -58,6 +58,7 @@ func NewRelaySink(brokers []string) *RelaySink {
 	return &RelaySink{
 		Writer: &kafkago.Writer{
 			BatchTimeout: syncWriterBatchTimeout,
+			RequiredAcks: syncWriterRequiredAcks,
 			Addr:         kafkago.TCP(brokers...),
 			// Balancer is kafkago.Hash, not LeastBytes: see the comment
 			// on NewPublisher/NewAnalyticsPublisher — the
