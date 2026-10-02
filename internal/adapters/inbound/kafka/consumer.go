@@ -118,6 +118,9 @@ type Consumer struct {
 	Catalogue  ports.PathCatalogue
 	Logger     *slog.Logger
 	DeadLetter DeadLetterSink
+	// testReader, when set, replaces Reader for ReadMessage (unit tests of
+	// the broker-outage recovery in Run).
+	testReader messageReader
 }
 
 // DeadLetterSink publishes one or more messages, matching the subset of
@@ -172,13 +175,11 @@ func newConsumer(brokers []string, topic, groupID string, startOffset int64, cre
 // the loop — a broker blip on the DLQ publish must not wedge the main
 // consumer, which is the whole point of this feature.
 func (c *Consumer) Run(ctx context.Context) error {
+	policy := newRecoverBackoff()
 	for {
-		msg, err := c.Reader.ReadMessage(ctx)
-		if err != nil {
-			if errors.Is(err, context.Canceled) {
-				return nil
-			}
-			return err
+		msg, ok := readRecovering(ctx, c.reader(), policy, c.Logger, c.topic())
+		if !ok {
+			return nil
 		}
 		if err := c.Handle(ctx, msg); err != nil {
 			if errors.Is(err, cloudevents.ErrNotCloudEvent) {
@@ -401,4 +402,19 @@ func capabilitiesOf(def pathcatalog.PathDefinition) []shared.Capability {
 		out[i] = shared.Capability(c)
 	}
 	return out
+}
+
+// reader returns the read seam: the test hook when set, else Reader.
+func (c *Consumer) reader() messageReader {
+	if c.testReader != nil {
+		return c.testReader
+	}
+	return c.Reader
+}
+
+func (c *Consumer) topic() string {
+	if c.Reader == nil {
+		return ""
+	}
+	return c.Reader.Config().Topic
 }
