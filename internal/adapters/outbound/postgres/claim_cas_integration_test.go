@@ -34,10 +34,23 @@ func TestTaskRepo_SaveClaim_ConcurrentClaimsExactlyOneWins(t *testing.T) {
 		winners []shared.StationId
 	)
 	start := make(chan struct{})
+	// loaded is a barrier: every station must have read the still-Pending
+	// row and claimed it in memory BEFORE any SaveClaim runs. A fixed sleep
+	// was not enough under CI load -- a late goroutine loaded the row after
+	// the winner's save and failed its in-memory Claim with "already
+	// claimed", which is not the race this test is about.
+	var allLoaded sync.WaitGroup
+	allLoaded.Add(stations)
 	for i := 0; i < stations; i++ {
 		wg.Add(1)
 		go func(st shared.StationId) {
 			defer wg.Done()
+			ready := false
+			defer func() {
+				if !ready {
+					allLoaded.Done()
+				}
+			}()
 			loaded, err := repo.FindById(ctx, id)
 			if err != nil || loaded == nil {
 				t.Errorf("FindById: %v", err)
@@ -47,6 +60,8 @@ func TestTaskRepo_SaveClaim_ConcurrentClaimsExactlyOneWins(t *testing.T) {
 				t.Errorf("Claim: %v", err)
 				return
 			}
+			ready = true
+			allLoaded.Done()
 			<-start
 			won, err := repo.SaveClaim(ctx, loaded, now)
 			if err != nil {
@@ -60,7 +75,7 @@ func TestTaskRepo_SaveClaim_ConcurrentClaimsExactlyOneWins(t *testing.T) {
 			}
 		}(shared.StationId(fmt.Sprintf("cas-station-%d", i)))
 	}
-	time.Sleep(50 * time.Millisecond) // every goroutine has loaded the Pending row
+	allLoaded.Wait() // every goroutine has loaded and claimed the Pending row
 	close(start)
 	wg.Wait()
 
