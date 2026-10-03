@@ -432,11 +432,7 @@ func maybeWireDeadLetter(consumer *inboundkafka.Consumer, brokers []string, logg
 	if getenv("EVENT_PUBLISHER", "log") != "kafka" {
 		return nil
 	}
-	dlqWriter := &kafkago.Writer{
-		Addr:                   kafkago.TCP(brokers...),
-		Balancer:               &kafkago.LeastBytes{},
-		AllowAutoTopicCreation: true,
-	}
+	dlqWriter := newDeadLetterWriter(brokers)
 	consumer.DeadLetter = dlqWriter
 	logger.Info("dead-letter handling configured", "dlq_topic", inboundkafka.DeadLetterTopic(workReleasedTopic))
 	return dlqWriter
@@ -694,4 +690,22 @@ func newPackageId() shared.PackageId {
 // in an external UUID dependency.
 func uuidLike() string {
 	return time.Now().UTC().Format("20060102T150405.000000000")
+}
+
+// dlqBatchTimeout flushes a dead-letter write almost immediately. A DLQ
+// write is one synchronous message; with kafka-go's 1s default BatchTimeout
+// every write waits a full second for a batch that never fills, capping
+// dead-lettering at ~1 msg/s. Observed live: ~3,200 legacy non-CloudEvents
+// messages ahead of today's WorkReleased events took ~1h to drain, so no
+// PICK task was created all day. Same fix as the other fleet DLQ writers.
+const dlqBatchTimeout = 10 * time.Millisecond
+
+// newDeadLetterWriter builds the WorkReleased consumer's DLQ writer.
+func newDeadLetterWriter(brokers []string) *kafkago.Writer {
+	return &kafkago.Writer{
+		Addr:                   kafkago.TCP(brokers...),
+		Balancer:               &kafkago.LeastBytes{},
+		AllowAutoTopicCreation: true,
+		BatchTimeout:           dlqBatchTimeout,
+	}
 }
