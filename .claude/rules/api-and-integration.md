@@ -1,3 +1,13 @@
+---
+paths:
+  - "internal/adapters/inbound/http/**"
+  - "apis/openapi*.yaml"
+  - "apis/openapi/**"
+  - "internal/adapters/**/kafka/**"
+  - "internal/adapters/outbound/events/**"
+  - "apis/asyncapi*"
+---
+
 # API Surface & Cross-Service Integration
 
 ## REST API (inbound adapter) — 19 operations in `apis/openapi.yaml`, 19 routes on the router

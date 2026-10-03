@@ -1,3 +1,8 @@
+---
+paths:
+  - "web/**"
+---
+
 # Frontend Micro-Frontend Remote (`web/`)
 
 This repo also owns `web/`: `fulfillment-mfe`, a Vite + React Module

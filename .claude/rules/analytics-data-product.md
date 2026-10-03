@@ -1,3 +1,9 @@
+---
+paths:
+  - "internal/adapters/outbound/analyticsstore/**"
+  - "internal/**/analytics*/**"
+---
+
 # Analytics Data Product (ADR-0012)
 
 Additive read side built from this service's OWN domain events. The OLTP
