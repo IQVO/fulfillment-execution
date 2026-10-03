@@ -22,8 +22,7 @@ check a design decision against this fleet's standing architecture.
    `go test ./internal/architecture/... -v` first — if it's already red,
    report that and stop; don't hand-review what a fitness test already
    caught.
-2. **Customer/Supplier direction, per `.claude/rules/bounded-context-boundary.md`
-   (or this repo's equivalent doc).** A new outbound call to a sibling
+2. **Customer/Supplier direction, per `docs/docs/ddd/context-relationships.md`.** A new outbound call to a sibling
    context must go the direction ADRs already established — check
    `docs/docs/adr/` for the relevant context-mapping ADR before assuming
    a new integration is fine. Flag any outbound call added to a context
@@ -33,8 +32,8 @@ check a design decision against this fleet's standing architecture.
 3. **MCP additive-boundary rule (ADR-0008 fleet-wide).** A change under
    `internal/adapters/inbound/mcp/` must depend only on
    application/domain, and nothing else in the codebase may depend on
-   it. If this repo has a `TestMCPAdapterDependencyRule` fitness test,
-   confirm it's green; if not, check by eye.
+   it. Confirm `TestMCPAdapterDependencyRule`
+   (`internal/architecture/fitness_test.go`) is green.
 2b. **Zero-write guardrails, where applicable.** If this repo has a
    documented zero-write constraint (e.g. warehouse-ops-agent v1), check
    no mutating HTTP method or MCP tool without `ReadOnlyHint: true` was

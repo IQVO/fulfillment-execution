@@ -99,6 +99,11 @@ Required attributes: `specversion=1.0`, `id` (UUID v4, minted once in
 `datacontenttype=application/json`,
 `dataschema=urn:warehouse:fulfillment-execution:<events|analytics>:<Event>:v1`.
 There is no flat envelope, no dual mode, no `EVENT_ENVELOPE_MODE`.
+No dual-write, no dual-read, no envelope toggle env var (`EVENT_ENVELOPE_MODE` is gone).
+`type` = `com.warehouse.<subdomain>.<bounded-context>.<entity>.<EventName>`;
+for this service `com.warehouse.wes.fulfillment-execution.<entity>.<EventName>`.
+A breaking payload change => new `.v2` type + new dataschema version, never
+mutate an existing one. Fleet-wide type catalogue: ADR-0032 (`docs/docs/adr/`).
 
 ## Events published (AsyncAPI: `apis/asyncapi.yaml`)
 
