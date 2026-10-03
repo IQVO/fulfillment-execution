@@ -88,20 +88,19 @@ func NewAnalyticsConsumer(brokers []string, topic string, projection report.Proj
 	return &AnalyticsConsumer{Reader: reader, Projection: projection, Processed: processed, Logger: logger}
 }
 
-// Run reads and handles messages until ctx is cancelled or the reader
-// returns a fatal error. A handling error is logged and the loop continues
+// Run reads and handles messages until ctx is cancelled, riding out broker
+// outages (see readRecovering). A handling error is logged and the loop continues
 // so one bad message cannot wedge the projector. A message that is not a
 // valid CloudEvents 1.0 event (including the retired flat envelope) is a
 // deterministic poison message: it is logged at WARN with its
 // topic/partition/offset and committed past, never parsed any other way.
 func (c *AnalyticsConsumer) Run(ctx context.Context) error {
+	policy := newRecoverBackoff()
+	topic := c.Reader.Config().Topic
 	for {
-		msg, err := c.Reader.ReadMessage(ctx)
-		if err != nil {
-			if errors.Is(err, context.Canceled) {
-				return nil
-			}
-			return err
+		msg, ok := readRecovering(ctx, c.Reader, policy, c.Logger, topic)
+		if !ok {
+			return nil
 		}
 		if err := c.Handle(ctx, msg); err != nil {
 			if errors.Is(err, cloudevents.ErrNotCloudEvent) {
