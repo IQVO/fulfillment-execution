@@ -1,6 +1,6 @@
 # API Surface & Cross-Service Integration
 
-## REST API (inbound adapter) — 15 operations in `apis/openapi.yaml`, 16 routes on the router
+## REST API (inbound adapter) — 19 operations in `apis/openapi.yaml`, 19 routes on the router
 
 - POST /tasks                                 -> CreateTask
 - GET  /tasks?orderRef=                       -> GetTasksByOrderRef
@@ -11,16 +11,32 @@
 - POST /tasks/{id}/renew-lease                -> RenewLease
 - POST /tasks/{id}/complete                   -> CompleteTask
 - POST /tasks/{id}/seal-package                -> SealPackage
-- POST /packages/{id}/slam                    -> RunSlam
+- GET  /packages/{id}                         -> GetPackage (ADR-0033). 200 `PackageResponse`
+  (same DTO/schema as seal-package's 201); 404 `package-not-found`. Read
+  `status` here to learn the SLAM outcome (LABELED vs DIVERTED).
+- GET  /packages?orderRef=                    -> GetPackagesByOrderRef (ADR-0033). 200 array of
+  `PackageResponse` ordered by id (empty when none); 400 `invalid-request`
+  on missing/empty `orderRef` — same contract as `GET /tasks?orderRef=`.
+- POST /packages/{id}/slam                    -> RunSlam (204 in BOTH outcomes — label applied
+  or diverted; deliberately unchanged, see ADR-0033)
 - GET  /queues/{taskType}/depth               -> GetQueueDepth
 - GET  /capacity/{capability}                 -> GetInstalledCapacity (ADR-0018)
 - POST /tasks/expire-leases                   -> ExpireLeases
 - POST /tasks/sweep-cpt-misses                 -> SweepCPTMisses (ADR-0025)
+- POST /rebin/arrivals                        -> ArriveAtRebin (ADR-0016; tag `Rebin`,
+  operationId `arriveAtRebin`). The pick->pack handoff: 204 on success
+  (idempotent per (orderRef, lineId); the first call fixes the order's
+  required line set; the PACK task is created exactly once, by the arrival
+  that completes the set), 400 `invalid-request` (no `instance`), 422
+  `rebin-unknown-line` (`consolidation.ErrUnknownLine`), 500.
 - GET  /healthz
-- POST /rebin/arrivals                        -> ArriveAtRebin (ADR-0016) — registered in
-  `internal/adapters/inbound/http/router.go` but **not declared in
-  `apis/openapi.yaml`**, so it has no generated reference page. Known
-  spec gap; fix the spec (then regenerate) rather than hand-writing docs.
+- GET  /readyz                                 (readiness; flips to 503 on shutdown, ADR-0029)
+
+Router and spec must stay in a two-way 1:1 match —
+`internal/adapters/inbound/http/openapi_routes_test.go` walks the chi
+router and fails on a route missing from the spec or a spec operation with
+no route. Adding a route means adding it to `apis/openapi.yaml` (then
+regenerating the docs reference) in the same change.
 
 `cmd/fulfillment-reports` serves a separate read-only surface
 (`GET /reports/throughput`, `GET /reports/throughput/freshness`,
@@ -60,64 +76,72 @@ route (OLTP and `/reports/*`) and every MCP tool is unauthenticated today —
 there is no auth middleware and no `AUTH_MODE`/`*_KEY` env var in any
 `cmd/*/main.go`. Do not resurrect ADR-0021's design without a new ADR.
 
+## Events: CloudEvents 1.0 is mandatory (ADR-0032)
+
+Every Kafka message this service produces or consumes — integration AND
+analytics topics — is a CloudEvents 1.0 event in structured content mode,
+built/validated/decoded ONLY via `internal/adapters/kafka/cloudevents`
+(official `sdk-go/v2/event`; transport stays kafka-go). Every produced
+message carries `content-type: application/cloudevents+json; charset=UTF-8`.
+Required attributes: `specversion=1.0`, `id` (UUID v4, minted once in
+`Encode`, persisted by the outbox), `source=/warehouse/fulfillment-execution`,
+`type`, `subject` (aggregate id = Kafka key), `time`,
+`datacontenttype=application/json`,
+`dataschema=urn:warehouse:fulfillment-execution:<events|analytics>:<Event>:v1`.
+There is no flat envelope, no dual mode, no `EVENT_ENVELOPE_MODE`.
+
 ## Events published (AsyncAPI: `apis/asyncapi.yaml`)
 
-CloudEvents 1.0 structured envelope; `type` = 
-`com.warehouse.<subdomain>.<bounded-context>.<entity>.<Event>`, e.g.
-`com.warehouse.wes.fulfillment-execution.task.TaskClaimed`. Channel:
-`warehouse.fulfillment-execution.events` (per the spec — see divergence note
-below for what's actually on the wire).
+`type` = `com.warehouse.wes.fulfillment-execution.<entity>.<Event>`
+(entity = `task` | `package`).
 
-| Event | `type` suffix | `data` fields | On the wire today? |
+| Topic | `type` | `data` fields | Consumers |
 | --- | --- | --- | --- |
-| `TaskCreated` | `task.TaskCreated` | `taskId` | No |
-| `TaskClaimed` | `task.TaskClaimed` | `taskId`, `stationId` | No |
-| `LeaseExpired` | `task.LeaseExpired` | `taskId` | No |
-| **`TaskCompleted`** | `task.TaskCompleted` | `taskId`, `stationId`, `workUnitId`, `associateId`, `durationSeconds`, `taskType` | **Yes** |
-| `ItemPicked` | `task.ItemPicked` | `taskId` | No — not raised by any use case either |
-| `PackageSealed` | `package.PackageSealed` | `packageId` | No |
-| `WeightDiscrepancyDetected` | `package.WeightDiscrepancyDetected` | `packageId`, `expectedWeight`, `actualWeight` | No |
-| `LabelApplied` | `package.LabelApplied` | `packageId` | No |
-| `PackageDiverted` | `package.PackageDiverted` | `packageId` | No |
-| `TaskCPTMissed` | `task.TaskCPTMissed` | `taskId`, `orderRef`, `taskType`, `cpt` | **Yes** (ADR-0025) |
-| `PackageManifested` | `package.PackageManifested` | `packageId`, `orderRef` | **Yes** (ADR-0025) |
+| `warehouse.fulfillment.events` | `...task.TaskCompleted` | `task_id`, `station_id`, `work_unit_id`, `associate_id`, `duration_seconds`, `task_type` | wes-work-planning, labor-performance |
+| `warehouse.fulfillment.events` | `...task.TaskCPTMissed` | `task_id`, `order_ref`, `task_type`, `cpt` | order-management (ADR-0025) |
+| `warehouse.fulfillment.events` | `...package.PackageManifested` | `package_id`, `order_ref` | order-management (ADR-0025) |
+| `warehouse.fulfillment.analytics` | `...task.{TaskCreated,TaskClaimed,LeaseExpired,TaskCompleted,ItemPicked}`, `...package.{PackageSealed,WeightDiscrepancyDetected,LabelApplied,PackageDiverted,PackageManifested}` | see `apis/asyncapi.yaml` | this service's analytics projector |
 
-On the wire today (flat envelope, see divergence below) these three are
-the only events `outbound/kafka/publisher.go` forwards to
-`warehouse.fulfillment.events` — the publisher allowlist, not the domain
-event list, is the source of truth. Known consumers of that topic:
-`wes-work-planning` and `labor-performance` (`TaskCompleted`), and
-`order-management`'s `RepromiseOrder` consumer (`TaskCPTMissed`,
-`PackageManifested`). `ItemArrivedAtRebin` and `OrderConsolidated`
-(ADR-0016) are domain events too, but are neither in the AsyncAPI
-catalogue nor forwarded to either topic.
+The publisher allowlist in `outbound/kafka/publisher.go` (integration) and
+`analytics_publisher.go` (analytics) is the source of truth.
+`ItemArrivedAtRebin` and `OrderConsolidated` (ADR-0016) are domain events
+too, but are not published on either topic (if ever published, their entity
+is `orderconsolidation`).
 
-`workUnitId` on `TaskCompleted` is what makes the feedback loop to Work
+`work_unit_id` on `TaskCompleted` is what makes the feedback loop to Work
 Planning work: the publisher looks the task back up through `ports.TaskRepo`
 and reads `OrderRef()` (populated from `WorkReleased.data.work_unit_id` at
 creation), so Work Planning gets back exactly the id it sent and can call
-`RecordCompletion(workUnitId)`. `associateId`/`durationSeconds`/`taskType`
+`RecordCompletion(workUnitId)`. `associate_id`/`duration_seconds`/`task_type`
 are for the labor-performance context (ADR-0014, ADR-0023); all three are
 soft/optional (omitted when unavailable — e.g. a robot station never
-checks anyone in for `associateId`, or the completed task can no longer be
-found for `taskType`). `taskType` is read directly off the same `Task`
-`workUnitId` already loads via `TaskRepo` — no new repo dependency.
+checks anyone in for `associate_id`, or the completed task can no longer be
+found for `task_type`). `task_type` is read directly off the same `Task`
+`work_unit_id` already loads via `TaskRepo` — no new repo dependency.
 
 ## Events consumed
 
-| Source context | Topic | `event_type` | Effect here |
+| Source context | Topic | Full CloudEvents `type` | Effect here |
 | --- | --- | --- | --- |
-| `wes-work-planning` | `warehouse.work-planning.events` | `WorkReleased` | Creates a `Task` via `CreateTask` |
-| `process-path-management` | `warehouse.process-path-management.events` | catalogue events | Only when `PATH_CATALOGUE_SOURCE=kafka` (default `file`): replays into the in-memory process-path catalogue (`outbound/kafkacatalog`) |
+| `wes-work-planning` | `warehouse.work-planning.events` | `com.warehouse.wes.work-planning.workunit.WorkReleased` | Creates a `Task` via `CreateTask` |
+| `process-path-management` | `warehouse.process-path-management.events` | `com.warehouse.wes.process-path-management.processpath.ProcessPath{Created,Updated,Deactivated}` | Only when `PATH_CATALOGUE_SOURCE=kafka` (default `file`): replays into the in-memory process-path catalogue (`outbound/kafkacatalog`) |
+| this service | `warehouse.fulfillment.analytics` | the five projecting analytics types | analytics projector (`inbound/kafka/analytics_consumer.go`) |
 
-`WorkReleased` arrives in the flat platform envelope (not CloudEvents); the
-Anti-Corruption Layer maps `data.path_id` -> `task.Type` via the process-path
-catalogue (ADR-0017: `pick*`->PICK, `pack*`->PACK, `slam*`->SLAM, `rebin*`->
-REBIN by prefix match, not exact match — a real path id looks like
-`pick-zone-a`, not bare `pick`). An unknown `path_id` is a hard handling
-error — there is no default-to-PICK. Idempotent via `ProcessedEvents.MarkProcessed`
-(Postgres primary-key-backed dedup; in-memory adapter uses a mutex map).
-Consumer group: `WORK_RELEASED_CONSUMER_GROUP`, default `fulfillment-execution`.
+Consumers decode with `cloudevents.Decode`, dispatch on the FULL `type`
+(never a short name), ignore unknown types, dedupe on `id`, read
+`time`/`subject` from attributes and the payload via `DataAs`. A message that
+fails CloudEvents validation (incl. the retired flat envelope) wraps
+`cloudevents.ErrNotCloudEvent`: the `WorkReleased` consumer dead-letters it
+to `<topic>.dlq`; the catalogue consumer and projector WARN-log and skip it.
+
+The `WorkReleased` Anti-Corruption Layer maps `data.path_id` -> `task.Type`
+via the process-path catalogue (ADR-0017: `pick*`->PICK, `pack*`->PACK,
+`slam*`->SLAM, `rebin*`->REBIN by prefix match, not exact match — a real
+path id looks like `pick-zone-a`, not bare `pick`). An unknown `path_id` is
+a hard handling error — there is no default-to-PICK. Idempotent via
+`ProcessedEvents.MarkProcessed` on the CloudEvents `id` (Postgres
+primary-key-backed dedup; in-memory adapter uses a mutex map). Consumer
+group: `WORK_RELEASED_CONSUMER_GROUP`, default `fulfillment-execution`.
 
 ## Outbound synchronous calls (both permissive by default)
 
@@ -129,30 +153,6 @@ Consumer group: `WORK_RELEASED_CONSUMER_GROUP`, default `fulfillment-execution`.
 Inbound synchronous callers: `workforce-management` calls
 `GET /capacity/{capability}` (ADR-0018); the console BFF calls
 `GET /tasks?orderRef=`; `warehouse-ops-agent` calls the MCP server.
-
-## KNOWN DIVERGENCE: AsyncAPI spec vs. actual wire format
-
-Documented (not hidden) in `docs/docs/api-reference/events.md`. The
-**publisher today still uses the flat platform envelope**, not the
-CloudEvents shape the spec describes:
-
-| | `apis/asyncapi.yaml` (target) | `internal/adapters/outbound/kafka/publisher.go` (today) |
-| --- | --- | --- |
-| Channel/topic | `warehouse.fulfillment-execution.events` | `warehouse.fulfillment.events` |
-| Envelope | CloudEvents 1.0 structured | flat platform envelope |
-| Type field | `type: com.warehouse...TaskCompleted` | `event_type: "TaskCompleted"` |
-| Id field | `id` | `event_id` |
-| Timestamp | `time` | `occurred_at` |
-| Source | `/warehouse/fulfillment-execution` | `fulfillment-execution` |
-| Payload keys | `taskId`, `stationId`, `workUnitId` | `task_id`, `station_id`, `work_unit_id` |
-
-The live integration with `wes-work-planning` works correctly against the
-flat envelope on `warehouse.fulfillment.events` — it is the AsyncAPI document
-describing the *intended future* contract, not the current wire format.
-Migrating the publisher to CloudEvents is outstanding work; both producer and
-consumer sides would move together since the topic name also changes.
-**This is narrative/documentation staleness only — no code fix needed**, just
-keep the divergence note current if either side changes.
 
 ## Transactional outbox (ADR-0020)
 

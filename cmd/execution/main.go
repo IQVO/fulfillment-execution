@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	kafkago "github.com/segmentio/kafka-go"
 
@@ -408,6 +409,10 @@ func buildHandlers(storage storageAdapters, publisher ports.EventPublisher, cloc
 		},
 		GetInstalledCapacity: &usecases.GetInstalledCapacity{Stations: storage.stationRepo},
 		SweepCPTMisses:       &usecases.SweepCPTMisses{Tasks: storage.taskRepo, Publisher: publisher, Clock: clock, UnitOfWork: storage.uow},
+		// Package read model (ADR-0033): GET /packages/{id} and
+		// GET /packages?orderRef=.
+		GetPackage:            &usecases.GetPackage{Packages: storage.packageRepo},
+		GetPackagesByOrderRef: &usecases.GetPackagesByOrderRef{Packages: storage.packageRepo},
 		// readiness backs GET /readyz (ADR-0029 §graceful shutdown):
 		// flipped to not-ready as the FIRST step of shutdown, below,
 		// before anything else stops.
@@ -427,11 +432,7 @@ func maybeWireDeadLetter(consumer *inboundkafka.Consumer, brokers []string, logg
 	if getenv("EVENT_PUBLISHER", "log") != "kafka" {
 		return nil
 	}
-	dlqWriter := &kafkago.Writer{
-		Addr:                   kafkago.TCP(brokers...),
-		Balancer:               &kafkago.LeastBytes{},
-		AllowAutoTopicCreation: true,
-	}
+	dlqWriter := newDeadLetterWriter(brokers)
 	consumer.DeadLetter = dlqWriter
 	logger.Info("dead-letter handling configured", "dlq_topic", inboundkafka.DeadLetterTopic(workReleasedTopic))
 	return dlqWriter
@@ -536,8 +537,10 @@ func waitForShutdown(logger *slog.Logger, srv *http.Server, readiness *inboundht
 //
 // The default is the log publisher, so a local dev run with no Kafka is
 // still fully functional. With EVENT_PUBLISHER=kafka every domain event
-// is fanned to BOTH the integration topic (TaskCompleted only, enriched)
-// and the dedicated analytics topic (ADR-0012):
+// is fanned to BOTH the integration topic (TaskCompleted, TaskCPTMissed,
+// PackageManifested) and the dedicated analytics topic (ADR-0012), always
+// as CloudEvents 1.0 structured-mode messages (ADR-0032 — there is no
+// envelope toggle). The CloudEvents id is a UUID v4 (uuid.NewString):
 //
 //   - with Postgres configured (pool != nil) the use cases publish into
 //     the transactional outbox (ADR 0020): both publishers act only as
@@ -553,19 +556,9 @@ func buildEventPublisher(pool *pgxpool.Pool, brokers []string, tasks ports.TaskR
 		return events.NewLogPublisher(logger), nil, func() {}
 	}
 
-	// EVENT_ENVELOPE_MODE selects the integration publisher's wire
-	// envelope shape (ADR-0027 Phase 4): flat (default, today's
-	// byte-identical envelope), cloudevents (CloudEvents 1.0 structured
-	// mode), or dual (both, two physical messages per event). Logged once
-	// here so a deployed pod's actual behavior is always visible in its
-	// own startup log, regardless of which branch below constructs the
-	// publisher.
-	envelopeMode := outboundkafka.ParseEnvelopeMode(getenv("EVENT_ENVELOPE_MODE", ""))
-	logger.Info("event envelope mode", "mode", string(envelopeMode))
-
 	if pool == nil {
-		kafkaPublisher := outboundkafka.NewPublisherWithMode(brokers, tasks, stations, uuidLike, envelopeMode)
-		analyticsPub := outboundkafka.NewAnalyticsPublisher(brokers, tasks, uuidLike)
+		kafkaPublisher := outboundkafka.NewPublisher(brokers, tasks, stations, uuid.NewString)
+		analyticsPub := outboundkafka.NewAnalyticsPublisher(brokers, tasks, uuid.NewString)
 		logger.Info("event publisher configured", "publisher", "kafka", "mode", "direct",
 			"topic", outboundkafka.Topic, "analytics_topic", outboundkafka.AnalyticsTopic, "brokers", brokers)
 		return events.NewMultiPublisher(kafkaPublisher, analyticsPub), nil, func() {
@@ -577,8 +570,8 @@ func buildEventPublisher(pool *pgxpool.Pool, brokers []string, tasks ports.TaskR
 	// Encoders only: no writer is ever opened for them, the relay's
 	// topic-less sink is the single Kafka connection this process holds
 	// for publishing.
-	integration := outboundkafka.NewPublisherWithWriterAndMode(nil, tasks, stations, uuidLike, envelopeMode)
-	analytics := outboundkafka.NewAnalyticsPublisherWithWriter(nil, tasks, uuidLike)
+	integration := outboundkafka.NewPublisherWithWriter(nil, tasks, stations, uuid.NewString)
+	analytics := outboundkafka.NewAnalyticsPublisherWithWriter(nil, tasks, uuid.NewString)
 	sink := outboundkafka.NewRelaySink(brokers)
 	relay := postgres.NewOutboxRelay(pool, sink, logger,
 		postgres.WithInterval(durationEnv("OUTBOX_RELAY_INTERVAL", time.Second)))
@@ -697,4 +690,22 @@ func newPackageId() shared.PackageId {
 // in an external UUID dependency.
 func uuidLike() string {
 	return time.Now().UTC().Format("20060102T150405.000000000")
+}
+
+// dlqBatchTimeout flushes a dead-letter write almost immediately. A DLQ
+// write is one synchronous message; with kafka-go's 1s default BatchTimeout
+// every write waits a full second for a batch that never fills, capping
+// dead-lettering at ~1 msg/s. Observed live: ~3,200 legacy non-CloudEvents
+// messages ahead of today's WorkReleased events took ~1h to drain, so no
+// PICK task was created all day. Same fix as the other fleet DLQ writers.
+const dlqBatchTimeout = 10 * time.Millisecond
+
+// newDeadLetterWriter builds the WorkReleased consumer's DLQ writer.
+func newDeadLetterWriter(brokers []string) *kafkago.Writer {
+	return &kafkago.Writer{
+		Addr:                   kafkago.TCP(brokers...),
+		Balancer:               &kafkago.LeastBytes{},
+		AllowAutoTopicCreation: true,
+		BatchTimeout:           dlqBatchTimeout,
+	}
 }

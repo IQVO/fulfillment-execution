@@ -67,12 +67,14 @@ work-planning) are omitted — see each service's own context map.
 
 - **Topic:** `warehouse.work-planning.events`
 - **Adapter:** `internal/adapters/inbound/kafka/consumer.go`, consumer group
-  `fulfillment-execution`
-- **Filter:** `event_type == "WorkReleased"`; everything else on the topic is
-  ignored
+  `WORK_RELEASED_CONSUMER_GROUP` (default `fulfillment-execution`)
+- **Envelope:** CloudEvents 1.0 ([ADR-0032](../adr/0032-cloudevents-mandatory-envelope.md))
+- **Filter:** full `type == "com.warehouse.wes.work-planning.workunit.WorkReleased"`;
+  every other type is ignored, and a message that is not a valid CloudEvent is
+  dead-lettered
 - **Effect:** calls the existing `CreateTask` use case — a released work unit
   becomes a `Task` in this service's pool
-- **Idempotency:** `ProcessedEvents.MarkProcessed(event_id)` before creating,
+- **Idempotency:** `ProcessedEvents.MarkProcessed(id)` (the CloudEvents `id`) before creating,
   so a redelivery produces no duplicate task
 
 ### 2. Outbound — `TaskCompleted` to `wes-work-planning`
@@ -80,8 +82,11 @@ work-planning) are omitted — see each service's own context map.
 - **Topic:** `warehouse.fulfillment.events`
 - **Adapter:** `internal/adapters/outbound/kafka/publisher.go`, active when
   `EVENT_PUBLISHER=kafka`
+- **Envelope:** CloudEvents 1.0, `type`
+  `com.warehouse.wes.fulfillment-execution.task.TaskCompleted`
 - **Payload:** `task_id`, `station_id`, and `work_unit_id` — the last
-  backfilled via a `TaskRepo` lookup of the task's `OrderRef()`
+  backfilled via a `TaskRepo` lookup of the task's `OrderRef()` — plus
+  `associate_id`, `duration_seconds`, `task_type`
 - **Downstream:** `wes-work-planning` consumes it and calls its own
   `RecordCompletion(workUnitId)`; `labor-performance` also consumes it for
   per-associate attribution (the event carries the claiming associate,
@@ -103,8 +108,8 @@ sequenceDiagram
     participant K2 as warehouse.fulfillment.events
 
     WP->>K1: WorkReleased {path_id, work_unit_id, cpt, ref}
-    K1->>FE: consume (filter event_type)
-    FE->>FE: MarkProcessed(event_id) — skip if seen
+    K1->>FE: consume (CloudEvent, filter on full type)
+    FE->>FE: MarkProcessed(id) — skip if seen
     FE->>FE: CreateTask(PICK, cpt, orderRef=work_unit_id, {pick})
     ST->>FE: POST /stations/station-03/claim-next {"taskType":"PICK"}
     FE-->>ST: 200 — earliest-CPT matching task, leased 5 min

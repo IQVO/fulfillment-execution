@@ -1,17 +1,15 @@
 // Package kafka provides the inbound adapter that consumes WorkReleased
-// events from Work Planning and turns each one into a Task via the existing
+// CloudEvents (ADR-0032) from Work Planning and turns each one into a Task via the existing
 // CreateTask use case — the intended use of that use case, so it is called
 // directly rather than through a new one.
 package kafka
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
@@ -21,6 +19,7 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/claudioed/fulfillment-execution/internal/adapters/kafka/cloudevents"
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
 	"github.com/claudioed/fulfillment-execution/internal/domain/pathcatalog"
@@ -41,110 +40,38 @@ const (
 	retryMaxInterval     = 2 * time.Second
 )
 
-// Envelope is the CloudEvents-like wrapper shared across all four
-// warehouse-systems services. It is also the normalized internal shape
-// that decodeEnvelope produces from EITHER wire shape this consumer
-// accepts (see decodeEnvelope) — everything downstream of decode keys off
-// this struct and is unaware of which wire shape a message arrived in.
-type Envelope struct {
-	EventId    string           `json:"event_id"`
-	EventType  string           `json:"event_type"`
-	OccurredAt time.Time        `json:"occurred_at"`
-	Source     string           `json:"source"`
-	Data       WorkReleasedData `json:"data"`
+// TypeWorkReleased is the FULL CloudEvents `type` wes-work-planning
+// publishes WorkReleased under (fleet cross-service contract, ADR-0032).
+// This consumer dispatches on the exact string — never a short name or a
+// suffix match.
+const TypeWorkReleased = "com.warehouse.wes.work-planning.workunit.WorkReleased"
+
+// workReleased is one decoded WorkReleased occurrence: the CloudEvents
+// `id` (this consumer's idempotency key) plus the payload read via DataAs.
+type workReleased struct {
+	EventId string
+	Data    WorkReleasedData
 }
 
-// cloudEventsProbe is decoded first, from every message, solely to
-// discriminate the new CloudEvents 1.0 structured envelope (ADR-0027 /
-// wes-work-planning ADR-0021, Phase 2 dual-read) from today's flat
-// platform envelope. A non-empty specversion is the ONLY thing that picks
-// the CloudEvents decode path — the field is deliberately never added to
-// the flat envelope (see ADR-0027's design decision #3), so this
-// discriminator cannot go ambiguous.
-type cloudEventsProbe struct {
-	Specversion string `json:"specversion"`
-}
-
-// cloudEventsEnvelope is the CloudEvents 1.0 structured-mode shape from
-// ADR-0027's schema table. data is byte-identical to the flat envelope's
-// data — WorkReleasedData is not duplicated or changed by this shape.
-type cloudEventsEnvelope struct {
-	Specversion     string           `json:"specversion"`
-	Id              string           `json:"id"`
-	Type            string           `json:"type"`
-	Source          string           `json:"source"`
-	Subject         string           `json:"subject"`
-	Time            time.Time        `json:"time"`
-	Datacontenttype string           `json:"datacontenttype"`
-	Data            WorkReleasedData `json:"data"`
-}
-
-// cloudEventsTypePrefix is the reverse-DNS prefix wes-work-planning's
-// WorkReleased CloudEvents "type" field carries on the wire (ADR-0027's
-// field-mapping table; also already documented, unimplemented until this
-// migration, in wes-work-planning's own apis/asyncapi.yaml). Stripping it
-// back to the bare event name is what lets the existing, unchanged
-// switch/case-style dispatch in HandleMessage keep working unmodified for
-// either wire shape.
-const cloudEventsTypePrefix = "com.warehouse.wes.work-planning.workunit."
-
-// bareEventType strips a known CloudEvents reverse-DNS type prefix back to
-// the bare event name (e.g. "WorkReleased") the existing dispatch logic
-// already keys on. A type that doesn't carry the expected prefix falls
-// back to stripping everything up to the last '.', and failing that,
-// returns the value unchanged — HandleMessage's own "not WorkReleased, so
-// ignore" check is what actually guards against an unrecognized value, so
-// this never needs to itself decide validity.
-func bareEventType(t string) string {
-	if strings.HasPrefix(t, cloudEventsTypePrefix) {
-		return strings.TrimPrefix(t, cloudEventsTypePrefix)
+// decodeWorkReleased decodes raw as a CloudEvents 1.0 structured-mode
+// event. ok is false (and err nil) for a valid event of any other type —
+// unknown types are ignored for forward compatibility. A message that is
+// not a valid CloudEvents 1.0 event (including the retired flat envelope)
+// returns an error wrapping cloudevents.ErrNotCloudEvent: a deterministic
+// poison message that Run dead-letters, never parsed any other way.
+func decodeWorkReleased(raw []byte) (workReleased, bool, error) {
+	e, err := cloudevents.Decode(raw)
+	if err != nil {
+		return workReleased{}, false, fmt.Errorf("kafka: %w", err)
 	}
-	if i := strings.LastIndex(t, "."); i >= 0 {
-		return t[i+1:]
+	if e.Type() != TypeWorkReleased {
+		return workReleased{}, false, nil
 	}
-	return t
-}
-
-// decodeEnvelope accepts EITHER today's flat platform envelope or the new
-// CloudEvents 1.0 structured envelope on the same topic (ADR-0027 Phase 2
-// dual-read), discriminated solely by the presence of a specversion field,
-// and normalizes either shape to the same Envelope representation the
-// rest of this file's (unchanged) handling logic already expects. A
-// message that fails to decode under either shape — including one
-// carrying an unrecognized/malformed specversion value — fails exactly
-// the same way a malformed flat message always has here: a wrapped error
-// returned to the caller (Handle/Run then log it and route it to the
-// dead-letter sink when configured, per the Consumer type doc comment),
-// never a panic.
-func decodeEnvelope(raw []byte) (Envelope, error) {
-	var probe cloudEventsProbe
-	if err := json.Unmarshal(raw, &probe); err != nil {
-		return Envelope{}, fmt.Errorf("kafka: decode envelope: %w", err)
+	var data WorkReleasedData
+	if err := e.DataAs(&data); err != nil {
+		return workReleased{}, false, fmt.Errorf("kafka: decode %s data: %w", TypeWorkReleased, err)
 	}
-
-	if probe.Specversion == "" {
-		var env Envelope
-		if err := json.Unmarshal(raw, &env); err != nil {
-			return Envelope{}, fmt.Errorf("kafka: decode envelope: %w", err)
-		}
-		return env, nil
-	}
-
-	if probe.Specversion != "1.0" {
-		return Envelope{}, fmt.Errorf("kafka: unsupported CloudEvents specversion %q", probe.Specversion)
-	}
-
-	var ce cloudEventsEnvelope
-	if err := json.Unmarshal(raw, &ce); err != nil {
-		return Envelope{}, fmt.Errorf("kafka: decode envelope: %w", err)
-	}
-	return Envelope{
-		EventId:    ce.Id,
-		EventType:  bareEventType(ce.Type),
-		OccurredAt: ce.Time,
-		Source:     ce.Source,
-		Data:       ce.Data,
-	}, nil
+	return workReleased{EventId: e.ID(), Data: data}, true, nil
 }
 
 // WorkReleasedData is the payload of a WorkReleased event.
@@ -170,9 +97,9 @@ type WorkReleasedData struct {
 	GiftWrap bool `json:"gift_wrap"`
 }
 
-// Consumer reads WorkReleased events off warehouse.work-planning.events and
-// creates a Task for each one, exactly once per event_id despite Kafka's
-// at-least-once delivery.
+// Consumer reads WorkReleased CloudEvents off warehouse.work-planning.events
+// and creates a Task for each one, exactly once per CloudEvents id despite
+// Kafka's at-least-once delivery.
 //
 // DeadLetter, when non-nil, is where a message that fails HandleMessage is
 // published instead of being silently dropped after logging (see Run and
@@ -191,6 +118,9 @@ type Consumer struct {
 	Catalogue  ports.PathCatalogue
 	Logger     *slog.Logger
 	DeadLetter DeadLetterSink
+	// testReader, when set, replaces Reader for ReadMessage (unit tests of
+	// the broker-outage recovery in Run).
+	testReader messageReader
 }
 
 // DeadLetterSink publishes one or more messages, matching the subset of
@@ -245,17 +175,23 @@ func newConsumer(brokers []string, topic, groupID string, startOffset int64, cre
 // the loop — a broker blip on the DLQ publish must not wedge the main
 // consumer, which is the whole point of this feature.
 func (c *Consumer) Run(ctx context.Context) error {
+	policy := newRecoverBackoff()
 	for {
-		msg, err := c.Reader.ReadMessage(ctx)
-		if err != nil {
-			if errors.Is(err, context.Canceled) {
-				return nil
-			}
-			return err
+		msg, ok := readRecovering(ctx, c.reader(), policy, c.Logger, c.topic())
+		if !ok {
+			return nil
 		}
 		if err := c.Handle(ctx, msg); err != nil {
-			c.Logger.ErrorContext(ctx, "kafka message handling failed after retries",
-				"topic", msg.Topic, "attempts", maxHandlerAttempts, "error", err)
+			if errors.Is(err, cloudevents.ErrNotCloudEvent) {
+				// Deterministic poison message (not a valid CloudEvents
+				// 1.0 event, e.g. the retired flat envelope): never
+				// retried, never parsed any other way — dead-lettered.
+				c.Logger.WarnContext(ctx, "kafka message is not a valid CloudEvent; dead-lettering",
+					"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset, "error", err)
+			} else {
+				c.Logger.ErrorContext(ctx, "kafka message handling failed after retries",
+					"topic", msg.Topic, "attempts", maxHandlerAttempts, "error", err)
+			}
 			c.SendToDeadLetter(ctx, msg, err)
 		}
 	}
@@ -303,7 +239,7 @@ func (c *Consumer) Close() error {
 // by wes-work-planning and the Task created here parts of a single
 // distributed trace.
 //
-// The message is decoded and its event_id claimed via MarkProcessed
+// The message is decoded and its CloudEvents id claimed via MarkProcessed
 // exactly once; the remaining, retryable work (Catalogue.Lookup then
 // CreateTask.Execute) is retried in-process, with jittered backoff, up
 // to maxHandlerAttempts total attempts (ADR-0029 §DLQ) — a transient
@@ -346,9 +282,9 @@ func (c *Consumer) Handle(ctx context.Context, msg kafkago.Message) error {
 // deadline/cancellation.
 //
 // It does NOT simply wrap HandleMessage whole: HandleMessage's first
-// step, MarkProcessed, claims event_id exactly once (idempotency gate)
+// step, MarkProcessed, claims the CloudEvents id exactly once (idempotency gate)
 // and is not safe to re-enter after it has already returned isNew=true
-// — a second call for the same event_id always reports isNew=false, so
+// — a second call for the same id always reports isNew=false, so
 // naively retrying the WHOLE of HandleMessage would make attempt 2
 // silently report success without ever creating a Task, the moment a
 // LATER step (Catalogue.Lookup or CreateTask.Execute) merely blipped.
@@ -359,12 +295,9 @@ func (c *Consumer) Handle(ctx context.Context, msg kafkago.Message) error {
 // work (handleClaimedEvent) get its own up-to-maxHandlerAttempts
 // retries.
 func (c *Consumer) handleMessageWithRetry(ctx context.Context, raw []byte) error {
-	env, err := decodeEnvelope(raw)
-	if err != nil {
+	env, ok, err := decodeWorkReleased(raw)
+	if err != nil || !ok {
 		return err
-	}
-	if env.EventType != "WorkReleased" {
-		return nil
 	}
 
 	isNew, err := c.markProcessedWithRetry(ctx, env.EventId)
@@ -372,7 +305,7 @@ func (c *Consumer) handleMessageWithRetry(ctx context.Context, raw []byte) error
 		return fmt.Errorf("kafka: mark processed: %w", err)
 	}
 	if !isNew {
-		// Already applied by a prior delivery of this event_id; ack
+		// Already applied by a prior delivery of this CloudEvents id; ack
 		// without creating a duplicate Task.
 		return nil
 	}
@@ -392,7 +325,7 @@ func (c *Consumer) handleMessageWithRetry(ctx context.Context, raw []byte) error
 // (a transient Processed-store error), up to maxHandlerAttempts
 // attempts — safe to retry in isolation because, until it returns
 // isNew=true, no event-creating work has happened yet for this
-// event_id.
+// CloudEvents id.
 func (c *Consumer) markProcessedWithRetry(ctx context.Context, eventId string) (bool, error) {
 	policy := backoff.NewExponentialBackOff(
 		backoff.WithInitialInterval(retryInitialInterval),
@@ -413,7 +346,7 @@ func (c *Consumer) markProcessedWithRetry(ctx context.Context, eventId string) (
 // single successful claim, i.e. genuine retries of a transient
 // Catalogue/CreateTask failure, never a redelivery racing a fresh
 // MarkProcessed claim.
-func (c *Consumer) handleClaimedEvent(ctx context.Context, env Envelope) error {
+func (c *Consumer) handleClaimedEvent(ctx context.Context, env workReleased) error {
 	pathDef, err := c.Catalogue.Lookup(env.Data.PathId)
 	if err != nil {
 		// A path_id this catalogue does not recognize is a hard error —
@@ -434,22 +367,18 @@ func (c *Consumer) handleClaimedEvent(ctx context.Context, env Envelope) error {
 	return nil
 }
 
-// HandleMessage decodes raw as either the flat platform envelope or the
-// new CloudEvents 1.0 structured envelope (ADR-0027 Phase 2 dual-read —
-// see decodeEnvelope) and, if it is a not-yet-processed WorkReleased
+// HandleMessage decodes raw as a CloudEvents 1.0 structured-mode event
+// (see decodeWorkReleased) and, if it is a not-yet-processed WorkReleased
 // event, creates a Task via CreateTask. It is exported separately from
-// Handle/Run so tests can feed it a fake envelope without a live broker.
+// Handle/Run so tests can feed it a raw CloudEvent without a live broker.
 // It performs exactly ONE attempt at each step (no retry) — Handle is
 // what wraps the retryable portion (see handleMessageWithRetry's doc
 // comment for why the claim and the retryable work must not share a
 // single retry loop).
 func (c *Consumer) HandleMessage(ctx context.Context, raw []byte) error {
-	env, err := decodeEnvelope(raw)
-	if err != nil {
+	env, ok, err := decodeWorkReleased(raw)
+	if err != nil || !ok {
 		return err
-	}
-	if env.EventType != "WorkReleased" {
-		return nil
 	}
 
 	isNew, err := c.Processed.MarkProcessed(ctx, env.EventId)
@@ -457,7 +386,7 @@ func (c *Consumer) HandleMessage(ctx context.Context, raw []byte) error {
 		return fmt.Errorf("kafka: mark processed: %w", err)
 	}
 	if !isNew {
-		// Already applied by a prior delivery of this event_id; ack without
+		// Already applied by a prior delivery of this CloudEvents id; ack without
 		// creating a duplicate Task.
 		return nil
 	}
@@ -473,4 +402,19 @@ func capabilitiesOf(def pathcatalog.PathDefinition) []shared.Capability {
 		out[i] = shared.Capability(c)
 	}
 	return out
+}
+
+// reader returns the read seam: the test hook when set, else Reader.
+func (c *Consumer) reader() messageReader {
+	if c.testReader != nil {
+		return c.testReader
+	}
+	return c.Reader
+}
+
+func (c *Consumer) topic() string {
+	if c.Reader == nil {
+		return ""
+	}
+	return c.Reader.Config().Topic
 }

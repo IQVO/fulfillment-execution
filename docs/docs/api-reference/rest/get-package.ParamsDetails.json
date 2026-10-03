@@ -1,0 +1,1 @@
+{"parameters":[{"name":"id","in":"path","required":true,"description":"The package id, as returned by `POST /tasks/{id}/seal-package`.","schema":{"type":"string","example":"20260101T120200.000000000"}}]}

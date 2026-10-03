@@ -10,8 +10,9 @@ description: The fulfillment-execution analytical data product — a Throughput 
 The analytical **data product** owned by Fulfillment Execution. It is built
 entirely from this service's own domain events (never another service's
 database) and served read-only. See [ADR-0012](../adr/0012-analytical-data-product.md)
-for the decision and the `warehouse-infra/docs/analytics/` Envelope v1 contract
-and governance charter for the cross-service rules.
+for the decision, [ADR-0032](../adr/0032-cloudevents-mandatory-envelope.md)
+for the CloudEvents 1.0 envelope every analytics event uses, and the
+`warehouse-infra/docs/analytics/` governance charter for the cross-service rules.
 
 ## Name & owner
 
@@ -44,15 +45,20 @@ but not projected.
 ## Inputs (analytics topic events)
 
 Consumed from **`warehouse.fulfillment.analytics`** (the dedicated analytics
-topic, separate from the integration topic — Envelope v1):
+topic, separate from the integration topic). Every message is a CloudEvents
+1.0 event with `dataschema`
+`urn:warehouse:fulfillment-execution:analytics:<EventName>:v1`; the projector
+dispatches on the full `type`, takes the occurrence instant from `time`, and
+dedupes on `id`. A message that is not a valid CloudEvent is logged at WARN
+and skipped.
 
-| `event_type` | Contributes |
+| `type` (`com.warehouse.wes.fulfillment-execution.` + …) | Contributes |
 |---|---|
-| `TaskClaimed` | claim timestamp (for claim→complete latency) |
-| `TaskCompleted` | `completions`, claim→complete latency |
-| `LeaseExpired` | `leaseExpiries` |
-| `WeightDiscrepancyDetected` | `weighCheckDiverts` |
-| `PackageManifested` | `packagesManifested`, `packagesOnTimeToCPT` / `packagesLateToCPT` (publisher enriches with the SLAM task's type, station and on-time verdict) |
+| `task.TaskClaimed` | claim timestamp (for claim→complete latency) |
+| `task.TaskCompleted` | `completions`, claim→complete latency |
+| `task.LeaseExpired` | `leaseExpiries` |
+| `package.WeightDiscrepancyDetected` | `weighCheckDiverts` |
+| `package.PackageManifested` | `packagesManifested`, `packagesOnTimeToCPT` / `packagesLateToCPT` (publisher enriches with the SLAM task's type, station and on-time verdict) |
 
 `task_type` is enriched onto task-scoped events by the publisher via a `TaskRepo`
 lookup (the domain events themselves stay thin). `TaskCreated`, `ItemPicked`,
@@ -132,8 +138,9 @@ registered only when the MCP server has a reports client configured.
 
 - Additive fields (new optional row metric, new query filter) are non-breaking.
 - A breaking change to a row's shape or meaning is a new endpoint/tool version.
-- The analytics event contract versions independently via the Envelope
-  `schema_version` and the analytics topic suffix (see Envelope v1).
+- The analytics event contract versions independently via each event's
+  CloudEvents `dataschema` (`...:analytics:<EventName>:v<N>`); a breaking
+  payload change is a new `.v2` type with a new dataschema version.
 
 ## Runbook notes
 

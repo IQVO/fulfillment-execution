@@ -126,8 +126,36 @@ const sidebar: SidebarsConfig = {
         },
         {
           type: "doc",
+          id: "api-reference/rest/get-packages-by-order-ref",
+          label: "Look up every Package sealed for an order reference",
+          className: "api-method get",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/get-package",
+          label: "Read one Package, including its SLAM outcome",
+          className: "api-method get",
+        },
+        {
+          type: "doc",
           id: "api-reference/rest/run-slam",
           label: "Run the SLAM weigh-check on a sealed package",
+          className: "api-method post",
+        },
+      ],
+    },
+    {
+      type: "category",
+      label: "Rebin",
+      link: {
+        type: "doc",
+        id: "api-reference/rest/rebin",
+      },
+      items: [
+        {
+          type: "doc",
+          id: "api-reference/rest/arrive-at-rebin",
+          label: "Record one picked line arriving at the order's Rebin consolidation slot",
           className: "api-method post",
         },
       ],
@@ -276,6 +304,12 @@ const sidebar: SidebarsConfig = {
           type: "doc",
           id: "api-reference/rest/schemas/checkinstationrequest",
           label: "CheckInStationRequest",
+          className: "schema",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/schemas/arriveatrebinrequest",
+          label: "ArriveAtRebinRequest",
           className: "schema",
         },
       ],

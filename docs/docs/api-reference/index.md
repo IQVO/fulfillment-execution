@@ -21,7 +21,7 @@ The REST pages under **REST API** are generated from the real spec file at
 build time by `docusaurus-plugin-openapi-docs`. They are not transcribed by
 hand, so they cannot drift from the contract that CI validates.
 
-## Endpoint coverage: 15 / 16
+## Endpoint coverage: 17 / 17
 
 Cross-checked against `internal/adapters/inbound/http/router.go`:
 
@@ -41,14 +41,17 @@ Cross-checked against `internal/adapters/inbound/http/router.go`:
 | `GET` | `/capacity/{capability}` | `GetInstalledCapacity` ([ADR-0018](../adr/0018-installed-capacity-read-endpoint.md)) | Yes |
 | `POST` | `/tasks/expire-leases` | `ExpireLeases` | Yes |
 | `POST` | `/tasks/sweep-cpt-misses` | `SweepCPTMisses` ([ADR-0025](../adr/0025-cpt-missed-sweep-and-package-manifested.md)) | Yes |
+| `POST` | `/rebin/arrivals` | `ArriveAtRebin` ([ADR-0016](../adr/0016-rebin-and-order-consolidation.md)) | Yes |
 | `GET` | `/healthz` | *(liveness)* | Yes |
-| `POST` | `/rebin/arrivals` | `ArriveAtRebin` ([ADR-0016](../adr/0016-rebin-and-order-consolidation.md)) | **No** |
+| `GET` | `/readyz` | *(readiness, [ADR-0029](../adr/0029-resilience-circuit-breakers-retry-dlq-shutdown.md))* | Yes |
 
-`POST /rebin/arrivals` is registered on the chi router but not declared in
-`apis/openapi.yaml`, so it has no generated page under **REST API** and the
-PR-time `docs-api-drift` check cannot see it. That is a spec gap to close in
-the spec, not by hand-writing a page here. Every path the spec *does*
-declare is a real route.
+Every route on the router is declared in the spec and every spec operation
+is a real route. That two-way match is enforced by
+`internal/adapters/inbound/http/openapi_routes_test.go` (it walks the chi
+router and diffs it against `paths:` in `apis/openapi.yaml`), which covers the
+one kind of drift the PR-time `docs-api-drift` check cannot see: a live route
+the spec omits. `POST /rebin/arrivals` was that kind of drift until it was
+added to the spec under its own **Rebin** tag.
 
 The read-only analytics endpoints (`GET /reports/throughput`,
 `GET /reports/throughput/freshness`) are served by the separate

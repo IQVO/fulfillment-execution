@@ -25,7 +25,9 @@ info:
     capability set, one occupant at a time), and **Package** (Pack path
     output — an order becomes a sealed carton; the SLAM weigh-check applies
     a shipping label or diverts the package on a weight discrepancy beyond
-    tolerance).
+    tolerance). **OrderConsolidation** (Rebin fan-in) gates the pick -> pack
+    handoff: an order's PACK task is created only once every required line
+    has arrived at Rebin (`POST /rebin/arrivals`).
 
 
     **Out of scope / boundary**: this service does not plan or release work
@@ -65,7 +67,19 @@ tags:
       become a sealed carton (`seal-package`, driven by a Pack task's active
       claim), then the SLAM weigh-check either applies a shipping label or
       diverts the package if the actual weight is outside tolerance of the
-      expected weight.
+      expected weight. Read model: `GET /packages/{id}` and
+      `GET /packages?orderRef=` expose a package's current status (and so
+      the SLAM outcome) without side effects.
+  - name: Rebin
+    description: >
+      The OrderConsolidation aggregate: the Rebin / put-wall fan-in point
+      between Pick and Pack (see
+      [ADR-0016](/docs/adr/0016-rebin-and-order-consolidation)). A
+      multi-line order picked from different pods produces independent PICK
+      completions; each picked line is scanned into the order's
+      consolidation slot (`POST /rebin/arrivals`), and the order's PACK task
+      is created only once every required line has arrived. This is the
+      only path from a completed pick to a PACK task over HTTP.
   - name: System
     description: Operational endpoints not tied to a domain aggregate.
 
@@ -693,6 +707,116 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /packages:
+    get:
+      operationId: getPackagesByOrderRef
+      tags: [Packages]
+      summary: Look up every Package sealed for an order reference
+      description: >
+        Read-only query returning every Package sealed for `orderRef` — the
+        Package-side twin of `GET /tasks?orderRef=` (same query-parameter
+        contract, same 400 on a missing or empty `orderRef`, same empty
+        array for an unrecognized one). An order normally yields one carton,
+        but a multi-carton order or a re-pack after a SLAM diversion yields
+        several, so treat the response as a set. Ordered by package id.
+        Side-effect-free (see
+        [ADR-0033](/docs/adr/0033-package-read-model)).
+      parameters:
+        - name: orderRef
+          in: query
+          required: true
+          description: >
+            The order reference to look up (Package.orderRef, copied from
+            the owning Pack task at seal time). Must be non-empty — an empty
+            value is treated as a missing parameter and rejected with 400.
+          schema:
+            type: string
+            minLength: 1
+            example: order-42
+      responses:
+        "200":
+          description: Every Package sealed for `orderRef` (possibly empty).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PackageResponse"
+              example:
+                - id: 20260101T120200.000000000
+                  orderRef: order-42
+                  status: LABELED
+                  scannedContents: [sku-1, sku-2]
+                  fragileHandling: false
+                  giftWrapRequested: false
+                  sortLane: STANDARD
+        "400":
+          description: The required `orderRef` query parameter is missing or empty.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/invalid-request
+                title: The request is malformed or missing a required field
+                status: 400
+                detail: orderRef is required
+                instance: /packages
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /packages/{id}:
+    get:
+      operationId: getPackage
+      tags: [Packages]
+      summary: Read one Package, including its SLAM outcome
+      description: >
+        Read-only view of a single Package, in exactly the shape
+        `POST /tasks/{id}/seal-package` returns on 201. This is how the SLAM
+        operator and the outbound dock loader learn the SLAM outcome:
+        `POST /packages/{id}/slam` answers `204` both when a label was
+        applied and when the package was diverted, so read `status` here —
+        `LABELED` means the carton goes to the truck by its `sortLane`,
+        `DIVERTED` means it goes to problem-solve. Side-effect-free (see
+        [ADR-0033](/docs/adr/0033-package-read-model)).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The package id, as returned by `POST /tasks/{id}/seal-package`.
+          schema:
+            type: string
+            example: 20260101T120200.000000000
+      responses:
+        "200":
+          description: The package.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PackageResponse"
+              example:
+                id: 20260101T120200.000000000
+                orderRef: order-42
+                status: DIVERTED
+                scannedContents: [sku-1, sku-2]
+                fragileHandling: false
+                giftWrapRequested: false
+                sortLane: STANDARD
+        "404":
+          description: No package exists with this id.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/package-not-found
+                title: Package not found
+                status: 404
+                detail: "usecases: package not found"
+                instance: /packages/20260101T120200.000000000
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /packages/{id}/slam:
     post:
       operationId: runSlam
@@ -729,9 +853,9 @@ paths:
           description: >
             Weigh-check recorded (label applied or the package diverted —
             both are successful outcomes of this call). No response body;
-            inspect `GET` on the package resource in a future version of
-            this API to see which outcome occurred (not currently exposed —
-            out of scope for this iteration).
+            read `GET /packages/{id}` afterwards to see which outcome
+            occurred (`status` `LABELED` or `DIVERTED`, see
+            [ADR-0033](/docs/adr/0033-package-read-model)).
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
@@ -901,6 +1025,94 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /rebin/arrivals:
+    post:
+      operationId: arriveAtRebin
+      tags: [Rebin]
+      summary: Record one picked line arriving at the order's Rebin consolidation slot
+      description: >
+        A Rebin / put-wall associate (or automation signal) scans one picked
+        line of an order into that order's consolidation slot. This is the
+        pick -> pack handoff of
+        [ADR-0016](/docs/adr/0016-rebin-and-order-consolidation): once every
+        required line of the order has arrived, this call creates the
+        order's PACK task (through the same `CreateTask` use case as
+        `POST /tasks`, so it appears in `GET /tasks?orderRef=` and is
+        claimable via `claim-next` with `taskType: PACK`) and raises
+        `OrderConsolidated`. Every accepted arrival raises
+        `ItemArrivedAtRebin`. Neither event is forwarded to Kafka today.
+
+
+        **The first call for an `orderRef` fixes the required line set.**
+        The first arrival seen for an `orderRef` creates its consolidation
+        tracker with that call's `requiredLineIds` as the full, fixed set.
+        Every later call for the same `orderRef` must still send
+        `requiredLineIds` (it is validated as required on every call, since
+        only the caller knows whether an arrival is the first), but the
+        value is ignored once the set exists — the caller is responsible for
+        sending the same set each time. `lineId` must be a member of the
+        fixed set, otherwise the call is rejected with `422`
+        `rebin-unknown-line` (this includes a first call whose `lineId` is
+        not in its own `requiredLineIds`).
+
+
+        **Idempotent per (`orderRef`, `lineId`).** Re-sending an arrival for
+        a line that has already arrived is a no-op success (`204`), so a
+        redelivered scan never errors and never double-counts.
+
+
+        **The PACK task is created exactly once**, by the arrival that
+        completes the set; it takes `packCpt`, `packRequiredCapabilities`,
+        `packFragile` and `packGiftWrap` from that completing call. Any
+        later arrival for an already-consolidated order is a `204` no-op
+        and creates no further PACK task. A single-line order
+        (`requiredLineIds` of length 1, `lineId` equal to it) completes on
+        its first arrival, creating the PACK task immediately.
+
+
+        No response body on success. Not guarded by an `Idempotency-Key`
+        header (ADR-0028): the natural (`orderRef`, `lineId`) key already
+        makes retries safe.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ArriveAtRebinRequest"
+            example:
+              orderRef: order-42
+              lineId: line-1
+              requiredLineIds: [line-1, line-2]
+              packCpt: "2026-01-01T19:00:00Z"
+              packRequiredCapabilities: [pack]
+              packFragile: false
+              packGiftWrap: false
+      responses:
+        "204":
+          description: >
+            Arrival recorded (or was already recorded — an idempotent
+            redelivery). If this arrival completed the order's required
+            line set, the order's PACK task has been created. No response
+            body.
+        "400":
+          $ref: "#/components/responses/BadRequestNoInstance"
+        "422":
+          description: >
+            `lineId` is not part of this order's required consolidation
+            set — the set fixed by the first arrival seen for `orderRef`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/rebin-unknown-line
+                title: Line is not part of this order's required consolidation set
+                status: 422
+                detail: "consolidation: line is not part of this order"
+                instance: /rebin/arrivals
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /healthz:
     get:
       operationId: getHealthz
@@ -992,8 +1204,8 @@ components:
           description: >
             The request path that produced the error. Omitted for a
             validation error on a bare collection-create endpoint
-            (`POST /tasks`, `POST /stations`) whose path has no segment
-            identifying a specific resource.
+            (`POST /tasks`, `POST /stations`, `POST /rebin/arrivals`) whose
+            path has no segment identifying a specific resource.
           example: /tasks/20260101T120000.000000000/renew-lease
 
     TaskType:
@@ -1398,6 +1610,92 @@ components:
           example: worker-42
       example:
         occupantId: worker-42
+
+    ArriveAtRebinRequest:
+      type: object
+      required: [orderRef, lineId, requiredLineIds, packCpt, packRequiredCapabilities]
+      properties:
+        orderRef:
+          type: string
+          minLength: 1
+          description: >
+            The order whose lines are being consolidated; also stamped as
+            the resulting PACK task's `orderRef`. Must be non-empty: the API
+            treats "" as a missing field and rejects it with 400.
+          example: order-42
+        lineId:
+          type: string
+          minLength: 1
+          description: >
+            The line arriving at Rebin with this call. Must be a member of
+            the order's required line set (else 422 `rebin-unknown-line`).
+            Must be non-empty: the API treats "" as a missing field and
+            rejects it with 400.
+          example: line-1
+        requiredLineIds:
+          type: array
+          minItems: 1
+          description: >
+            Every line id the order needs before it can be packed. Required
+            and non-empty on every call, but only the FIRST call for an
+            `orderRef` uses it — it fixes the order's required set, and later
+            calls' values are ignored (send the same set each time).
+          items:
+            type: string
+            nullable: true
+            description: >
+              A null item is accepted and treated as an empty line id
+              string (Go's JSON decoding cannot distinguish them).
+            example: line-1
+          example: [line-1, line-2]
+        packCpt:
+          type: string
+          format: date-time
+          description: >
+            Committed Processing Time for the PACK task this order's
+            consolidation creates. Used only by the arrival that completes
+            the set.
+          example: "2026-01-01T19:00:00Z"
+        packRequiredCapabilities:
+          type: array
+          minItems: 1
+          description: >
+            Capabilities a station must hold to claim the resulting PACK
+            task (open, freeform list — see
+            CreateTaskRequest.requiredCapabilities). Required and non-empty
+            on every call; used only by the arrival that completes the set.
+          items:
+            type: string
+            nullable: true
+            description: >
+              A null item is accepted and treated as an empty capability
+              string (Go's JSON decoding cannot distinguish them).
+            example: pack
+          example: [pack]
+        packFragile:
+          type: boolean
+          nullable: true
+          default: false
+          description: >
+            Packing hint carried onto the resulting PACK task's `fragile`.
+            Optional; omission and an explicit null both mean false.
+          example: false
+        packGiftWrap:
+          type: boolean
+          nullable: true
+          default: false
+          description: >
+            Packing hint carried onto the resulting PACK task's `giftWrap`.
+            Optional; omission and an explicit null both mean false.
+          example: false
+      example:
+        orderRef: order-42
+        lineId: line-1
+        requiredLineIds: [line-1, line-2]
+        packCpt: "2026-01-01T19:00:00Z"
+        packRequiredCapabilities: [pack]
+        packFragile: false
+        packGiftWrap: false
 
   responses:
     BadRequest:

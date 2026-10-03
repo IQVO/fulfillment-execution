@@ -127,22 +127,15 @@ The `type` attribute encodes the full DDD coordinates of the fact — subdomain,
 bounded context, aggregate, event — so a consumer can route or filter purely
 on `type` without opening `data`.
 
-:::warning Contract vs. current wire format
-`apis/asyncapi.yaml` specifies the CloudEvents 1.0 structured envelope
-(`specversion` / `id` / `source` / `type` / `subject` / `time` /
-`datacontenttype` / `data`) on channel
-`warehouse.fulfillment-execution.events`.
-
-The Kafka publisher in `internal/adapters/outbound/kafka/publisher.go` today
-writes the **older flat platform envelope**
-(`event_id` / `event_type` / `occurred_at` / `source` / `data`) to topic
-**`warehouse.fulfillment.events`**, and that is what `wes-work-planning`,
-`labor-performance` and `order-management` actually read. The AsyncAPI document describes the target contract;
-the code has not migrated to it yet. Both the channel name and the envelope
-shape differ.
-
-This is stated plainly rather than papered over — see the
-[Events reference](../api-reference/events.md) for both shapes side by side.
+:::info CloudEvents 1.0 on the wire
+Every Kafka message this service produces or consumes is a CloudEvents 1.0
+event in structured content mode (`specversion` / `id` / `source` / `type` /
+`subject` / `time` / `datacontenttype` / `dataschema` / `data`) — see
+[ADR-0032](../adr/0032-cloudevents-mandatory-envelope.md). Integration
+events go to **`warehouse.fulfillment.events`** (read by `wes-work-planning`,
+`labor-performance` and `order-management`); analytics events to
+`warehouse.fulfillment.analytics`. There is no other envelope. See the
+[Events reference](../api-reference/events.md) for the full catalogue.
 :::
 
 ## Why the events stay thin

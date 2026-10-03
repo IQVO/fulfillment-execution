@@ -14,6 +14,7 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
+	"github.com/claudioed/fulfillment-execution/internal/adapters/kafka/cloudevents"
 	outboundkafka "github.com/claudioed/fulfillment-execution/internal/adapters/outbound/kafka"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/postgres"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
@@ -153,7 +154,7 @@ func TestOutbox_CompleteTask_CommitsAggregateAndBothTopicsTogether(t *testing.T)
 		t.Fatalf("create: %v", err)
 	}
 	// TaskCreated is analytics-only.
-	if got := countOutbox(t, s.pool, "topic = '"+outboundkafka.AnalyticsTopic+"' AND event_type = 'TaskCreated'"); got != 1 {
+	if got := countOutbox(t, s.pool, "topic = '"+outboundkafka.AnalyticsTopic+"' AND event_type = 'com.warehouse.wes.fulfillment-execution.task.TaskCreated'"); got != 1 {
 		t.Fatalf("expected 1 analytics TaskCreated row, got %d", got)
 	}
 	if got := countOutbox(t, s.pool, "topic = '"+outboundkafka.Topic+"'"); got != 0 {
@@ -173,17 +174,17 @@ func TestOutbox_CompleteTask_CommitsAggregateAndBothTopicsTogether(t *testing.T)
 	if err != nil || found == nil || found.Status() != task.Completed {
 		t.Fatalf("expected the task persisted as Completed, got %v err=%v", found, err)
 	}
-	if got := countOutbox(t, s.pool, "published_at IS NULL AND topic = '"+outboundkafka.Topic+"' AND event_type = 'TaskCompleted'"); got != 1 {
+	if got := countOutbox(t, s.pool, "published_at IS NULL AND topic = '"+outboundkafka.Topic+"' AND event_type = 'com.warehouse.wes.fulfillment-execution.task.TaskCompleted'"); got != 1 {
 		t.Fatalf("expected 1 unpublished integration TaskCompleted row, got %d", got)
 	}
-	if got := countOutbox(t, s.pool, "published_at IS NULL AND topic = '"+outboundkafka.AnalyticsTopic+"' AND event_type = 'TaskCompleted'"); got != 1 {
+	if got := countOutbox(t, s.pool, "published_at IS NULL AND topic = '"+outboundkafka.AnalyticsTopic+"' AND event_type = 'com.warehouse.wes.fulfillment-execution.task.TaskCompleted'"); got != 1 {
 		t.Fatalf("expected 1 unpublished analytics TaskCompleted row, got %d", got)
 	}
 	// The integration payload was enriched INSIDE the transaction from the
 	// just-saved task row (work_unit_id) — proof that Encode ran under the
 	// unit of work rather than after it.
 	var value []byte
-	if err := s.pool.QueryRow(ctx, "SELECT value FROM outbox_events WHERE topic = $1 AND event_type = 'TaskCompleted'", outboundkafka.Topic).Scan(&value); err != nil {
+	if err := s.pool.QueryRow(ctx, "SELECT value FROM outbox_events WHERE topic = $1 AND event_type = 'com.warehouse.wes.fulfillment-execution.task.TaskCompleted'", outboundkafka.Topic).Scan(&value); err != nil {
 		t.Fatalf("read integration row: %v", err)
 	}
 	if !bytes.Contains(value, []byte(`"work_unit_id":"wu-1"`)) || !bytes.Contains(value, []byte(`"duration_seconds":45`)) {
@@ -251,10 +252,10 @@ func TestOutboxRelay_PublishesInOrderAndMarksRows(t *testing.T) {
 		t.Fatalf("expected 4 published, got n=%d sent=%d", n, len(sink.sent))
 	}
 	want := []struct{ topic, eventType string }{
-		{outboundkafka.AnalyticsTopic, "TaskCreated"},
-		{outboundkafka.AnalyticsTopic, "TaskClaimed"},
-		{outboundkafka.Topic, "TaskCompleted"},
-		{outboundkafka.AnalyticsTopic, "TaskCompleted"},
+		{outboundkafka.AnalyticsTopic, "com.warehouse.wes.fulfillment-execution.task.TaskCreated"},
+		{outboundkafka.AnalyticsTopic, "com.warehouse.wes.fulfillment-execution.task.TaskClaimed"},
+		{outboundkafka.Topic, "com.warehouse.wes.fulfillment-execution.task.TaskCompleted"},
+		{outboundkafka.AnalyticsTopic, "com.warehouse.wes.fulfillment-execution.task.TaskCompleted"},
 	}
 	for i, w := range want {
 		got := sink.sent[i]
@@ -267,6 +268,32 @@ func TestOutboxRelay_PublishesInOrderAndMarksRows(t *testing.T) {
 	}
 	if got := countOutbox(t, s.pool, "attempts = 1 AND last_error IS NULL"); got != 4 {
 		t.Fatalf("expected 4 rows with attempts=1 and no error, got %d", got)
+	}
+	// Every relayed message is a valid CloudEvents 1.0 event carrying the
+	// structured-mode content-type header, and its `id` is the one minted
+	// once at Encode time and persisted in the outbox row — so a
+	// redelivery of the same row carries the same id (ADR-0032).
+	for i, m := range sink.sent {
+		e, err := cloudevents.Decode(m.Value)
+		if err != nil {
+			t.Fatalf("message %d is not a valid CloudEvent: %v", i, err)
+		}
+		if e.Subject() != string(created.Id()) {
+			t.Fatalf("message %d: subject = %q, want %q", i, e.Subject(), created.Id())
+		}
+		var hasCT bool
+		for _, h := range m.Headers {
+			if h.Key == "content-type" && string(h.Value) == cloudevents.MediaType {
+				hasCT = true
+			}
+		}
+		if !hasCT {
+			t.Fatalf("message %d: missing CloudEvents content-type header, got %v", i, m.Headers)
+		}
+		var stored []byte
+		if err := s.pool.QueryRow(ctx, "SELECT value FROM outbox_events WHERE value = $1", m.Value).Scan(&stored); err != nil {
+			t.Fatalf("message %d: relayed bytes are not the persisted row verbatim: %v", i, err)
+		}
 	}
 	n, err = relay.RelayOnce(ctx)
 	if err != nil || n != 0 || len(sink.sent) != 4 {
@@ -388,7 +415,7 @@ func TestOutbox_ArriveAtRebin_NestedScopeRollsBackEverything(t *testing.T) {
 	}
 	// ItemArrivedAtRebin/OrderConsolidated are outside both contracts;
 	// only the nested TaskCreated reaches the analytics topic.
-	if got := countOutbox(t, s.pool, "event_type = 'TaskCreated' AND topic = '"+outboundkafka.AnalyticsTopic+"'"); got != 1 {
+	if got := countOutbox(t, s.pool, "event_type = 'com.warehouse.wes.fulfillment-execution.task.TaskCreated' AND topic = '"+outboundkafka.AnalyticsTopic+"'"); got != 1 {
 		t.Fatalf("expected the nested TaskCreated outbox row, got %d", got)
 	}
 }
@@ -430,7 +457,7 @@ func TestOutbox_SweepCPTMisses_RoundTripsThroughRelay(t *testing.T) {
 		t.Fatalf("expected 1 task reported, got %d", reported)
 	}
 
-	if got := countOutbox(t, s.pool, "published_at IS NULL AND topic = '"+outboundkafka.Topic+"' AND event_type = 'TaskCPTMissed'"); got != 1 {
+	if got := countOutbox(t, s.pool, "published_at IS NULL AND topic = '"+outboundkafka.Topic+"' AND event_type = 'com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed'"); got != 1 {
 		t.Fatalf("expected 1 unpublished integration TaskCPTMissed row, got %d", got)
 	}
 
@@ -441,7 +468,7 @@ func TestOutbox_SweepCPTMisses_RoundTripsThroughRelay(t *testing.T) {
 	}
 	var found *outboundkafka.Encoded
 	for i := range sink.sent {
-		if sink.sent[i].Topic == outboundkafka.Topic && sink.sent[i].EventType == "TaskCPTMissed" {
+		if sink.sent[i].Topic == outboundkafka.Topic && sink.sent[i].EventType == "com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed" {
 			found = &sink.sent[i]
 		}
 	}
@@ -483,7 +510,7 @@ func TestOutbox_RunSlam_LabelAppliedAndPackageManifestedRoundTripTogether(t *tes
 		t.Fatalf("slam: %v", err)
 	}
 
-	if got := countOutbox(t, s.pool, "published_at IS NULL AND topic = '"+outboundkafka.Topic+"' AND event_type = 'PackageManifested'"); got != 1 {
+	if got := countOutbox(t, s.pool, "published_at IS NULL AND topic = '"+outboundkafka.Topic+"' AND event_type = 'com.warehouse.wes.fulfillment-execution.package.PackageManifested'"); got != 1 {
 		t.Fatalf("expected 1 unpublished integration PackageManifested row, got %d", got)
 	}
 
@@ -499,7 +526,7 @@ func TestOutbox_RunSlam_LabelAppliedAndPackageManifestedRoundTripTogether(t *tes
 			continue
 		}
 		switch m.EventType {
-		case "PackageManifested":
+		case "com.warehouse.wes.fulfillment-execution.package.PackageManifested":
 			foundManifested = true
 			manifestedPayload = m.Value
 			if string(m.Key) != string(p.Id()) {
@@ -520,7 +547,7 @@ func TestOutbox_RunSlam_LabelAppliedAndPackageManifestedRoundTripTogether(t *tes
 	if !bytes.Contains(manifestedPayload, []byte(`"order_ref":"order-manifest"`)) {
 		t.Fatalf("PackageManifested payload missing OrderRef: %s", manifestedPayload)
 	}
-	if got := countOutbox(t, s.pool, "topic = '"+outboundkafka.AnalyticsTopic+"' AND event_type = 'LabelApplied'"); got != 1 {
+	if got := countOutbox(t, s.pool, "topic = '"+outboundkafka.AnalyticsTopic+"' AND event_type = 'com.warehouse.wes.fulfillment-execution.package.LabelApplied'"); got != 1 {
 		t.Fatalf("expected LabelApplied on the analytics topic, got %d", got)
 	}
 }

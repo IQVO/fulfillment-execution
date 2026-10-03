@@ -212,7 +212,7 @@ message into `outbox_events` inside their own `UnitOfWork` scope, and
 the existing relay drains it onto `warehouse.fulfillment.events` — no
 new outbox, no new relay, no new topic. `TaskCompletedData`'s shape is
 byte-for-byte unchanged, and any consumer that already skips unrecognized
-`event_type` values by convention (order-management's future
+event types by convention (the CloudEvents `type` since ADR-0032) (order-management's future
 `RepromiseOrder`, labor-performance's own `TaskCompleted`-only consumer)
 sees zero behavior change.
 

@@ -1,0 +1,71 @@
+---
+id: get-packages-by-order-ref
+title: "Look up every Package sealed for an order reference"
+description: "Read-only query returning every Package sealed for `orderRef` — the Package-side twin of `GET /tasks?orderRef=` (same query-parameter contract, same 400 on a missing or empty `orderRef`, same empty array for an unrecognized one). An order normally yields one carton, but a multi-carton order or a re-pack after a SLAM diversion yields several, so treat the response as a set. Ordered by package id. Side-effect-free (see [ADR-0033](/docs/adr/0033-package-read-model))."
+sidebar_label: "Look up every Package sealed for an order reference"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "get api-method"
+info_path: docs/api-reference/rest/fulfillment-execution-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Look up every Package sealed for an order reference"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"get"}
+  path={"/packages"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+Read-only query returning every Package sealed for `orderRef` — the Package-side twin of `GET /tasks?orderRef=` (same query-parameter contract, same 400 on a missing or empty `orderRef`, same empty array for an unrecognized one). An order normally yields one carton, but a multi-carton order or a re-pack after a SLAM diversion yields several, so treat the response as a set. Ordered by package id. Side-effect-free (see [ADR-0033](/docs/adr/0033-package-read-model)).
+
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./get-packages-by-order-ref.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./get-packages-by-order-ref.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./get-packages-by-order-ref.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

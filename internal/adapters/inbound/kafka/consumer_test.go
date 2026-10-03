@@ -2,16 +2,17 @@ package kafka_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"strconv"
 	"testing"
 	"time"
 
 	kafkago "github.com/segmentio/kafka-go"
 
 	"github.com/claudioed/fulfillment-execution/internal/adapters/inbound/kafka"
+	"github.com/claudioed/fulfillment-execution/internal/adapters/kafka/cloudevents"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/events"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
@@ -96,7 +97,7 @@ func TestSendToDeadLetter_PublishesOriginalMessageWithFailureContext(t *testing.
 		Partition: 2,
 		Offset:    42,
 		Key:       []byte("poison-key"),
-		Value:     []byte(`{"event_type":"WorkReleased","data":{"path_id":"NOT-A-REAL-PATH"}}`),
+		Value:     workReleasedJSON("evt-dlq", "NOT-A-REAL-PATH", "wu-dlq"),
 		Headers:   []kafkago.Header{{Key: "existing", Value: []byte("keep-me")}},
 	}
 	c.SendToDeadLetter(context.Background(), orig, fmt.Errorf("path_id not found in catalogue"))
@@ -161,73 +162,43 @@ func totalPending(t *testing.T, tasks *memory.TaskRepo) int {
 }
 
 func workReleasedJSON(eventId, pathId, workUnitId string) []byte {
-	return []byte(`{
-		"event_id": "` + eventId + `",
-		"event_type": "WorkReleased",
-		"occurred_at": "2026-08-21T22:00:00Z",
-		"source": "wes-work-planning",
-		"data": {
-			"path_id": "` + pathId + `",
-			"work_unit_id": "` + workUnitId + `",
-			"cpt": "2026-08-21T23:00:00Z",
-			"ref": "release-1"
-		}
-	}`)
+	return workReleasedCE(eventId, kafka.TypeWorkReleased, workUnitId, map[string]any{
+		"path_id":      pathId,
+		"work_unit_id": workUnitId,
+		"cpt":          "2026-08-21T23:00:00Z",
+		"ref":          "release-1",
+	})
 }
 
 func workReleasedJSONWithFragile(eventId, pathId, workUnitId string, fragile bool) []byte {
-	return []byte(`{
-		"event_id": "` + eventId + `",
-		"event_type": "WorkReleased",
-		"occurred_at": "2026-08-21T22:00:00Z",
-		"source": "wes-work-planning",
-		"data": {
-			"path_id": "` + pathId + `",
-			"work_unit_id": "` + workUnitId + `",
-			"cpt": "2026-08-21T23:00:00Z",
-			"ref": "release-1",
-			"fragile": ` + strconv.FormatBool(fragile) + `
-		}
-	}`)
+	return workReleasedCE(eventId, kafka.TypeWorkReleased, workUnitId, map[string]any{
+		"path_id":      pathId,
+		"work_unit_id": workUnitId,
+		"cpt":          "2026-08-21T23:00:00Z",
+		"ref":          "release-1",
+		"fragile":      fragile,
+	})
 }
 
 func workReleasedJSONWithGiftWrap(eventId, pathId, workUnitId string, giftWrap bool) []byte {
+	return workReleasedCE(eventId, kafka.TypeWorkReleased, workUnitId, map[string]any{
+		"path_id":      pathId,
+		"work_unit_id": workUnitId,
+		"cpt":          "2026-08-21T23:00:00Z",
+		"ref":          "release-1",
+		"gift_wrap":    giftWrap,
+	})
+}
+
+// legacyFlatWorkReleasedJSON is the retired flat platform envelope
+// (event_id/event_type/occurred_at) — used only to prove it is rejected.
+func legacyFlatWorkReleasedJSON(eventId, pathId, workUnitId string) []byte {
 	return []byte(`{
 		"event_id": "` + eventId + `",
 		"event_type": "WorkReleased",
 		"occurred_at": "2026-08-21T22:00:00Z",
 		"source": "wes-work-planning",
-		"data": {
-			"path_id": "` + pathId + `",
-			"work_unit_id": "` + workUnitId + `",
-			"cpt": "2026-08-21T23:00:00Z",
-			"ref": "release-1",
-			"gift_wrap": ` + strconv.FormatBool(giftWrap) + `
-		}
-	}`)
-}
-
-// cloudEventsWorkReleasedJSON is the ADR-0027 / wes-work-planning ADR-0021
-// CloudEvents 1.0 structured-mode shape for a WorkReleased event: same
-// data payload as workReleasedJSON, wrapped in the new envelope fields
-// instead of the flat ones. eventId/pathId/workUnitId map to the exact
-// same values a flat fixture with the same arguments would carry, so a
-// test can assert the two decode to an identical normalized result.
-func cloudEventsWorkReleasedJSON(eventId, pathId, workUnitId string) []byte {
-	return []byte(`{
-		"specversion": "1.0",
-		"id": "` + eventId + `",
-		"type": "com.warehouse.wes.work-planning.workunit.WorkReleased",
-		"source": "/warehouse/wes-work-planning",
-		"subject": "` + workUnitId + `",
-		"time": "2026-08-21T22:00:00Z",
-		"datacontenttype": "application/json",
-		"data": {
-			"path_id": "` + pathId + `",
-			"work_unit_id": "` + workUnitId + `",
-			"cpt": "2026-08-21T23:00:00Z",
-			"ref": "release-1"
-		}
+		"data": {"path_id": "` + pathId + `", "work_unit_id": "` + workUnitId + `", "cpt": "2026-08-21T23:00:00Z", "ref": "release-1"}
 	}`)
 }
 
@@ -264,9 +235,16 @@ func TestHandleMessage_CreatesTaskFromWorkReleased(t *testing.T) {
 func TestHandleMessage_IgnoresNonWorkReleasedEvents(t *testing.T) {
 	c, tasks := newConsumer(t)
 
-	other := []byte(`{"event_id":"evt-2","event_type":"SomethingElse","data":{}}`)
-	if err := c.HandleMessage(context.Background(), other); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	for _, typ := range []string{
+		"com.warehouse.wes.work-planning.workunit.SomethingElse",
+		// The retired short name must not match: dispatch is on the FULL
+		// CloudEvents type string only.
+		"WorkReleased",
+	} {
+		other := workReleasedCE("evt-2-"+typ, typ, "wu-2", map[string]any{"path_id": "PICK", "work_unit_id": "wu-2", "cpt": "2026-08-21T23:00:00Z"})
+		if err := c.HandleMessage(context.Background(), other); err != nil {
+			t.Fatalf("unexpected error for type %q: %v", typ, err)
+		}
 	}
 
 	if got := totalPending(t, tasks); got != 0 {
@@ -476,45 +454,13 @@ func TestHandleMessage_MissingGiftWrapFieldDefaultsFalse(t *testing.T) {
 	}
 }
 
-// ADR-0027 / wes-work-planning ADR-0021 Phase 2 dual-read, test 1: the
-// flat-shaped fixture must still create a Task exactly as it did before
-// this migration touched the file — a pure regression test.
-func TestHandleMessage_FlatEnvelope_CreatesTaskFromWorkReleased(t *testing.T) {
+// A WorkReleased CloudEvent's data.work_unit_id becomes the created
+// Task's OrderRef (payload read via DataAs).
+func TestHandleMessage_CloudEvent_SetsOrderRefFromData(t *testing.T) {
 	c, tasks := newConsumer(t)
 
-	err := c.HandleMessage(context.Background(), workReleasedJSON("evt-flat", "PICK", "wu-flat"))
-	if err != nil {
+	if err := c.HandleMessage(context.Background(), workReleasedJSON("evt-ce", "PICK", "wu-ce")); err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if got := totalPending(t, tasks); got != 1 {
-		t.Fatalf("expected exactly 1 task, got %d", got)
-	}
-	n, _ := tasks.CountByTypeAndStatus(context.Background(), task.Pick, task.Pending)
-	if n != 1 {
-		t.Fatalf("expected the task to be a Pick task, got %d Pick tasks", n)
-	}
-}
-
-// ADR-0027 / wes-work-planning ADR-0021 Phase 2 dual-read, test 2: a
-// CloudEvents-shaped WorkReleased fixture (the exact schema from the ADR)
-// must produce the SAME normalized result — same task type, same order
-// ref, same idempotency key — as the equivalent flat fixture. This proves
-// decodeEnvelope's normalization, not just that it doesn't crash.
-func TestHandleMessage_CloudEventsEnvelope_CreatesTaskFromWorkReleased(t *testing.T) {
-	c, tasks := newConsumer(t)
-
-	err := c.HandleMessage(context.Background(), cloudEventsWorkReleasedJSON("evt-ce", "PICK", "wu-ce"))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if got := totalPending(t, tasks); got != 1 {
-		t.Fatalf("expected exactly 1 task, got %d", got)
-	}
-	n, _ := tasks.CountByTypeAndStatus(context.Background(), task.Pick, task.Pending)
-	if n != 1 {
-		t.Fatalf("expected the task to be a Pick task, got %d Pick tasks", n)
 	}
 	candidates, err := tasks.FindClaimableByType(context.Background(), task.Pick, epoch)
 	if err != nil {
@@ -524,53 +470,39 @@ func TestHandleMessage_CloudEventsEnvelope_CreatesTaskFromWorkReleased(t *testin
 		t.Fatalf("expected exactly 1 Pick task, got %d", len(candidates))
 	}
 	if got := candidates[0].OrderRef(); got != shared.OrderRef("wu-ce") {
-		t.Fatalf("expected OrderRef %q (from CloudEvents data.work_unit_id), got %q", "wu-ce", got)
+		t.Fatalf("expected OrderRef %q (from data.work_unit_id), got %q", "wu-ce", got)
 	}
 }
 
-// ADR-0027 / wes-work-planning ADR-0021 Phase 2 dual-read, same-result
-// assertion made explicit: a flat and a CloudEvents fixture carrying
-// identical logical content (same path/work-unit ids, different event_id
-// so both persist independently) must both resolve to a Pick task with
-// the same OrderRef — proving the normalization is truly shape-agnostic,
-// not just individually non-crashing.
-func TestHandleMessage_FlatAndCloudEvents_ProduceIdenticalNormalizedResult(t *testing.T) {
-	flatConsumer, flatTasks := newConsumer(t)
-	ceConsumer, ceTasks := newConsumer(t)
+// The retired flat envelope is a deterministic poison message (ADR-0032):
+// rejected with cloudevents.ErrNotCloudEvent, never parsed, never creates
+// a Task — Run dead-letters it.
+func TestHandleMessage_LegacyFlatEnvelope_IsRejectedNotParsed(t *testing.T) {
+	c, tasks := newConsumer(t)
 
-	if err := flatConsumer.HandleMessage(context.Background(), workReleasedJSON("evt-cmp-flat", "PACK", "wu-cmp")); err != nil {
-		t.Fatalf("flat: unexpected error: %v", err)
+	err := c.HandleMessage(context.Background(), legacyFlatWorkReleasedJSON("evt-flat", "PICK", "wu-flat"))
+	if !errors.Is(err, cloudevents.ErrNotCloudEvent) {
+		t.Fatalf("err = %v, want ErrNotCloudEvent", err)
 	}
-	if err := ceConsumer.HandleMessage(context.Background(), cloudEventsWorkReleasedJSON("evt-cmp-ce", "PACK", "wu-cmp")); err != nil {
-		t.Fatalf("cloudevents: unexpected error: %v", err)
+	if got := totalPending(t, tasks); got != 0 {
+		t.Fatalf("expected no task from a legacy flat message, got %d", got)
 	}
 
-	flatCandidates, err := flatTasks.FindClaimableByType(context.Background(), task.Pack, epoch)
-	if err != nil {
-		t.Fatalf("FindClaimableByType (flat): %v", err)
+	// Handle (the Run path) must fail the same way, without retrying, so
+	// Run routes it to the dead-letter sink.
+	msg := kafkago.Message{Topic: "warehouse.work-planning.events", Value: legacyFlatWorkReleasedJSON("evt-flat-2", "PICK", "wu-flat")}
+	if err := c.Handle(context.Background(), msg); !errors.Is(err, cloudevents.ErrNotCloudEvent) {
+		t.Fatalf("Handle err = %v, want ErrNotCloudEvent", err)
 	}
-	ceCandidates, err := ceTasks.FindClaimableByType(context.Background(), task.Pack, epoch)
-	if err != nil {
-		t.Fatalf("FindClaimableByType (cloudevents): %v", err)
-	}
-	if len(flatCandidates) != 1 || len(ceCandidates) != 1 {
-		t.Fatalf("expected exactly 1 Pack task from each shape, got flat=%d cloudevents=%d", len(flatCandidates), len(ceCandidates))
-	}
-	if flatCandidates[0].OrderRef() != ceCandidates[0].OrderRef() {
-		t.Fatalf("expected identical OrderRef from both shapes, got flat=%q cloudevents=%q", flatCandidates[0].OrderRef(), ceCandidates[0].OrderRef())
-	}
-	if flatCandidates[0].Type() != ceCandidates[0].Type() {
-		t.Fatalf("expected identical Type from both shapes, got flat=%q cloudevents=%q", flatCandidates[0].Type(), ceCandidates[0].Type())
+	if got := totalPending(t, tasks); got != 0 {
+		t.Fatalf("expected no task from a legacy flat message, got %d", got)
 	}
 }
 
-// ADR-0027 / wes-work-planning ADR-0021 Phase 2 dual-read, test 3: an
-// unrecognized/malformed specversion value must fail soft — return an
-// error to the caller, exactly the same failure posture this consumer
-// already has for a malformed flat message (see
-// TestHandleMessage_UnknownPathId_ReturnsError and the DLQ integration
-// test) — never crash the process and never silently create a Task from
-// an envelope this consumer cannot actually interpret.
+// An unrecognized specversion value must fail soft — return an error
+// wrapping cloudevents.ErrNotCloudEvent (dead-lettered by Run) — never
+// crash the process and never silently create a Task from an event this
+// consumer cannot interpret.
 func TestHandleMessage_MalformedSpecversion_FailsSoftWithoutCreatingTask(t *testing.T) {
 	c, tasks := newConsumer(t)
 
@@ -586,8 +518,8 @@ func TestHandleMessage_MalformedSpecversion_FailsSoftWithoutCreatingTask(t *test
 	}`)
 
 	err := c.HandleMessage(context.Background(), malformed)
-	if err == nil {
-		t.Fatal("expected an error for an unsupported specversion, got nil")
+	if !errors.Is(err, cloudevents.ErrNotCloudEvent) {
+		t.Fatalf("err = %v, want ErrNotCloudEvent for an unsupported specversion", err)
 	}
 	if got := totalPending(t, tasks); got != 0 {
 		t.Fatalf("expected no task to be created for an unsupported specversion, got %d", got)

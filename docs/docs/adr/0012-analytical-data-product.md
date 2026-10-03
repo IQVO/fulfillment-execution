@@ -65,9 +65,13 @@ processes; one writer.**
 ### 1. Separate analytics topic
 
 A new outbound adapter publishes the report-input event set to
-**`warehouse.fulfillment.analytics`**, using the shared **Envelope v1** wrapper
+**`warehouse.fulfillment.analytics`**, originally using the shared **Envelope v1** wrapper
 (`event_id`, `event_type`, `occurred_at`, `source`, `schema_version`, `data`)
-with a per-`event_type` `data` payload. The existing integration publisher and
+with a per-`event_type` `data` payload. *(Superseded for the envelope by
+[ADR-0032](./0032-cloudevents-mandatory-envelope.md): every analytics message
+is now a CloudEvents 1.0 event, `schema_version` is replaced by `dataschema`
+`urn:warehouse:fulfillment-execution:analytics:<EventName>:v1`, and the
+projector dispatches on the full CloudEvents `type`.)* The existing integration publisher and
 `warehouse.fulfillment.events` are **left untouched**, so no existing consumer
 is affected. Analytics consumers switch on `event_type` and ignore unknown
 types.
@@ -143,7 +147,7 @@ that they do not import the analytics store.
   it is not a real-time view. This is the correct data-mesh tradeoff but must be
   communicated to report consumers.
 - **The analytics publisher is a second producer path** for the same domain
-  events. It re-serializes them under Envelope v1 for the analytics topic; the
+  events. It re-serializes them (now as CloudEvents 1.0, ADR-0032) for the analytics topic; the
   event set it publishes must be kept in step with the report's inputs.
 - **First deploy has an empty report** until events flow; historical backfill
   requires replaying `warehouse.fulfillment.analytics` from earliest into a
@@ -151,7 +155,7 @@ that they do not import the analytics store.
 
 ## References
 
-- Envelope v1 contract: `warehouse-infra/docs/analytics/envelope-v1.md`
+- Envelope v1 contract (historical; superseded by [ADR-0032](./0032-cloudevents-mandatory-envelope.md)): `warehouse-infra/docs/analytics/envelope-v1.md`
 - Governance charter: `warehouse-infra/docs/analytics/governance-charter.md`
 - [ADR-0004 — Kafka integration events and envelope](./0004-kafka-integration-events-and-envelope.md)
 - [ADR-0008 — MCP inbound adapter](./0008-mcp-inbound-adapter.md)

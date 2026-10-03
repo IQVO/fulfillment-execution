@@ -28,8 +28,12 @@ git diff --exit-code -- docs/api-reference/rest
 
 and fails if regeneration changes anything. Run the same three commands
 locally to reproduce it. Note it only guards `apis/openapi.yaml` — a route
-that exists on the chi router but is missing from the spec (today:
-`POST /rebin/arrivals`) is invisible to it. Manual cross-checks:
+that exists on the chi router but is missing from the spec is invisible to
+it. That gap is covered by `TestOpenAPISpec_CoversEveryRouterRoute` /
+`TestOpenAPISpec_DeclaresNoUnroutedOperation`
+(`internal/adapters/inbound/http/openapi_routes_test.go`, part of `make
+test`), which diff the chi router's routes against the spec's `paths:` in
+both directions. Manual cross-checks:
 
 1. Count `operationId:` occurrences in `apis/openapi.yaml` vs. the number of
    `*.api.mdx` files (excluding `*.info.mdx` and `*.tag.mdx`) in
@@ -37,8 +41,8 @@ that exists on the chi router but is missing from the spec (today:
 2. Cross-check each operationId against the sidebar
    (`docs/docs/api-reference/rest/sidebar.ts`) and each schema in
    `components/schemas` against `docs/docs/api-reference/rest/schemas/`.
-3. Diff the routes in `internal/adapters/inbound/http/router.go` against
-   the spec's `paths:` — the drift job cannot see a route the spec omits.
+3. Router-vs-spec route diff — automated by `openapi_routes_test.go`
+   (see above); no longer a manual step.
 
 ## How to regenerate (when stale)
 
@@ -63,10 +67,11 @@ operation's sidebar entry until the directory was cleaned first).
 `apis/asyncapi.yaml` has **no Docusaurus plugin wired at all**. The events
 page, `docs/docs/api-reference/events.md`, is **hand-authored** and must be
 manually kept in sync with the spec and with
-`internal/adapters/outbound/kafka/publisher.go`. This service already
-documents a known, intentional spec-vs-wire divergence (flat envelope vs.
-CloudEvents) inline in that page with a `:::warning` callout rather than
-hiding it — see `api-and-integration.md` for the exact diff table. When
+`internal/adapters/outbound/kafka/publisher.go`. There is no spec-vs-wire
+divergence any more: every message is a CloudEvents 1.0 event (ADR-0032) and
+the spec carries each message's exact `type` const and `dataschema`; the
+golden tests in `internal/adapters/outbound/kafka/golden_test.go` pin the wire
+format. When
 checking AsyncAPI drift, diff `apis/asyncapi.yaml`'s channel/message list
 against the tables in `events.md` by hand; there is no automated check.
 

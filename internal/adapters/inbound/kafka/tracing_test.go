@@ -2,7 +2,6 @@ package kafka_test
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 
 	kafkago "github.com/segmentio/kafka-go"
@@ -12,6 +11,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/claudioed/fulfillment-execution/internal/adapters/inbound/kafka"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
 	"github.com/claudioed/fulfillment-execution/internal/observability"
@@ -47,21 +47,12 @@ func installRecorder(t *testing.T) *tracetest.SpanRecorder {
 func workReleasedMessage(t *testing.T, eventId string) kafkago.Message {
 	t.Helper()
 
-	payload, err := json.Marshal(map[string]any{
-		"event_id":    eventId,
-		"event_type":  "WorkReleased",
-		"occurred_at": epoch,
-		"source":      "wes-work-planning",
-		"data": map[string]any{
-			"path_id":      "PICK",
-			"work_unit_id": "wu-1",
-			"cpt":          epoch,
-			"ref":          "order-1",
-		},
+	payload := workReleasedCE(eventId, kafka.TypeWorkReleased, "wu-1", map[string]any{
+		"path_id":      "PICK",
+		"work_unit_id": "wu-1",
+		"cpt":          epoch,
+		"ref":          "order-1",
 	})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
 	return kafkago.Message{Topic: "warehouse.work-planning.events", Value: payload}
 }
 

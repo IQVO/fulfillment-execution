@@ -396,7 +396,30 @@ curl -sX POST localhost:8080/packages/{packageId}/slam \
 ```
 
 Applies the shipping label if the actual weight is within tolerance of
-expected; otherwise the package is diverted.
+expected; otherwise the package is diverted. Returns `204` in both cases.
+Read the package back (below) to see which outcome occurred.
+
+### Read a package (SLAM outcome)
+
+```sh
+curl -s localhost:8080/packages/{packageId}
+```
+
+Returns the same Package shape seal-package returns (`id`, `orderRef`,
+`status`, `scannedContents`, `fragileHandling`, `giftWrapRequested`,
+`sortLane`). `status` is `LABELED` when the carton goes to the truck by
+its `sortLane` and `DIVERTED` when it goes to problem-solve. Unknown id:
+`404` `package-not-found`. See `docs/docs/adr/0033-package-read-model.md`.
+
+### Packages for an order
+
+```sh
+curl -s 'localhost:8080/packages?orderRef=order-42'
+```
+
+Returns an array of Packages for that order, ordered by id. The array is
+empty when the order has none. A missing or empty `orderRef` returns `400`
+`invalid-request`, the same as `GET /tasks?orderRef=`.
 
 ### Queue depth (read model)
 
@@ -436,20 +459,30 @@ Execution -> Orchestration).
 
 ### Envelope
 
-Identical across all four warehouse-systems services:
+Every message is a **CloudEvents 1.0** event in structured content mode
+([ADR-0032](docs/docs/adr/0032-cloudevents-mandatory-envelope.md)); the Kafka
+message also carries the header `content-type: application/cloudevents+json; charset=UTF-8`.
+There is no other envelope and no envelope toggle:
 
 ```json
 {
-  "event_id": "uuid-v4",
-  "event_type": "WorkReleased",
-  "occurred_at": "2026-08-21T22:00:00Z",
-  "source": "wes-work-planning",
+  "specversion": "1.0",
+  "id": "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b",
+  "source": "/warehouse/wes-work-planning",
+  "type": "com.warehouse.wes.work-planning.workunit.WorkReleased",
+  "subject": "wu-8a1f",
+  "time": "2026-08-21T22:00:00Z",
+  "datacontenttype": "application/json",
+  "dataschema": "urn:warehouse:wes-work-planning:events:WorkReleased:v1",
   "data": {"path_id": "...", "work_unit_id": "...", "cpt": "RFC3339", "ref": "...", "fragile": false}
 }
 ```
 
-Messages whose `event_type` isn't `"WorkReleased"` are ignored. `data.fragile`
-is optional — see the Mapping section below.
+The consumer dispatches on the **full** `type`; any other type is ignored. A
+message that is not a valid CloudEvents 1.0 event (including the retired flat
+`event_id`/`event_type` shape) is dead-lettered to
+`warehouse.work-planning.events.dlq`, never parsed. `data.fragile` is
+optional — see the Mapping section below.
 
 ### Mapping
 
@@ -486,7 +519,7 @@ existing generic capability-set mechanism in `Task.Claim` / `RegisterStation`
 ### Idempotency
 
 Kafka delivery is at-least-once. Before calling `CreateTask`, the consumer
-tries to record the event's `event_id` in a `processed_events` table
+tries to record the event's CloudEvents `id` in a `processed_events` table
 (Postgres) or an in-memory set (no `DATABASE_URL`); if the id is already
 present, the message is skipped (and still acked/committed) instead of
 creating a duplicate Task. See
@@ -502,7 +535,7 @@ kind cluster) and this service running (`go run ./cmd/execution`, with
 ```sh
 kafka-console-producer.sh \
   --broker-list localhost:9092 --topic warehouse.work-planning.events <<'EOF'
-{"event_id":"smoke-1","event_type":"WorkReleased","occurred_at":"2026-08-21T22:00:00Z","source":"wes-work-planning","data":{"path_id":"pick-smoke","work_unit_id":"wu-smoke-1","cpt":"2026-08-21T23:00:00Z","ref":"release-smoke"}}
+{"specversion":"1.0","id":"0b7c3e8e-1d2a-4f5b-9c6d-7e8f9a0b1c2d","source":"/warehouse/wes-work-planning","type":"com.warehouse.wes.work-planning.workunit.WorkReleased","subject":"wu-smoke-1","time":"2026-08-21T22:00:00Z","datacontenttype":"application/json","dataschema":"urn:warehouse:wes-work-planning:events:WorkReleased:v1","data":{"path_id":"pick-smoke","work_unit_id":"wu-smoke-1","cpt":"2026-08-21T23:00:00Z","ref":"release-smoke"}}
 EOF
 
 curl -s localhost:8080/queues/PICK/depth
@@ -524,18 +557,25 @@ Planning's downstream `RecordCompletion` use case needs the original
 `work_unit_id` (the Task's `OrderRef`, set from `WorkReleased.data.work_unit_id`
 at creation time — see the consumer mapping above), so the publisher adapter
 looks the Task back up via `TaskRepo` before publishing and enriches the
-envelope with it. This mirrors the same repo-lookup-enrichment pattern
+payload with it. This mirrors the same repo-lookup-enrichment pattern
 inventory-storage's Kafka publisher uses for `ReservationRevoked`.
 
 #### Envelope
 
+A CloudEvents 1.0 event (ADR-0032), keyed and `subject`-ed by task id:
+
 ```json
 {
-  "event_id": "uuid-v4",
-  "event_type": "TaskCompleted",
-  "occurred_at": "2026-08-21T22:00:00Z",
-  "source": "fulfillment-execution",
-  "data": {"task_id": "...", "station_id": "...", "work_unit_id": "..."}
+  "specversion": "1.0",
+  "id": "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b",
+  "source": "/warehouse/fulfillment-execution",
+  "type": "com.warehouse.wes.fulfillment-execution.task.TaskCompleted",
+  "subject": "task-8a1f",
+  "time": "2026-08-21T22:00:00Z",
+  "datacontenttype": "application/json",
+  "dataschema": "urn:warehouse:fulfillment-execution:events:TaskCompleted:v1",
+  "data": {"task_id": "task-8a1f", "station_id": "station-03", "work_unit_id": "wu-8a1f",
+           "associate_id": "worker-42", "duration_seconds": 245, "task_type": "PICK"}
 }
 ```
 

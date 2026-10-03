@@ -53,22 +53,40 @@ func (uc *ClaimNext) Execute(ctx context.Context, stationId shared.StationId, ta
 	// candidates are ordered earliest-CPT-first by the repository; take the
 	// first one this station's capabilities satisfy.
 	for _, t := range candidates {
-		err := t.Claim(stationId, st.Capabilities(), now, leaseDuration)
-		if err == nil {
-			err := atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
-				if err := uc.Tasks.Save(ctx, t); err != nil {
-					return err
-				}
-				return uc.Publisher.Publish(ctx, shared.NewTaskClaimed(t.Id(), stationId, now))
-			})
-			if err != nil {
-				return nil, err
-			}
-			if uc.Metrics != nil {
-				uc.Metrics.TaskClaimed(ctx, t.Type())
-			}
-			return t, nil
+		if t.Claim(stationId, st.Capabilities(), now, leaseDuration) != nil {
+			continue
 		}
+		won, err := uc.persistClaim(ctx, t, stationId, now)
+		if err != nil {
+			return nil, err
+		}
+		if !won {
+			continue
+		}
+		if uc.Metrics != nil {
+			uc.Metrics.TaskClaimed(ctx, t.Type())
+		}
+		return t, nil
 	}
+
 	return nil, ErrNoClaimableTask
+}
+
+// persistClaim saves t's claim and publishes TaskClaimed atomically. It is
+// a compare-and-set, not a blind upsert: ClaimNext's candidates are a plain
+// read, so concurrent calls load the SAME Pending task. Only the first
+// SaveClaim matches the still-claimable row; it reports won=false (and
+// publishes nothing) for every station that lost the race, which then
+// moves on to the next candidate -- at-most-once assignment, ADR-0003.
+func (uc *ClaimNext) persistClaim(ctx context.Context, t *task.Task, stationId shared.StationId, now time.Time) (bool, error) {
+	won := false
+	err := atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
+		ok, err := uc.Tasks.SaveClaim(ctx, t, now)
+		if err != nil || !ok {
+			return err
+		}
+		won = true
+		return uc.Publisher.Publish(ctx, shared.NewTaskClaimed(t.Id(), stationId, now))
+	})
+	return won, err
 }

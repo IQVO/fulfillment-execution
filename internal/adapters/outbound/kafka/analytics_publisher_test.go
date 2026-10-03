@@ -2,7 +2,6 @@ package kafka_test
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -42,6 +41,9 @@ func (r fakeTaskRepo) FindById(_ context.Context, id shared.TaskId) (*task.Task,
 	return task.New(id, r.taskType, shared.NewCPT(time.Now()), "order-1", shared.NewCapabilitySet(), false, false), nil
 }
 func (fakeTaskRepo) Save(context.Context, *task.Task) error { return nil }
+func (fakeTaskRepo) SaveClaim(context.Context, *task.Task, time.Time) (bool, error) {
+	return true, nil
+}
 func (fakeTaskRepo) FindClaimableByType(context.Context, task.Type, time.Time) ([]*task.Task, error) {
 	return nil, nil
 }
@@ -66,7 +68,7 @@ func TestAnalyticsPublisher_PublishesEachEventType(t *testing.T) {
 }
 
 // analyticsEventCase is one event-type scenario of the analytics contract:
-// the envelope's routing key, event_type, and one representative data
+// the routing key, full CloudEvents type, and one representative data
 // field asserted per event.
 type analyticsEventCase struct {
 	name          string
@@ -85,7 +87,7 @@ func eachEventTypeCases(at time.Time) []analyticsEventCase {
 		{
 			name:          "TaskCreated",
 			event:         shared.NewTaskCreated("t1", at),
-			wantType:      "TaskCreated",
+			wantType:      "com.warehouse.wes.fulfillment-execution.task.TaskCreated",
 			wantKey:       "t1",
 			wantDataField: "task_id",
 			wantDataValue: "t1",
@@ -93,7 +95,7 @@ func eachEventTypeCases(at time.Time) []analyticsEventCase {
 		{
 			name:          "TaskClaimed",
 			event:         shared.NewTaskClaimed("t2", "s2", at),
-			wantType:      "TaskClaimed",
+			wantType:      "com.warehouse.wes.fulfillment-execution.task.TaskClaimed",
 			wantKey:       "t2",
 			wantDataField: "station_id",
 			wantDataValue: "s2",
@@ -101,7 +103,7 @@ func eachEventTypeCases(at time.Time) []analyticsEventCase {
 		{
 			name:          "LeaseExpired",
 			event:         shared.NewLeaseExpired("t3", at),
-			wantType:      "LeaseExpired",
+			wantType:      "com.warehouse.wes.fulfillment-execution.task.LeaseExpired",
 			wantKey:       "t3",
 			wantDataField: "task_id",
 			wantDataValue: "t3",
@@ -109,7 +111,7 @@ func eachEventTypeCases(at time.Time) []analyticsEventCase {
 		{
 			name:          "TaskCompleted",
 			event:         shared.NewTaskCompleted("t4", "s4", at),
-			wantType:      "TaskCompleted",
+			wantType:      "com.warehouse.wes.fulfillment-execution.task.TaskCompleted",
 			wantKey:       "t4",
 			wantDataField: "station_id",
 			wantDataValue: "s4",
@@ -117,7 +119,7 @@ func eachEventTypeCases(at time.Time) []analyticsEventCase {
 		{
 			name:          "ItemPicked",
 			event:         shared.NewItemPicked("t5", at),
-			wantType:      "ItemPicked",
+			wantType:      "com.warehouse.wes.fulfillment-execution.task.ItemPicked",
 			wantKey:       "t5",
 			wantDataField: "task_id",
 			wantDataValue: "t5",
@@ -125,7 +127,7 @@ func eachEventTypeCases(at time.Time) []analyticsEventCase {
 		{
 			name:          "PackageSealed",
 			event:         shared.NewPackageSealed("p6", at),
-			wantType:      "PackageSealed",
+			wantType:      "com.warehouse.wes.fulfillment-execution.package.PackageSealed",
 			wantKey:       "p6",
 			wantDataField: "package_id",
 			wantDataValue: "p6",
@@ -133,7 +135,7 @@ func eachEventTypeCases(at time.Time) []analyticsEventCase {
 		{
 			name:          "WeightDiscrepancyDetected",
 			event:         shared.NewWeightDiscrepancyDetected("p7", 1000, 1200, at),
-			wantType:      "WeightDiscrepancyDetected",
+			wantType:      "com.warehouse.wes.fulfillment-execution.package.WeightDiscrepancyDetected",
 			wantKey:       "p7",
 			wantDataField: "actual_g",
 			wantDataValue: float64(1200),
@@ -141,7 +143,7 @@ func eachEventTypeCases(at time.Time) []analyticsEventCase {
 		{
 			name:          "LabelApplied",
 			event:         shared.NewLabelApplied("p8", at),
-			wantType:      "LabelApplied",
+			wantType:      "com.warehouse.wes.fulfillment-execution.package.LabelApplied",
 			wantKey:       "p8",
 			wantDataField: "package_id",
 			wantDataValue: "p8",
@@ -149,7 +151,7 @@ func eachEventTypeCases(at time.Time) []analyticsEventCase {
 		{
 			name:          "PackageDiverted",
 			event:         shared.NewPackageDiverted("p9", at),
-			wantType:      "PackageDiverted",
+			wantType:      "com.warehouse.wes.fulfillment-execution.package.PackageDiverted",
 			wantKey:       "p9",
 			wantDataField: "package_id",
 			wantDataValue: "p9",
@@ -159,7 +161,7 @@ func eachEventTypeCases(at time.Time) []analyticsEventCase {
 
 // assertAnalyticsEventPublished publishes tt's event through a real
 // analytics publisher backed by a recording writer and asserts the
-// envelope's fixed fields plus tt's key/event_type/data expectations.
+// CloudEvents attributes plus tt's key/type/data expectations.
 func assertAnalyticsEventPublished(t *testing.T, tt analyticsEventCase, at time.Time) {
 	t.Helper()
 
@@ -178,30 +180,32 @@ func assertAnalyticsEventPublished(t *testing.T, tt analyticsEventCase, at time.
 		t.Errorf("key = %q, want %q", string(msg.Key), tt.wantKey)
 	}
 
-	var env outboundkafka.AnalyticsEnvelope
-	if err := json.Unmarshal(msg.Value, &env); err != nil {
-		t.Fatalf("unmarshal envelope: %v", err)
+	env, data := decodeCE[map[string]any](t, msg.Value)
+	if env.Type() != tt.wantType {
+		t.Errorf("type = %q, want %q", env.Type(), tt.wantType)
 	}
-	if env.EventType != tt.wantType {
-		t.Errorf("event_type = %q, want %q", env.EventType, tt.wantType)
+	if env.ID() != "evt-fixed" {
+		t.Errorf("id = %q, want evt-fixed", env.ID())
 	}
-	if env.EventId != "evt-fixed" {
-		t.Errorf("event_id = %q, want evt-fixed", env.EventId)
+	if env.Source() != "/warehouse/fulfillment-execution" {
+		t.Errorf("source = %q, want /warehouse/fulfillment-execution", env.Source())
 	}
-	if env.Source != "fulfillment-execution" {
-		t.Errorf("source = %q, want fulfillment-execution", env.Source)
+	if env.Subject() != tt.wantKey {
+		t.Errorf("subject = %q, want %q (the aggregate id)", env.Subject(), tt.wantKey)
 	}
-	if env.SchemaVersion != 1 {
-		t.Errorf("schema_version = %d, want 1", env.SchemaVersion)
+	if want := "urn:warehouse:fulfillment-execution:analytics:" + tt.name + ":v1"; env.DataSchema() != want {
+		t.Errorf("dataschema = %q, want %q", env.DataSchema(), want)
 	}
-	if !env.OccurredAt.Equal(at) {
-		t.Errorf("occurred_at = %v, want %v", env.OccurredAt, at)
+	if !env.Time().Equal(at) {
+		t.Errorf("time = %v, want %v", env.Time(), at)
+	}
+	if _, has := data["schema_version"]; has {
+		t.Error("data must not carry the retired schema_version field")
+	}
+	if !hasContentTypeHeader(msg.Headers) {
+		t.Errorf("missing CloudEvents content-type header, got %v", msg.Headers)
 	}
 
-	var data map[string]any
-	if err := json.Unmarshal(env.Data, &data); err != nil {
-		t.Fatalf("unmarshal data: %v", err)
-	}
 	if got := data[tt.wantDataField]; got != tt.wantDataValue {
 		t.Errorf("data[%q] = %v (%T), want %v (%T)", tt.wantDataField, got, got, tt.wantDataValue, tt.wantDataValue)
 	}
@@ -234,14 +238,7 @@ func TestAnalyticsPublisher_WeightDiscrepancyExpectedActual(t *testing.T) {
 	if err := p.Publish(context.Background(), shared.NewWeightDiscrepancyDetected("pkg", 900, 1100, at)); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
-	var env outboundkafka.AnalyticsEnvelope
-	if err := json.Unmarshal(w.msgs[0].Value, &env); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	var data map[string]any
-	if err := json.Unmarshal(env.Data, &data); err != nil {
-		t.Fatalf("unmarshal data: %v", err)
-	}
+	_, data := decodeCE[map[string]any](t, w.msgs[0].Value)
 	if data["expected_g"] != float64(900) {
 		t.Errorf("expected_g = %v, want 900", data["expected_g"])
 	}
@@ -261,14 +258,7 @@ func TestAnalyticsPublisher_EnrichesTaskType(t *testing.T) {
 	if err := p.Publish(context.Background(), shared.NewTaskCompleted("t1", "s1", time.Now())); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
-	var env outboundkafka.AnalyticsEnvelope
-	if err := json.Unmarshal(w.msgs[0].Value, &env); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	var data map[string]any
-	if err := json.Unmarshal(env.Data, &data); err != nil {
-		t.Fatalf("unmarshal data: %v", err)
-	}
+	_, data := decodeCE[map[string]any](t, w.msgs[0].Value)
 	if data["task_type"] != string(task.Pack) {
 		t.Errorf("task_type = %v, want %v", data["task_type"], task.Pack)
 	}
@@ -336,16 +326,9 @@ func assertPackageManifestedOnTime(t *testing.T, cpt, manifestedAt time.Time, wa
 	if len(w.msgs) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(w.msgs))
 	}
-	var env outboundkafka.AnalyticsEnvelope
-	if err := json.Unmarshal(w.msgs[0].Value, &env); err != nil {
-		t.Fatalf("unmarshal envelope: %v", err)
-	}
-	if env.EventType != "PackageManifested" {
-		t.Fatalf("event_type = %q, want PackageManifested", env.EventType)
-	}
-	var data map[string]any
-	if err := json.Unmarshal(env.Data, &data); err != nil {
-		t.Fatalf("unmarshal data: %v", err)
+	env, data := decodeCE[map[string]any](t, w.msgs[0].Value)
+	if env.Type() != "com.warehouse.wes.fulfillment-execution.package.PackageManifested" {
+		t.Fatalf("type = %q", env.Type())
 	}
 	if data["resolved"] != true {
 		t.Fatalf("resolved = %v, want true", data["resolved"])
@@ -377,14 +360,7 @@ func TestAnalyticsPublisher_PackageManifested_UnresolvedWhenNoSLAMTask(t *testin
 	if err := p.Publish(context.Background(), shared.NewPackageManifested("pkg-1", "order-missing", time.Now())); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
-	var env outboundkafka.AnalyticsEnvelope
-	if err := json.Unmarshal(w.msgs[0].Value, &env); err != nil {
-		t.Fatalf("unmarshal envelope: %v", err)
-	}
-	var data map[string]any
-	if err := json.Unmarshal(env.Data, &data); err != nil {
-		t.Fatalf("unmarshal data: %v", err)
-	}
+	_, data := decodeCE[map[string]any](t, w.msgs[0].Value)
 	if data["resolved"] != false {
 		t.Errorf("resolved = %v, want false", data["resolved"])
 	}

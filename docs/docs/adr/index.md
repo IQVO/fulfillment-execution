@@ -95,7 +95,7 @@ gets a "Supersedes ADR-NNNN" line in its Context, the old one gets
 | [0001](./0001-hexagonal-ports-and-adapters.md) | Hexagonal (ports and adapters) architecture | Accepted |
 | [0002](./0002-pull-based-claimnext-dispatch.md) | Pull-based `claimNext` dispatch over push assignment | Accepted |
 | [0003](./0003-lease-based-at-most-once-claiming.md) | Lease-based at-most-once claiming over a hard lock | Accepted |
-| [0004](./0004-kafka-integration-events-and-envelope.md) | Kafka for integration events, with a CloudEvents-typed catalogue | Accepted |
+| [0004](./0004-kafka-integration-events-and-envelope.md) | Kafka for integration events, with a CloudEvents-typed catalogue | Superseded (envelope) by [ADR-0032](./0032-cloudevents-mandatory-envelope.md) |
 | [0005](./0005-rfc-7807-problem-details.md) | RFC 7807 `application/problem+json` for every error response | Accepted |
 | [0006](./0006-arch-go-architecture-fitness-tests.md) | arch-go fitness tests to enforce the dependency rule | Accepted |
 | [0007](./0007-godog-bdd-acceptance-tests.md) | godog (Gherkin) acceptance tests for the invariants | Accepted |
@@ -118,8 +118,10 @@ gets a "Supersedes ADR-NNNN" line in its Context, the old one gets
 | [0024](./0024-station-location-code-and-workcenter-role-check.md) | Optional `Station.locationCode`, validated against facility-layout's WorkCenter role | Accepted |
 | [0025](./0025-cpt-missed-sweep-and-package-manifested.md) | `TaskCPTMissed` sweep and `PackageManifested` on the outbox (companion to order-management ADR 0014 §5) | Accepted |
 | [0026](./0026-on-time-to-cpt-kpi.md) | On-time-to-CPT KPI on the throughput analytics data product (companion to order-management ADR 0014 §6) | Accepted |
-| [0027](./0027-cloudevents-envelope-migration.md) | Migrate `warehouse.fulfillment.events` to a CloudEvents 1.0 structured envelope via a dual-read/dual-write bake period; companion to wes-work-planning's own envelope-migration ADR-0021 | Accepted |
+| [0027](./0027-cloudevents-envelope-migration.md) | Migrate `warehouse.fulfillment.events` to a CloudEvents 1.0 structured envelope via a dual-read/dual-write bake period; companion to wes-work-planning's own envelope-migration ADR-0021 | Superseded by [ADR-0032](./0032-cloudevents-mandatory-envelope.md) |
 | [0028](./0028-idempotency-key-middleware.md) | Transactional Idempotency-Key middleware for `POST /tasks`, direct port of order-management ADR-0023 | Accepted |
 | [0029](./0029-resilience-circuit-breakers-retry-dlq-shutdown.md) | Circuit breakers, jittered retry, dead-letter-queue hardening, and graceful shutdown for outbound dependencies, direct port of order-management ADR-0025 | Accepted |
 | [0030](./0030-horizontal-autoscaling-and-pgxpool-tuning.md) | Per-workload HorizontalPodAutoscaler and pgxpool MaxConns/statement_timeout tuning, direct port of order-management ADR-0026 | Accepted |
 | [0031](./0031-migrations-direct-postgres-connection.md) | Run golang-migrate against a direct Postgres connection, not PgBouncer — direct port of order-management ADR-0029 | Accepted |
+| [0032](./0032-cloudevents-mandatory-envelope.md) | CloudEvents 1.0 as the mandatory event envelope — every Kafka message (integration + analytics), SDK-built, no flat/dual modes | Accepted |
+| [0033](./0033-package-read-model.md) | Package read model — `GET /packages/{id}` and `GET /packages?orderRef=`; SLAM stays `204` | Accepted |

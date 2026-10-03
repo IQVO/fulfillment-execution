@@ -11,6 +11,8 @@ import (
 	kafkago "github.com/segmentio/kafka-go"
 	"github.com/testcontainers/testcontainers-go"
 	tckafka "github.com/testcontainers/testcontainers-go/modules/kafka"
+
+	"github.com/claudioed/fulfillment-execution/internal/adapters/kafka/cloudevents"
 )
 
 // TestNewConsumer_TwoInstancesInARow_BothReplayFully is the regression test
@@ -36,8 +38,10 @@ func TestNewConsumer_TwoInstancesInARow_BothReplayFully(t *testing.T) {
 
 	writer := &kafkago.Writer{Addr: kafkago.TCP(brokers...), Topic: topic}
 	t.Cleanup(func() { _ = writer.Close() })
+	seed := envelopeMsg(t, 0, 0, TypeProcessPathCreated, pathData{PathId: "ITEST", MatchPrefix: "itest", Direct: true, RequiredCapabilities: []string{"itest"}})
 	if err := writer.WriteMessages(ctx, kafkago.Message{
-		Value: []byte(`{"event_type":"ProcessPathCreated","data":{"path_id":"ITEST","match_prefix":"itest","direct":true,"required_capabilities":["itest"]}}`),
+		Value:   seed.Value,
+		Headers: []kafkago.Header{cloudevents.ContentTypeHeader()},
 	}); err != nil {
 		t.Fatalf("seed publish: %v", err)
 	}
@@ -77,6 +81,16 @@ func TestNewConsumer_TwoInstancesInARow_BothReplayFully(t *testing.T) {
 	}
 	if msg2.Offset != 0 {
 		t.Fatalf("expected second instance to replay from offset 0, got %d", msg2.Offset)
+	}
+
+	// The replayed CloudEvents wire message must decode and populate the
+	// catalogue exactly as the production Run loop would apply it.
+	c := newTestConsumer(&fakeReader{}, targetOffsets{})
+	if err := c.handle(msg2); err != nil {
+		t.Fatalf("handle replayed CloudEvent: %v", err)
+	}
+	if _, err := c.Lookup("itest"); err != nil {
+		t.Fatalf("expected ITEST in the catalogue after replay, got: %v", err)
 	}
 }
 
