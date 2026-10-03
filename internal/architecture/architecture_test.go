@@ -129,7 +129,7 @@ func assertPasses(t *testing.T, result *archgo.Result) {
 	t.Helper()
 
 	if !result.Pass {
-		t.Fatalf("architecture rule violated:\n%s", describeViolations(result))
+		t.Fatalf("%s", archViolation("dependency", "architecture", describeViolations(result)))
 	}
 }
 
