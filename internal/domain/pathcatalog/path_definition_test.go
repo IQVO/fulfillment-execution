@@ -117,3 +117,24 @@ func TestCatalogue_EmptyCatalogue_EveryLookupFails(t *testing.T) {
 		t.Fatalf("want ErrUnknownPath, got %v", err)
 	}
 }
+
+// Two definitions with the SAME prefix are the only way to tie on length. The first declared one wins
+// (`>`, not `>=`), so a duplicate later in the list never silently replaces an earlier declaration.
+func TestCatalogue_Lookup_DuplicatePrefix_FirstDeclaredWins(t *testing.T) {
+	cat := pathcatalog.New([]pathcatalog.PathDefinition{
+		{Id: "FIRST", MatchPrefix: "pick", Direct: true},
+		{Id: "SECOND", MatchPrefix: "pick", Direct: false},
+	})
+	def, err := cat.Lookup("pick")
+	if err != nil || def.Id != "FIRST" {
+		t.Fatalf("want the first declared definition, got %+v err=%v", def, err)
+	}
+	// and a longer prefix still beats a shorter one regardless of order
+	cat = pathcatalog.New([]pathcatalog.PathDefinition{
+		{Id: "SHORT", MatchPrefix: "pick"},
+		{Id: "LONG", MatchPrefix: "pick-wave"},
+	})
+	if def, _ := cat.Lookup("pick-wave-7"); def.Id != "LONG" {
+		t.Fatalf("longest prefix must win, got %s", def.Id)
+	}
+}

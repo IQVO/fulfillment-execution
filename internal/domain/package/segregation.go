@@ -1,5 +1,7 @@
 package pack
 
+import "fmt"
+
 // DOT hazard-class segregation, collapsed to the nine parent hazard
 // classes.
 //
@@ -95,13 +97,24 @@ func init() {
 	// transcription slip fails loudly (any go build/test/run of this
 	// package panics immediately) rather than silently producing an
 	// asymmetric rule.
+	if err := CheckSegregationSymmetry(&segregationMatrix); err != nil {
+		panic(err.Error())
+	}
+}
+
+// CheckSegregationSymmetry returns an error naming the first asymmetric
+// pair in m, or nil when m is symmetric over classes 1..9. It is the init-time
+// self-check above, extracted so the check itself can be exercised (an
+// init-only loop cannot be tested, so a broken loop would go unnoticed).
+func CheckSegregationSymmetry(m *[10][10]bool) error {
 	for i := 1; i <= 9; i++ {
 		for j := 1; j <= 9; j++ {
-			if segregationMatrix[i][j] != segregationMatrix[j][i] {
-				panic("pack: segregationMatrix is not symmetric — see segregation.go")
+			if m[i][j] != m[j][i] {
+				return fmt.Errorf("pack: segregationMatrix is not symmetric at [%d][%d] — see segregation.go", i, j)
 			}
 		}
 	}
+	return nil
 }
 
 // IsSegregationIncompatible reports whether two scanned items' DOT hazard
