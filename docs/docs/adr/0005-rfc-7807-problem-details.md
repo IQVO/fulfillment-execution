@@ -26,9 +26,12 @@ with the status code carrying all the machine-readable meaning. Two problems
 with that, both concrete for this particular API.
 
 **First, the status code is not specific enough to act on.** This service maps
-**ten distinct typed errors to `409`** — `ErrAlreadyClaimed`,
+**eleven distinct typed errors to `409`** (ten when this ADR was written; the
+pack segregation check, ADR-0010, added `ErrPackageSegregationViolation`) —
+`ErrAlreadyClaimed`,
 `ErrAlreadyCompleted`, `ErrNotClaimed`, `ErrNotOwner`, `ErrOccupied`,
 `ErrNotOccupied`, `ErrAlreadySealed`, `ErrAlreadyProcessed`, `ErrNotSealed`,
+`ErrPackageSegregationViolation`,
 `ErrNoClaimableTask`. A station client genuinely needs to distinguish them:
 
 - `no-claimable-task` → the pool is momentarily empty for me; **poll again**.
@@ -42,7 +45,8 @@ Three completely different client behaviours behind one status code. With only
 English message — which breaks the moment anyone rewords it.
 
 **Second, a bespoke shape is one more thing to document and learn.** The API
-already had four distinct error status codes and nineteen error conditions.
+already had four distinct error status codes and nineteen error conditions
+(counted when this ADR was written).
 
 Forces:
 
@@ -81,12 +85,15 @@ error response, without exception.**
 
 `Content-Type: application/problem+json` on every error response.
 
-The mapping lives in `internal/adapters/inbound/http/errors.go` in two
-exhaustive switches — `statusFor(err)` for the status and
-`problemTypeAndTitle(err)` for the type/title pair — both keyed on
-`errors.Is` against the typed domain and application errors. **Nineteen problem
-types** in total; the full table is in the
-[API Reference](../api-reference/index.md).
+The mapping lives in `internal/adapters/inbound/http/errors.go`: an exhaustive
+`statusFor(err)` switch for the status and a `problemCatalog` table (probed by
+`problemTypeAndTitle(err)`) for the type/title pair — both keyed on
+`errors.Is` against the typed domain and application errors. (The ADR was
+written when both were switches; the table replaced the second one with
+identical behaviour.) **Twenty typed errors are catalogued** today (3 × `404`,
+11 × `409`, 6 × `422`); `internal-error`, `invalid-request` and the
+Idempotency-Key types of ADR-0028 are emitted on top of those. The full table
+is in the [API Reference](../api-reference/index.md).
 
 ### The status-code semantics this pinned down
 
@@ -115,7 +122,7 @@ idle station polls; it does not treat the answer as permanent failure.
 
 ### Easier
 
-- **Clients can branch reliably.** `type` is stable; the ten `409` conditions
+- **Clients can branch reliably.** `type` is stable; the eleven `409` conditions
   are now distinguishable without reading English.
 - **The error contract is documentable and lintable.** A single `Problem`
   schema in `apis/openapi.yaml`, referenced by every error response, checked
@@ -134,8 +141,9 @@ idle station polls; it does not treat the answer as permanent failure.
 - **It was a breaking change.** Any client parsing `{"error": "..."}` had to
   change. Acceptable here because consumers are internal and the migration was
   done in one pass, but it is a real cost.
-- **Two switches must be kept in agreement.** `statusFor` and
-  `problemTypeAndTitle` are separate functions over the same error set. They
+- **A switch and a table must be kept in agreement.** `statusFor` and
+  `problemCatalog` (via `problemTypeAndTitle`) are separate structures over the
+  same error set. They
   agree today; nothing in the compiler enforces it. A single table keyed by
   error would be safer, and the current shape is the readability trade-off
   that was chosen.
@@ -144,7 +152,8 @@ idle station polls; it does not treat the answer as permanent failure.
   it looks like a cosmetic string.
 - **A wrong `500` is now indistinguishable in shape.** Any unmapped error
   falls through to `internal-error`, which looks like a deliberate problem type
-  to a client. The two switches being exhaustive over the typed errors is what
+  to a client. `statusFor` being exhaustive over the typed errors, and
+  `problemCatalog` mirroring it, is what
   keeps that branch rare.
 - **The `instance` rule has an exception.** Omitting it on bare
   collection-create endpoints is defensible under the RFC but is a special

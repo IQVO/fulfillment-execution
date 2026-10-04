@@ -97,8 +97,39 @@ paths:
         work is never pushed to a named station in advance. `cpt` (Committed
         Processing Time) drives dispatch priority: `claimNext` always
         selects the earliest-CPT pending task a station is equipped for.
-        This is not idempotent — each call creates a new task with a fresh,
-        server-generated id, even with an identical body.
+
+
+        **Idempotent per `Idempotency-Key` (ADR-0028).** Send a
+        caller-chosen `Idempotency-Key` header on every call. The first
+        request with a given key creates the task; a retry with the same
+        key and the same body replays the stored response verbatim (same
+        status, headers and task id — including a cached 4xx) instead of
+        creating a duplicate. Reusing a key with a different body is
+        rejected with `422 idempotency-key-reused`; omitting the header is
+        `400 idempotency-key-required`. (Key enforcement requires the
+        Postgres-backed deployment; the in-memory development
+        configuration skips it.) Without a repeated key every call creates
+        a new task with a fresh, server-generated id.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          # Declared optional in the schema because enforcement is
+          # deployment-dependent: with Postgres (every real deployment) a
+          # missing key is 400 idempotency-key-required; the in-memory
+          # development/contract-test configuration has no idempotency store
+          # and ignores the header. Clients MUST always send it.
+          required: false
+          description: >
+            Caller-supplied unique key (e.g. a UUID) identifying this
+            creation attempt. **Clients must always send a non-empty key**: a
+            Postgres-backed deployment rejects a missing key with `400
+            idempotency-key-required` (the in-memory development
+            configuration ignores the header, which is why the schema marks
+            it optional). Retries of the same logical request must reuse it;
+            a genuinely different request must use a new one.
+          schema:
+            type: string
+            example: 6f1c2a3e-9b1d-4c1a-8f0e-2d5b7c9a1e44
       requestBody:
         required: true
         content:
@@ -113,7 +144,10 @@ paths:
               fragile: false
       responses:
         "201":
-          description: Task created and placed in the pending pool.
+          description: >
+            Task created and placed in the pending pool (or, on a retry
+            with a repeated `Idempotency-Key` and identical body, the
+            original response replayed).
           headers:
             Location:
               description: Path of the newly created task, e.g. `/tasks/{id}`.
@@ -133,7 +167,47 @@ paths:
                 requiredCapabilities: [pick]
                 fragile: false
         "400":
-          $ref: "#/components/responses/BadRequestNoInstance"
+          description: >
+            The `Idempotency-Key` header is missing
+            (`idempotency-key-required`), or the request body is
+            malformed JSON, a required field is missing or empty, or a
+            field value is invalid (e.g. a task type outside the TaskType
+            enum) (`invalid-request`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                keyRequired:
+                  summary: Missing Idempotency-Key header
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/idempotency-key-required
+                    title: Idempotency-Key header is required
+                    status: 400
+                    detail: This endpoint creates a new resource on every call and requires a caller-supplied Idempotency-Key header so a retried request is never applied twice.
+                    instance: /tasks
+                invalidRequest:
+                  summary: Invalid body
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/invalid-request
+                    title: The request is malformed or missing a required field
+                    status: 400
+                    detail: type must be one of PICK, PACK, SLAM, REBIN
+        "422":
+          description: >
+            The `Idempotency-Key` was already used with a request that had
+            a different body (`idempotency-key-reused`). Use a new key for
+            a genuinely different request.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/idempotency-key-reused
+                title: Idempotency-Key was already used with a different request
+                status: 422
+                detail: The Idempotency-Key header on this request was already used with a request that had a different body. Use a new Idempotency-Key for a genuinely different request.
+                instance: /tasks
         "500":
           $ref: "#/components/responses/InternalError"
 

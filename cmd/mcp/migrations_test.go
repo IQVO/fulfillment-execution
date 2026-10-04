@@ -20,7 +20,7 @@ func migrationsDirForTest(t *testing.T) string {
 }
 
 // TestMigrationsDatabaseURLFallback proves the fallback wiring
-// cmd/mcp/main.go's run() applies before calling buildTaskRepo:
+// cmd/mcp/main.go's run() applies before calling buildStorage:
 // getenv("MIGRATIONS_DATABASE_URL", databaseURL) must return
 // MIGRATIONS_DATABASE_URL's own value when it is set, and databaseURL
 // itself (DATABASE_URL) when it is unset. This is the exact env-lookup
@@ -58,14 +58,14 @@ func TestMigrationsDatabaseURLFallback(t *testing.T) {
 }
 
 // TestBuildTaskRepo_UsesMigrationsDatabaseURLNotDatabaseURLForMigrations
-// proves buildTaskRepo itself — not just the env-var read above — actually
+// proves buildStorage itself — not just the env-var read above — actually
 // threads migrationsDatabaseURL into the migration step and databaseURL
 // into the pgxpool, rather than the two ever being conflated. Gives
 // DATABASE_URL an address nothing listens on (so opening the pgxpool,
 // which happens AFTER migrations succeed, would hang/fail loudly if ever
 // reached) and MIGRATIONS_DATABASE_URL a schemeless string that
 // migrate.New rejects immediately with a distinctive parse error
-// ("failed to parse scheme from database URL") — if buildTaskRepo ignored
+// ("failed to parse scheme from database URL") — if buildStorage ignored
 // migrationsDatabaseURL and ran migrations against databaseURL instead,
 // this test would see a dial/"connection refused" error, not the parse
 // error.
@@ -76,7 +76,7 @@ func TestBuildTaskRepo_UsesMigrationsDatabaseURLNotDatabaseURLForMigrations(t *t
 	)
 
 	logger := newLogger("error")
-	_, _, err := buildTaskRepo(context.Background(), unreachableAppURL, bogusMigrationsURL, migrationsDirForTest(t), logger)
+	_, _, err := buildStorage(context.Background(), unreachableAppURL, bogusMigrationsURL, migrationsDirForTest(t), logger)
 	if err == nil {
 		t.Fatal("a malformed MIGRATIONS_DATABASE_URL must fail boot")
 	}
@@ -91,13 +91,16 @@ func TestBuildTaskRepo_UsesMigrationsDatabaseURLNotDatabaseURLForMigrations(t *t
 func TestBuildTaskRepo_NoDatabaseURLUsesMemoryImmediately(t *testing.T) {
 	logger := newLogger("error")
 	start := time.Now()
-	repo, closeFn, err := buildTaskRepo(context.Background(), "", "", migrationsDirForTest(t), logger)
+	st, closeFn, err := buildStorage(context.Background(), "", "", migrationsDirForTest(t), logger)
 	if err != nil {
-		t.Fatalf("buildTaskRepo: %v", err)
+		t.Fatalf("buildStorage: %v", err)
 	}
 	defer closeFn()
-	if repo == nil {
-		t.Fatal("repo must not be nil in the in-memory path")
+	if st.tasks == nil || st.stations == nil {
+		t.Fatal("task and station repos must not be nil in the in-memory path")
+	}
+	if st.pool != nil || st.uow != nil {
+		t.Fatal("the in-memory path must have no pool and no UnitOfWork")
 	}
 	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
 		t.Fatalf("in-memory path took %v; it must not dial or sleep", elapsed)

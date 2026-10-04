@@ -125,3 +125,5 @@ gets a "Supersedes ADR-NNNN" line in its Context, the old one gets
 | [0031](./0031-migrations-direct-postgres-connection.md) | Run golang-migrate against a direct Postgres connection, not PgBouncer — direct port of order-management ADR-0029 | Accepted |
 | [0032](./0032-cloudevents-mandatory-envelope.md) | CloudEvents 1.0 as the mandatory event envelope — every Kafka message (integration + analytics), SDK-built, no flat/dual modes | Accepted |
 | [0033](./0033-package-read-model.md) | Package read model — `GET /packages/{id}` and `GET /packages?orderRef=`; SLAM stays `204` | Accepted |
+| [0034](./0034-concurrency-control-for-consolidation-and-claim.md) | Optimistic/pessimistic concurrency for consolidation and claim CAS | Accepted |
+| [0035](./0035-kafka-hash-partition-key.md) | Kafka hash partition key — every message keyed by its aggregate id; shared synchronous-writer settings | Accepted |

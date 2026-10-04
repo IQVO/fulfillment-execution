@@ -36,3 +36,10 @@ func (r *OrderConsolidationRepo) FindByOrderRef(_ context.Context, orderRef shar
 	}
 	return oc, nil
 }
+
+// FindByOrderRefForUpdate is FindByOrderRef: the in-memory repo has no
+// transaction scope to hold a lock in, and exists for single-process dev and
+// tests (ADR-0034).
+func (r *OrderConsolidationRepo) FindByOrderRefForUpdate(ctx context.Context, orderRef shared.OrderRef) (*consolidation.OrderConsolidation, error) {
+	return r.FindByOrderRef(ctx, orderRef)
+}

@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riandyrn/otelchi"
+	otelchimetric "github.com/riandyrn/otelchi/metric"
 
 	"github.com/claudioed/fulfillment-execution/internal/observability"
 )
@@ -58,12 +59,17 @@ func NewRouter(h *Handlers, logger *slog.Logger, opts ...RouterOption) *chi.Mux 
 	// WithChiRoutes makes the span name the route pattern
 	// (POST /tasks/{id}/complete) rather than the raw path, keeping span
 	// names low-cardinality.
+	//
+	// http.server.request.duration comes from the sanctioned
+	// otelchimetric middleware (ADR-0019), directly after otelchi and
+	// ahead of the request logger.
+	serviceName := observability.ServiceName()
 	r.Use(otelchi.Middleware(
-		observability.ServiceName(),
+		serviceName,
 		otelchi.WithChiRoutes(r),
 		otelchi.WithRequestMethodInSpanName(true),
 	))
-	r.Use(observability.HTTPServerMetrics())
+	r.Use(otelchimetric.NewServerRequestDuration(otelchimetric.NewBaseConfig(serviceName)))
 	r.Use(RequestLogger(logger))
 	r.Use(middleware.Recoverer)
 	r.Use(corsMiddleware())
@@ -162,7 +168,7 @@ func corsMiddleware() func(http.Handler) http.Handler {
 	return cors.Handler(cors.Options{
 		AllowedOrigins:   origins,
 		AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete},
-		AllowedHeaders:   []string{"Content-Type", "Authorization"},
+		AllowedHeaders:   []string{"Content-Type", "Authorization", "Idempotency-Key"},
 		AllowCredentials: false,
 		MaxAge:           300,
 	})

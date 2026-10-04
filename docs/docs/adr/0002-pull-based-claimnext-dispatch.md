@@ -146,5 +146,7 @@ cannot claim work by asserting capabilities it does not have.
   station can do, not a missing one — but it does mean a polling client.
 - **Concurrent claims race, and must.** Two stations calling `claimNext`
   simultaneously may both select the same earliest-CPT candidate. Correctness
-  therefore depends on the at-most-once guarantee inside `Task.Claim`, which
-  is the subject of [ADR-0003](./0003-lease-based-at-most-once-claiming.md).
+  therefore depends on the at-most-once guarantee: the domain rule in
+  `Task.Claim`, made atomic across processes by the compare-and-set
+  `TaskRepo.SaveClaim` ([ADR-0003](./0003-lease-based-at-most-once-claiming.md),
+  [ADR-0034](./0034-concurrency-control-for-consolidation-and-claim.md)).

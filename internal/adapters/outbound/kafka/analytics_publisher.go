@@ -193,9 +193,16 @@ func (p *AnalyticsPublisher) taskType(ctx context.Context, id shared.TaskId) str
 // onTimeToCPTFields resolves a PackageManifested event's on-time-to-CPT
 // enrichment: the originating SLAM task's process path/station and whether
 // manifestedAt was on time against that task's CPT. It correlates via
-// TaskRepo.FindByOrderRef — a package carries no TaskId of its own — and
-// picks the SLAM-type task among the order's tasks (a Pick/Pack/Rebin leg
-// for the same order is not the one a manifest event is measured against).
+// TaskRepo.FindByOrderRef and picks the SLAM-type task among the order's
+// tasks (a Pick/Pack/Rebin leg for the same order is not the one a
+// manifest event is measured against).
+//
+// Package DOES carry a TaskId (migration 0011), but it is the id of the
+// PACK task the package was sealed for (SealPackage rejects any other
+// type), so it cannot identify the SLAM leg. When a SLAM leg was retried
+// (a second SLAM task created after the first one's lease expired) the
+// order has several SLAM tasks; pickSlamTask chooses among them
+// deterministically instead of by repo return order (ADR-0026).
 // found is false (and every other return zero) when no SLAM task can be
 // resolved for orderRef — an edge case that should not happen in practice
 // (every Package descends from a SLAM task by construction) but is handled
@@ -215,17 +222,56 @@ func (p *AnalyticsPublisher) onTimeToCPTFields(ctx context.Context, orderRef sha
 	if err != nil {
 		return "", "", false, false
 	}
+	t := pickSlamTask(tasks)
+	if t == nil {
+		return "", "", false, false
+	}
+	station := ""
+	if lease := t.Lease(); lease != nil {
+		station = string(lease.StationId)
+	}
+	return string(t.Type()), station, !manifestedAt.After(t.CPT().Time()), true
+}
+
+// pickSlamTask selects the SLAM task a manifest is measured against from an
+// order's tasks, independent of their order in the slice. A SLAM task that
+// was actually worked (Claimed or Completed) beats one that is back to
+// Pending (an abandoned attempt whose lease expired); among equals the most
+// recently claimed wins, and the lowest id breaks a final tie. Returns nil
+// when the order has no SLAM task.
+func pickSlamTask(tasks []*task.Task) *task.Task {
+	var best *task.Task
 	for _, t := range tasks {
 		if t.Type() != task.Slam {
 			continue
 		}
-		station := ""
-		if lease := t.Lease(); lease != nil {
-			station = string(lease.StationId)
+		if best == nil || slamPreferred(t, best) {
+			best = t
 		}
-		return string(t.Type()), station, !manifestedAt.After(t.CPT().Time()), true
 	}
-	return "", "", false, false
+	return best
+}
+
+// slamPreferred reports whether a should be chosen over b.
+func slamPreferred(a, b *task.Task) bool {
+	if aw, bw := slamWorked(a), slamWorked(b); aw != bw {
+		return aw
+	}
+	var ac, bc time.Time
+	if a.ClaimedAt() != nil {
+		ac = *a.ClaimedAt()
+	}
+	if b.ClaimedAt() != nil {
+		bc = *b.ClaimedAt()
+	}
+	if !ac.Equal(bc) {
+		return ac.After(bc)
+	}
+	return a.Id() < b.Id()
+}
+
+func slamWorked(t *task.Task) bool {
+	return t.Status() == task.Claimed || t.Status() == task.Completed
 }
 
 // marshalData maps a domain event to its CloudEvents entity segment and

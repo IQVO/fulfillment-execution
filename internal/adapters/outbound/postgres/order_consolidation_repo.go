@@ -34,6 +34,34 @@ func (r *OrderConsolidationRepo) Save(ctx context.Context, oc *consolidation.Ord
 }
 
 func (r *OrderConsolidationRepo) FindByOrderRef(ctx context.Context, orderRef shared.OrderRef) (*consolidation.OrderConsolidation, error) {
+	return r.find(ctx, orderRef, "")
+}
+
+// FindByOrderRefForUpdate serializes concurrent arrivals for one order
+// (ADR-0034). Inside a UnitOfWork it takes a transaction-scoped advisory
+// lock keyed on the order_ref, then reads the row with FOR UPDATE:
+//
+//   - the advisory lock covers the FIRST arrival, when there is no row yet
+//     for FOR UPDATE to lock and two creators would otherwise both see "no
+//     consolidation" and the later Save would overwrite the earlier line;
+//   - FOR UPDATE keeps the row locked against any other writer for the rest
+//     of the transaction.
+//
+// Both are released at COMMIT/ROLLBACK, and under READ COMMITTED the SELECT
+// that follows the lock sees the previous holder's committed arrival.
+// Outside a transaction the lock would be released immediately, so there it
+// degrades to a plain read.
+func (r *OrderConsolidationRepo) FindByOrderRefForUpdate(ctx context.Context, orderRef shared.OrderRef) (*consolidation.OrderConsolidation, error) {
+	if tx, ok := txFrom(ctx); ok {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, string(orderRef)); err != nil {
+			return nil, err
+		}
+		return r.find(ctx, orderRef, " FOR UPDATE")
+	}
+	return r.find(ctx, orderRef, "")
+}
+
+func (r *OrderConsolidationRepo) find(ctx context.Context, orderRef shared.OrderRef, lockClause string) (*consolidation.OrderConsolidation, error) {
 	var (
 		storedOrderRef string
 		requiredLines  []string
@@ -41,8 +69,7 @@ func (r *OrderConsolidationRepo) FindByOrderRef(ctx context.Context, orderRef sh
 	)
 	row := querierFrom(ctx, r.pool).QueryRow(ctx, `
 		SELECT order_ref, required_lines, arrived_lines
-		FROM order_consolidations WHERE order_ref = $1
-	`, string(orderRef))
+		FROM order_consolidations WHERE order_ref = $1`+lockClause, string(orderRef))
 	if err := row.Scan(&storedOrderRef, &requiredLines, &arrivedLines); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil

@@ -57,7 +57,8 @@ Forces:
 executed by [godog](https://github.com/cucumber/godog) — the official Cucumber
 implementation for Go — as black-box tests through the real HTTP surface.**
 
-Four feature files under `features/`:
+Ten feature files under `features/` (the first four were the original set; six
+were added as the API grew):
 
 | File | Covers |
 | --- | --- |
@@ -65,6 +66,12 @@ Four feature files under `features/`:
 | `lease.feature` | Renewal before expiry; expiry returning a task to the pool |
 | `complete_task.feature` | Completing a claimed task; rejecting a non-owner |
 | `pack_slam.feature` | Sealing a package; the SLAM weigh-check labelling versus diverting |
+| `station_occupancy.feature` | Station check-in/check-out occupancy rules |
+| `task_guards.feature` | Task and package lifecycle guards |
+| `order_ref_lookup.feature` | Task lookup by order reference |
+| `cpt_missed_sweep.feature` | The CPT-missed sweep (ADR-0025) |
+| `installed_capacity.feature` | The installed-capacity read model (ADR-0018) |
+| `package_read_model.feature` | The package read model (ADR-0033) |
 
 Step definitions live in `features_test.go` at the repository root. The design
 of the harness is the substance of this decision:

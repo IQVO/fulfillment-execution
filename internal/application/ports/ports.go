@@ -90,6 +90,13 @@ type PackageRepo interface {
 type OrderConsolidationRepo interface {
 	Save(ctx context.Context, oc *consolidation.OrderConsolidation) error
 	FindByOrderRef(ctx context.Context, orderRef shared.OrderRef) (*consolidation.OrderConsolidation, error)
+	// FindByOrderRefForUpdate is FindByOrderRef for a read-modify-write:
+	// inside a UnitOfWork it first takes a per-order lock held until the
+	// scope ends, so concurrent arrivals for one order are serialized and
+	// none is lost (ADR-0034). That includes the very first arrival, when no
+	// row exists yet to lock. Outside a UnitOfWork it behaves like
+	// FindByOrderRef.
+	FindByOrderRefForUpdate(ctx context.Context, orderRef shared.OrderRef) (*consolidation.OrderConsolidation, error)
 }
 
 // PathCatalogue is the outbound port for the fleet's declared process-path

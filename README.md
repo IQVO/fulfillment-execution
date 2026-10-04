@@ -133,9 +133,12 @@ connects read-only. The OLTP `cmd/execution` never opens the analytical DB.
 `cmd/mcp` (the Model Context Protocol inbound adapter, [ADR-0008](docs/docs/adr/0008-mcp-inbound-adapter.md))
 is built into the same image as `/app/mcp` and deployed by the Helm chart as a
 separate Deployment + ClusterIP Service `<release>-mcp` on port **8090** when
-`mcp.enabled=true`. It runs the same read use cases over the same OLTP
+`mcp.enabled=true`. It runs the same use cases over the same OLTP
 database as the main deployment (it reuses `database.url` /
-`database.existingSecret`), speaks MCP Streamable HTTP at both `/` and `/mcp`,
+`database.existingSecret`); `complete_task` publishes `TaskCompleted` through
+the same transactional outbox as REST (`EVENT_PUBLISHER`/`KAFKA_BROKERS` are
+set on the pod; the relay runs only in the main deployment). It speaks MCP
+Streamable HTTP at both `/` and `/mcp`,
 and `GET /healthz` unauthenticated for the liveness/readiness probes. The
 fleet's REST identity layer was removed (see the ADR below), so all MCP
 tool calls are unauthenticated. When `analytics.enabled=true` the pod also

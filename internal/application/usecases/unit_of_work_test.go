@@ -585,7 +585,10 @@ func TestArriveAtRebin_PublishFailure_RollsBackEverything(t *testing.T) {
 	}
 }
 
-func TestArriveAtRebin_AlreadyComplete_OpensNoUnitOfWork(t *testing.T) {
+// A redelivered arrival must read the consolidation under the per-order lock
+// (ADR-0034), so it does open a unit of work — but it writes and publishes
+// nothing: no extra event, no second PACK task.
+func TestArriveAtRebin_AlreadyComplete_IsReadOnlyNoOp(t *testing.T) {
 	pub := &scopedPublisher{}
 	uow := &recordingUnitOfWork{}
 	uc, _, _ := rebinHarness(uow, pub)
@@ -593,10 +596,14 @@ func TestArriveAtRebin_AlreadyComplete_OpensNoUnitOfWork(t *testing.T) {
 	if err := uc.Execute(context.Background(), "order-1", "line-1", []string{"line-1"}, cpt, shared.NewCapabilitySet("pack"), false, false); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
+	published := len(pub.names)
 	if err := uc.Execute(context.Background(), "order-1", "line-1", []string{"line-1"}, cpt, shared.NewCapabilitySet("pack"), false, false); err != nil {
 		t.Fatalf("redelivered arrival: %v", err)
 	}
-	if uow.opened != 1 {
-		t.Fatalf("an idempotent repeat must not open a second unit of work, got opened=%d", uow.opened)
+	if uow.opened != 2 || uow.committed != 2 {
+		t.Fatalf("the repeat must read under the lock inside its own committed scope, got opened=%d committed=%d", uow.opened, uow.committed)
+	}
+	if len(pub.names) != published {
+		t.Fatalf("an idempotent repeat must publish nothing, got %v", pub.names[published:])
 	}
 }

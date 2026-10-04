@@ -12,6 +12,11 @@ description: An analytical read model (the "report") built from this service's o
 
 **Accepted.**
 
+Isolation is enforced by `TestAnalyticsIsolationRules`
+(`internal/architecture/architecture_test.go`): `internal/analytics/**`
+imports nothing else from this module, and `domain`/`application` never
+import it.
+
 ## Context
 
 The warehouse-systems estate needs a per-service **report** that supports

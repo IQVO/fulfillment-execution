@@ -163,6 +163,10 @@ func (r *errConsolidationRepo) FindByOrderRef(ctx context.Context, orderRef shar
 	return r.OrderConsolidationRepo.FindByOrderRef(ctx, orderRef)
 }
 
+func (r *errConsolidationRepo) FindByOrderRefForUpdate(ctx context.Context, orderRef shared.OrderRef) (*consolidation.OrderConsolidation, error) {
+	return r.FindByOrderRef(ctx, orderRef)
+}
+
 // errPublisher forces Publish to fail, so use cases' event-publish error
 // branches can be exercised.
 type errPublisher struct {

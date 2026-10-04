@@ -10,7 +10,8 @@ description: ADR 0016 — add REBIN as a fourth process-path task type and a sma
 
 ## Status
 
-Accepted.
+Accepted. Concurrent-arrival safety (per-order lock) added by
+[ADR-0034](./0034-concurrency-control-for-consolidation-and-claim.md).
 
 ## Context
 

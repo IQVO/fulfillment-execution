@@ -63,8 +63,23 @@ originating SLAM task.
 
 ### 1. Correlate `PackageManifested` to its originating SLAM task via `OrderRef`
 
-`pack.Package` carries no `TaskId` field (verified by reading
-`internal/domain/package/package.go` in full — its fields are `id`,
+> **Correction (ADR-0026 audit, 2026-10).** The original text below said
+> `pack.Package` carries no `TaskId`. It does: `Package.TaskId()`
+> (migration 0011, `internal/domain/package/package.go`) — but it is the id
+> of the **PACK** task the package was sealed for (`SealPackage` rejects any
+> other task type) and exists as `SealPackage`'s idempotency key. It cannot
+> name the SLAM leg, so the correlation still goes through `OrderRef`. What
+> changed is the tie-break: an order can have several SLAM tasks (a retried
+> SLAM leg after a lease expiry), and `FindByOrderRef`'s order is
+> unspecified. `pickSlamTask` now chooses deterministically — a SLAM task
+> that was actually worked (Claimed/Completed) beats an abandoned Pending
+> one, then the most recently claimed, then the lowest id — pinned by
+> `TestAnalyticsPublisher_PackageManifested_RetriedSlamPicksWorkedTask`.
+> A true SLAM-task-id correlation would need `RunSlam` to be told which
+> SLAM task it is running for; that is not part of today's
+> `POST /packages/{id}/slam` contract.
+
+The original reasoning follows. `pack.Package` was believed to carry no `TaskId` field (its fields are `id`,
 `orderRef`, `status`, `scannedContents`, `fragileHandling`,
 `giftWrapRequested`, `scannedHazardClasses`; no task reference). The
 correlation therefore goes through `OrderRef`, using
@@ -245,11 +260,11 @@ before deciding: no `analytics` channel/section exists to extend.
   must be kept consistent with its own inputs on every upsert, for no
   benefit over deriving it at read time from two integers.
 - **Resolve the SLAM task via a new `Package.TaskId` field instead of
-  `FindByOrderRef`.** Considered but rejected: it would widen the
-  `Package` aggregate's own persisted shape (a new migration on the OLTP
-  schema, not just analytics) for a correlation the analytics layer
-  already has a real, working mechanism for
-  (`FindByOrderRef`) — the smaller, already-proven tool was preferred.
+  `FindByOrderRef`.** Rejected at the time as too wide a change (a new
+  OLTP migration). Superseded by fact: `Package.TaskId` has since shipped
+  (migration 0011) for `SealPackage` idempotency, but it names the PACK
+  task, not the SLAM task, so it still cannot replace the `OrderRef`
+  lookup (see the correction in §1).
 - **Fail the publish when no SLAM task resolves**, instead of
   `resolved=false` fail-soft. Rejected: mirrors this fleet's established
   best-effort-enrichment convention (`taskType`'s own doc comment) and
