@@ -1,3 +1,9 @@
+---
+paths:
+  - "docs/**"
+  - "apis/**"
+---
+
 # Docs Site & API-Drift Check Procedure
 
 ## Build mechanics (Docusaurus + `docusaurus-plugin-openapi-docs`)

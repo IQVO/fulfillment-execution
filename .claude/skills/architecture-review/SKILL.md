@@ -1,3 +1,10 @@
+---
+name: architecture-review
+description: Bounded-context boundary and ADR-compliance review of a change (expensive, post-integration): hexagonal direction, cross-context coupling, contradicted ADRs. Invoke explicitly: /architecture-review [range].
+disable-model-invocation: true
+argument-hint: "[git range]"
+---
+
 Perform a bounded-context boundary and ADR-compliance review of the
 current changes (or `$ARGUMENTS` if given, e.g. a branch/PR diff range).
 
@@ -15,8 +22,7 @@ check a design decision against this fleet's standing architecture.
    `go test ./internal/architecture/... -v` first — if it's already red,
    report that and stop; don't hand-review what a fitness test already
    caught.
-2. **Customer/Supplier direction, per `.claude/rules/bounded-context-boundary.md`
-   (or this repo's equivalent doc).** A new outbound call to a sibling
+2. **Customer/Supplier direction, per `docs/docs/ddd/context-relationships.md`.** A new outbound call to a sibling
    context must go the direction ADRs already established — check
    `docs/docs/adr/` for the relevant context-mapping ADR before assuming
    a new integration is fine. Flag any outbound call added to a context
@@ -26,8 +32,8 @@ check a design decision against this fleet's standing architecture.
 3. **MCP additive-boundary rule (ADR-0008 fleet-wide).** A change under
    `internal/adapters/inbound/mcp/` must depend only on
    application/domain, and nothing else in the codebase may depend on
-   it. If this repo has a `TestMCPAdapterDependencyRule` fitness test,
-   confirm it's green; if not, check by eye.
+   it. Confirm `TestMCPAdapterDependencyRule`
+   (`internal/architecture/fitness_test.go`) is green.
 2b. **Zero-write guardrails, where applicable.** If this repo has a
    documented zero-write constraint (e.g. warehouse-ops-agent v1), check
    no mutating HTTP method or MCP tool without `ReadOnlyHint: true` was
@@ -44,7 +50,7 @@ check a design decision against this fleet's standing architecture.
    id for an event-sourced local-cache consumer that replays full
    history on every start. Flag any new consumer whose pattern doesn't
    match its actual replay behavior — this is a correctness bug, not a
-   style issue (see this repo's `.claude/skills/how-to-add-an-integration-event.md`
+   style issue (see this repo's `.claude/skills/how-to-add-an-integration-event/SKILL.md`
    for the two patterns and the incident that taught this fleet the
    difference).
 6. **A new bounded-context integration with no companion documentation.**
@@ -52,7 +58,7 @@ check a design decision against this fleet's standing architecture.
    REST call, a new Kafka topic subscription, a new MCP tool consumed by
    a sibling), check whether an ADR documents the decision — and whether
    a companion ADR should exist in the OTHER repo too, per this fleet's
-   companion-ADR convention (see `.claude/skills/how-to-write-an-adr.md`).
+   companion-ADR convention (see `.claude/skills/how-to-write-an-adr/SKILL.md`).
 7. **Auth-reintroduction and sibling-call bans**, same as `/code-review`
    items 6-8, but reasoned about more thoroughly here — check not just
    "is there a Bearer literal" but "does this change's INTENT require
