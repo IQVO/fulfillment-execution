@@ -343,3 +343,44 @@ func TestMutAnchor_Weigh_StateGuards(t *testing.T) {
 		})
 	}
 }
+
+func TestMutAnchor_CheckSegregationSymmetry(t *testing.T) {
+	var m [10][10]bool
+	if err := pack.CheckSegregationSymmetry(&m); err != nil {
+		t.Fatalf("an all-false matrix is symmetric, got %v", err)
+	}
+	// One-sided entries must be reported: this fails if the check loops never run.
+	m[2][5] = true
+	if err := pack.CheckSegregationSymmetry(&m); err == nil {
+		t.Fatalf("m[2][5] without m[5][2] must be reported as asymmetric")
+	}
+	m[5][2] = true
+	if err := pack.CheckSegregationSymmetry(&m); err != nil {
+		t.Fatalf("a symmetric pair must pass, got %v", err)
+	}
+	// Edge classes: the first and last rows/columns are part of the check.
+	var edge [10][10]bool
+	edge[1][9] = true
+	if err := pack.CheckSegregationSymmetry(&edge); err == nil {
+		t.Fatalf("edge-class asymmetry [1][9] must be reported")
+	}
+	edge[9][1] = true
+	edge[9][2] = true
+	if err := pack.CheckSegregationSymmetry(&edge); err == nil {
+		t.Fatalf("edge-class asymmetry [9][2] must be reported")
+	}
+	// The shipped matrix is symmetric (package init would have panicked otherwise).
+	for a := 1; a <= 9; a++ {
+		for b := 1; b <= 9; b++ {
+			if pack.IsSegregationIncompatible(a, b) != pack.IsSegregationIncompatible(b, a) {
+				t.Fatalf("shipped matrix asymmetric at (%d,%d)", a, b)
+			}
+		}
+	}
+}
+
+// KNOWN EQUIVALENT MUTANTS (cannot be killed; do not chase them or lower the threshold):
+//   - package.go Weigh: `deviation < 0` -> `<= 0`: at deviation 0 negation is 0, same result.
+//   - segregation.go CheckSegregationSymmetry: `i <= 9` -> `i < 9` and `j <= 9` -> `j < 9`: the pair
+//     (9, k) is also visited as (k, 9), so skipping row/column 9 reports exactly the same asymmetries.
+// With these three surviving the sensor reads Killed 60 / Lived 3 (95.24%) against the 90% gate.
