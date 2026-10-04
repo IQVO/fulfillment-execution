@@ -3,6 +3,7 @@ package http_test
 import (
 	stdhttp "net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -22,7 +23,7 @@ func preflight(t *testing.T, srv stdhttp.Handler, origin, method, path string) *
 // warehouse-console shell and this service's own fulfillment-mfe remote).
 // The default allowed origins cover local dev; CORS_ALLOWED_ORIGINS
 // overrides them for other environments. No credentials are needed
-// (static bearer key auth, not cookies).
+// (REST is unauthenticated by decision, ADR-0022; no cookies either).
 func TestCORS_Preflight_AllowsDefaultOrigin(t *testing.T) {
 	srv, _, _, _, _ := newTestServer()
 	rec := preflight(t, srv, "http://localhost:5173", stdhttp.MethodGet, "/queues/PICK/depth")
@@ -35,6 +36,23 @@ func TestCORS_Preflight_AllowsDefaultOrigin(t *testing.T) {
 	}
 	if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "" {
 		t.Fatalf("expected no Access-Control-Allow-Credentials header (no cookie auth), got %q", got)
+	}
+}
+
+// POST /tasks requires an Idempotency-Key header (ADR-0028); a browser can
+// only send it cross-origin if the preflight allows it.
+func TestCORS_Preflight_AllowsIdempotencyKeyHeader(t *testing.T) {
+	srv, _, _, _, _ := newTestServer()
+	req := httptest.NewRequest(stdhttp.MethodOptions, "/tasks", nil)
+	req.Header.Set("Origin", "http://localhost:5173")
+	req.Header.Set("Access-Control-Request-Method", stdhttp.MethodPost)
+	req.Header.Set("Access-Control-Request-Headers", "idempotency-key,content-type")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	got := strings.ToLower(rec.Header().Get("Access-Control-Allow-Headers"))
+	if !strings.Contains(got, "idempotency-key") {
+		t.Fatalf("Access-Control-Allow-Headers = %q, want it to include Idempotency-Key", got)
 	}
 }
 

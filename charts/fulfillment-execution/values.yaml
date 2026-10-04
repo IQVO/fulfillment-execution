@@ -235,8 +235,12 @@ livenessProbe:
   periodSeconds: 10
 
 readinessProbe:
+  # /readyz (not /healthz): it flips to 503 as the FIRST step of graceful
+  # shutdown (ADR-0029) so the pod leaves the Service endpoints during the
+  # drain window. /healthz stays on startup/liveness: it is always 200 while
+  # the process is up.
   httpGet:
-    path: /healthz
+    path: /readyz
     port: http
   initialDelaySeconds: 3
   periodSeconds: 5
@@ -347,6 +351,10 @@ mcp:
   replicaCount: 1
   httpAddr: ":8090"       # MCP_ADDR — Streamable HTTP at / and /mcp, /healthz
   logLevel: "info"
+  # EVENT_PUBLISHER for the MCP process. Empty inherits config.eventPublisher.
+  # With "kafka" and a database, complete_task writes outbox_events rows that
+  # the main deployment's relay publishes (ADR-0008, ADR-0020).
+  eventPublisher: ""
   service:
     type: ClusterIP
     port: 8090

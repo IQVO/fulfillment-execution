@@ -41,6 +41,16 @@ spec:
               value: {{ .Values.mcp.httpAddr | quote }}
             - name: LOG_LEVEL
               value: {{ .Values.mcp.logLevel | quote }}
+            # complete_task over MCP must emit TaskCompleted exactly like the
+            # REST path (ADR-0008/0020): the MCP process writes the SAME
+            # outbox_events rows (integration + analytics topics) inside the
+            # use case's transaction; the relay that drains them to Kafka runs
+            # only in the main deployment. EVENT_PUBLISHER/KAFKA_BROKERS mirror
+            # the main deployment unless mcp.eventPublisher overrides it.
+            - name: EVENT_PUBLISHER
+              value: {{ .Values.mcp.eventPublisher | default .Values.config.eventPublisher | quote }}
+            - name: KAFKA_BROKERS
+              value: {{ .Values.kafka.brokers | quote }}
             # The MCP binary runs the SAME use cases as the OLTP service over
             # the SAME database, so it reads the OLTP DATABASE_URL secret.
             {{- if or .Values.database.url .Values.database.existingSecret }}
