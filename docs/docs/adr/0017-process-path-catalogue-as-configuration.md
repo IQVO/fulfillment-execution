@@ -93,10 +93,14 @@ hard error instead of defaulting to `task.Pick`.**
 
 ```go
 // internal/domain/pathcatalog/path_definition.go
+// (sketch as first written; the shipped struct also has MatchPrefix and
+// DestinationLocationRole — see "Addendum" below and the current file)
 type PathDefinition struct {
 	Id                   string
+	MatchPrefix          string // added by the prefix-family addendum
 	Direct               bool
 	RequiredCapabilities []string
+	// DestinationLocationRole string — optional, added later
 }
 
 type Catalogue struct{ /* ... */ }
@@ -125,6 +129,18 @@ stands up, from `PATH_CATALOGUE_FILE` (default
 `/etc/fulfillment-execution/process-paths.yaml`, mounted from
 `warehouse-infra`'s published file in-cluster); a load failure is fatal —
 the process exits before serving any traffic or consuming any message.
+
+> **Addendum — second catalogue source.** `PATH_CATALOGUE_SOURCE` (default
+> `file`, the behaviour described above) can be set to `kafka`: the
+> `internal/adapters/outbound/kafkacatalog` adapter then keeps an in-memory
+> catalogue up to date from process-path-management's
+> `warehouse.process-path-management.events` topic (full replay at boot) and
+> satisfies the same `ports.PathCatalogue`. Startup waits (bounded by
+> `kafkacatalog.WaitReadyTimeout`) for the initial replay to complete before
+> serving, so the "never serve against an incomplete catalogue" guarantee is
+> preserved; failing to become ready in time is fatal at boot, and a transient
+> Kafka outage after that does not stop the process. The file source remains
+> the default.
 
 `wes-work-planning` and `workforce-management` mirror this same port +
 loader shape against the identical YAML file, in their own follow-up PRs

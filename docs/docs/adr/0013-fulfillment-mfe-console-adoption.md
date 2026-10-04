@@ -95,7 +95,8 @@ and dev server; it does not participate in this repo's Go quality gate
 `http://localhost:5173` (the `warehouse-console` shell) and
 `http://localhost:5184` (this repo's own `fulfillment-mfe` dev server) by
 default, overridable via `CORS_ALLOWED_ORIGINS` (comma-separated) for
-staging/prod. Static-bearer-key auth, not cookies, so
+staging/prod. REST is unauthenticated by decision (ADR-0022; the static-bearer
+auth this ADR was first written against was removed) and there are no cookies, so
 `AllowCredentials: false` — no credentialed-CORS surface was added. This was
 added directly to the existing HTTP adapter, not via a shared API gateway or
 reverse proxy, matching every other adopting service.

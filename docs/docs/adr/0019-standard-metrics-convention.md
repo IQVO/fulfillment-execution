@@ -64,6 +64,18 @@ is a file-layout difference only — this ADR governs instrument naming and
 behavior, not directory structure, so no change is required here. This PR
 is documentation-only.
 
+**Addendum (2026-10 audit).** The HTTP RED duration histogram was initially
+produced by a hand-rolled middleware (`internal/observability/httpmetrics.go`),
+which deviated from item 2 above. It has been replaced by the sanctioned
+`otelchimetric.NewServerRequestDuration` on the main REST router, the
+reports router **and** the `cmd/mcp` router, each directly after
+`otelchi.Middleware` and ahead of the request logger. The instrument name
+(`http.server.request.duration`, unit `s`) and the `http.route` attribute
+(route pattern, never the raw path; omitted for unmatched requests) are
+unchanged; the middleware's attribute set follows the semconv defaults of
+`otelchimetric`. Covered by `internal/adapters/inbound/http/metrics_test.go`
+and `cmd/mcp/router_test.go`.
+
 ## Decision
 
 Every service's metrics fall into two tiers. Tier 1 is mechanical and the

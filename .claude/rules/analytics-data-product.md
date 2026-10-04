@@ -48,6 +48,7 @@ store (arch-test enforces this).
 ## Standard metrics convention (ADR-0019)
 
 Tier 1 baseline + Tier 2 naming convention applied fleet-wide; see
-`internal/observability/metrics.go` and `httpmetrics.go` for this service's
+`internal/observability/metrics.go` (business counters; HTTP RED comes from the
+`otelchimetric` middleware, not a local file) for this service's
 implementation, and ADR-0019 for the naming rules to follow when adding a
 new metric.
