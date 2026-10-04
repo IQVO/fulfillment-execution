@@ -121,7 +121,7 @@ paths:
           required: false
           description: >
             Caller-supplied unique key (e.g. a UUID) identifying this
-            creation attempt. **Clients must always send it**: a
+            creation attempt. **Clients must always send a non-empty key**: a
             Postgres-backed deployment rejects a missing key with `400
             idempotency-key-required` (the in-memory development
             configuration ignores the header, which is why the schema marks
@@ -129,7 +129,6 @@ paths:
             a genuinely different request must use a new one.
           schema:
             type: string
-            minLength: 1
             example: 6f1c2a3e-9b1d-4c1a-8f0e-2d5b7c9a1e44
       requestBody:
         required: true
