@@ -113,11 +113,20 @@ paths:
       parameters:
         - name: Idempotency-Key
           in: header
-          required: true
+          # Declared optional in the schema because enforcement is
+          # deployment-dependent: with Postgres (every real deployment) a
+          # missing key is 400 idempotency-key-required; the in-memory
+          # development/contract-test configuration has no idempotency store
+          # and ignores the header. Clients MUST always send it.
+          required: false
           description: >
             Caller-supplied unique key (e.g. a UUID) identifying this
-            creation attempt. Retries of the same logical request must
-            reuse it; a genuinely different request must use a new one.
+            creation attempt. **Clients must always send it**: a
+            Postgres-backed deployment rejects a missing key with `400
+            idempotency-key-required` (the in-memory development
+            configuration ignores the header, which is why the schema marks
+            it optional). Retries of the same logical request must reuse it;
+            a genuinely different request must use a new one.
           schema:
             type: string
             minLength: 1
