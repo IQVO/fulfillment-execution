@@ -55,38 +55,43 @@ func (uc *ArriveAtRebin) Execute(
 	packFragile bool,
 	packGiftWrap bool,
 ) error {
-	oc, err := uc.Consolidations.FindByOrderRef(ctx, orderRef)
-	if err != nil {
-		return err
-	}
-	if oc == nil {
-		oc = consolidation.New(string(orderRef), requiredLineIds)
-	}
-	wasAlreadyComplete := oc.IsComplete()
-
-	if err := oc.RecordArrival(lineId); err != nil {
-		return err
-	}
-
-	now := uc.Clock.Now()
-
-	// Once consolidation has completed, every further call for this
-	// orderRef (a redelivered arrival, or an arrival for a line that
-	// somehow arrives twice) is a pure idempotent no-op with respect to
-	// PACK task creation — the PACK task was already created exactly
-	// once, on the arrival that first completed consolidation. Without
-	// this guard, IsComplete() staying true forever would re-trigger
-	// CreateTask on every subsequent call.
-	if wasAlreadyComplete {
-		return nil
-	}
-
-	// The consolidation state is saved FIRST and the arrival event
-	// published after it, inside the same scope: with a transactional
-	// outbox the publish is itself a write bound to this transaction, so
-	// the order only matters for the nil-UnitOfWork fallback, where
-	// "state, then event" is the convention every other use case follows.
+	// The read-modify-write of the consolidation runs INSIDE the unit of
+	// work, behind FindByOrderRefForUpdate's per-order lock (ADR-0034):
+	// two lines of one order arriving at the same instant are serialized,
+	// so the second reads the first's committed arrival instead of
+	// overwriting it (a lost line would leave the order never consolidating).
 	return atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
+		oc, err := uc.Consolidations.FindByOrderRefForUpdate(ctx, orderRef)
+		if err != nil {
+			return err
+		}
+		if oc == nil {
+			oc = consolidation.New(string(orderRef), requiredLineIds)
+		}
+		wasAlreadyComplete := oc.IsComplete()
+
+		if err := oc.RecordArrival(lineId); err != nil {
+			return err
+		}
+
+		now := uc.Clock.Now()
+
+		// Once consolidation has completed, every further call for this
+		// orderRef (a redelivered arrival, or an arrival for a line that
+		// somehow arrives twice) is a pure idempotent no-op with respect to
+		// PACK task creation — the PACK task was already created exactly
+		// once, on the arrival that first completed consolidation. Without
+		// this guard, IsComplete() staying true forever would re-trigger
+		// CreateTask on every subsequent call.
+		if wasAlreadyComplete {
+			return nil
+		}
+
+		// The consolidation state is saved FIRST and the arrival event
+		// published after it, inside the same scope: with a transactional
+		// outbox the publish is itself a write bound to this transaction, so
+		// the order only matters for the nil-UnitOfWork fallback, where
+		// "state, then event" is the convention every other use case follows.
 		if err := uc.Consolidations.Save(ctx, oc); err != nil {
 			return err
 		}

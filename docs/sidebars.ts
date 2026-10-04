@@ -114,6 +114,7 @@ const sidebars: SidebarsConfig = {
         'adr/0031-migrations-direct-postgres-connection',
         'adr/0032-cloudevents-mandatory-envelope',
         'adr/0033-package-read-model',
+        'adr/0034-concurrency-control-for-consolidation-and-claim',
       ],
     },
   ],

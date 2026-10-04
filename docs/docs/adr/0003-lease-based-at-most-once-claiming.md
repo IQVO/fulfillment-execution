@@ -122,9 +122,13 @@ by a failing-path test rather than left to code review.
 - **Work cannot vanish.** Every abandonment path — dead scanner, walked-away
   associate, crashed client, network partition — resolves itself within the
   lease window with no human intervention. This is the whole point.
-- **At-most-once holds without a distributed lock.** The guarantee lives in
+- **At-most-once holds without a distributed lock.** The *rule* lives in
   `Task.Claim`, in the domain, so it behaves identically under Postgres and
-  in-memory adapters.
+  in-memory adapters; the *cross-process atomicity* comes from the
+  compare-and-set `UPDATE` in `TaskRepo.SaveClaim` (`WHERE status = 'PENDING'
+  OR (CLAIMED AND lease_expiry <= now)`), which only one of several racing
+  stations can win — see
+  [ADR-0034](./0034-concurrency-control-for-consolidation-and-claim.md).
 - **Long work has an honest mechanism.** Renewal means the timeout is tuned
   for *detection latency*, not for the longest conceivable task.
 - **Recovery is observable.** `LeaseExpired` is a real domain event and the
