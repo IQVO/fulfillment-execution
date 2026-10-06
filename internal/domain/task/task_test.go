@@ -219,6 +219,40 @@ func TestComplete_RejectsClaimedWithoutLease(t *testing.T) {
 	}
 }
 
+func TestVerifyHeldBy_AcceptsOwnerWithActiveLease(t *testing.T) {
+	tk := newPickTask()
+	_ = tk.Claim(shared.StationId("s1"), shared.NewCapabilitySet("pick"), now, time.Minute)
+	if err := tk.VerifyHeldBy(shared.StationId("s1"), now.Add(30*time.Second)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestVerifyHeldBy_RejectsExpiredLeaseOfOwner(t *testing.T) {
+	tk := newPickTask()
+	_ = tk.Claim(shared.StationId("s1"), shared.NewCapabilitySet("pick"), now, time.Minute)
+	// Boundary: a lease is expired AT its expiry instant (same as Lease.expired).
+	for _, at := range []time.Time{now.Add(time.Minute), now.Add(2 * time.Minute)} {
+		err := tk.VerifyHeldBy(shared.StationId("s1"), at)
+		if !errors.Is(err, task.ErrNotOwner) {
+			t.Fatalf("at %v: expected ErrNotOwner for an expired lease, got %v", at, err)
+		}
+	}
+	if tk.Status() != task.Claimed || tk.Lease() == nil {
+		t.Fatalf("VerifyHeldBy must not mutate the task, got status %s lease %v", tk.Status(), tk.Lease())
+	}
+}
+
+func TestVerifyHeldBy_RejectsOtherStationAndMissingLease(t *testing.T) {
+	tk := newPickTask()
+	if err := tk.VerifyHeldBy(shared.StationId("s1"), now); !errors.Is(err, task.ErrNotOwner) {
+		t.Fatalf("unclaimed: expected ErrNotOwner, got %v", err)
+	}
+	_ = tk.Claim(shared.StationId("s1"), shared.NewCapabilitySet("pick"), now, time.Minute)
+	if err := tk.VerifyHeldBy(shared.StationId("s2"), now.Add(time.Second)); !errors.Is(err, task.ErrNotOwner) {
+		t.Fatalf("other station: expected ErrNotOwner, got %v", err)
+	}
+}
+
 func TestRenewLease_RejectsAfterLeaseExpiredAndFreesTask(t *testing.T) {
 	tk := newPickTask()
 	_ = tk.Claim(shared.StationId("s1"), shared.NewCapabilitySet("pick"), now, time.Minute)

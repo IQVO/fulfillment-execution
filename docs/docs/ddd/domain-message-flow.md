@@ -90,8 +90,9 @@ already shown in scenario 1, and the Pick tasks that produced the lines.
 
 ## Scenario 3 — the sweeps: a lapsed lease and a missed CPT
 
-An external scheduler drives both sweeps; nothing in this repository runs
-them on a timer.
+An external scheduler drives both sweeps; no code in this repository runs
+them on a timer (the Helm chart's opt-in `sweeps.enabled` CronJobs are that
+external scheduler, off by default).
 
 ```mermaid
 sequenceDiagram

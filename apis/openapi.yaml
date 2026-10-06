@@ -12,7 +12,7 @@ info:
 
     The defining design rule is **pull, not push**: a station calls
     `claimNext(stationId, capabilities)` and the system selects the
-    highest-priority (earliest CPT — Committed Processing Time) pending
+    highest-priority (earliest CPT — Critical Pull Time) pending
     task the station is certified/equipped for. The system never names a
     station in advance. Assignment is **at-most-once**, enforced by a
     time-boxed **lease**: if a claim is not confirmed (renewed) or completed
@@ -94,8 +94,8 @@ paths:
         The task is not assigned to any station at creation time — PULL
         dispatch (`POST /stations/{stationId}/claim-next`) is the only way
         a task becomes claimed, consistent with this service's rule that
-        work is never pushed to a named station in advance. `cpt` (Committed
-        Processing Time) drives dispatch priority: `claimNext` always
+        work is never pushed to a named station in advance. `cpt` (Critical
+        Pull Time) drives dispatch priority: `claimNext` always
         selects the earliest-CPT pending task a station is equipped for.
 
 
@@ -1329,7 +1329,7 @@ components:
           type: string
           format: date-time
           description: >
-            Committed Processing Time — the deadline driving dispatch
+            Critical Pull Time — the deadline driving dispatch
             priority. `claimNext` always selects the earliest-CPT pending
             task a station qualifies for.
           example: "2026-01-01T18:00:00Z"
@@ -1726,7 +1726,7 @@ components:
           type: string
           format: date-time
           description: >
-            Committed Processing Time for the PACK task this order's
+            Critical Pull Time for the PACK task this order's
             consolidation creates. Used only by the arrival that completes
             the set.
           example: "2026-01-01T19:00:00Z"

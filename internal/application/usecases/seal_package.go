@@ -42,8 +42,9 @@ type SealPackage struct {
 	UnitOfWork ports.UnitOfWork
 }
 
-// Execute validates that stationId holds the active claim on taskId (which
-// must be a Pack task), then scans contents and seals a new Package for the
+// Execute validates that stationId holds the active, unexpired claim on
+// taskId (which must be a Pack task; Task.VerifyHeldBy, so an expired lease
+// is task.ErrNotOwner), then scans contents and seals a new Package for the
 // task's order.
 //
 // Before doing any of that, it checks whether a Package has already been
@@ -81,9 +82,8 @@ func (uc *SealPackage) Execute(ctx context.Context, taskId shared.TaskId, statio
 	if t.Type() != task.Pack {
 		return nil, ErrWrongTaskType
 	}
-	lease := t.Lease()
-	if lease == nil || lease.StationId != stationId {
-		return nil, task.ErrNotOwner
+	if err := t.VerifyHeldBy(stationId, uc.Clock.Now()); err != nil {
+		return nil, err
 	}
 
 	p := pack.New(uc.NewId(), t.OrderRef(), taskId, t.Fragile(), t.GiftWrap())
