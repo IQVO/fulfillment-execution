@@ -147,7 +147,12 @@ autoscaling:
 
 config:
   httpAddr: ":8080"
-  eventPublisher: "log"   # "log" or "kafka" — gates the TaskCompleted publisher only
+  # "log" or "kafka". "kafka" gates ALL Kafka event publishing, not just
+  # TaskCompleted: both outbox encoders (the integration topic —
+  # TaskCompleted, TaskCPTMissed, PackageManifested — and the analytics
+  # topic) and the WorkReleased consumer's dead-letter (<topic>.dlq) writer.
+  # "log" only logs events; no event reaches a broker and no DLQ is wired.
+  eventPublisher: "log"
 
 database:
   url: ""
