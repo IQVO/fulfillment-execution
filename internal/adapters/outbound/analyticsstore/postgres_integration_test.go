@@ -4,34 +4,66 @@ package analyticsstore_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 	"time"
+
+	"github.com/testcontainers/testcontainers-go"
+	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/analyticsstore"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/postgres"
 	"github.com/claudioed/fulfillment-execution/internal/analytics/report"
 )
 
-func requireAnalyticsURL(t *testing.T) string {
-	t.Helper()
-	url := os.Getenv("ANALYTICS_DATABASE_URL")
-	if url == "" {
-		t.Skip("ANALYTICS_DATABASE_URL not set, skipping analytics postgres integration test")
-	}
-	return url
+// These tests run against a throwaway analytics Postgres the test binary
+// starts itself via testcontainers — never an external
+// ANALYTICS_DATABASE_URL, never t.Skip. One container is started in
+// TestMain, migrated once with the analytics migrations, and shared by every
+// test in the package (containers are slow to boot); isolation comes from
+// each test using unique station ids or truncating what it asserts on.
+
+var analyticsURL string
+
+// TestMain owns the package-wide Postgres lifecycle.
+func TestMain(m *testing.M) {
+	os.Exit(runWithAnalyticsPostgres(m))
 }
 
-func migrateAnalytics(t *testing.T, url string) {
-	t.Helper()
-	if err := postgres.Migrate(url, "../../../../migrations/analytics"); err != nil {
-		t.Fatalf("migrate analytics: %v", err)
+func runWithAnalyticsPostgres(m *testing.M) int {
+	ctx := context.Background()
+	container, err := tcpostgres.Run(ctx, "postgres:16-alpine",
+		tcpostgres.WithDatabase("fulfillment_analytics"),
+		tcpostgres.WithUsername("fx_analytics"),
+		tcpostgres.WithPassword("fx_analytics"),
+		tcpostgres.BasicWaitStrategies(),
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "start postgres container: %v\n", err)
+		return 1
 	}
+	defer func() {
+		if err := testcontainers.TerminateContainer(container); err != nil {
+			fmt.Fprintf(os.Stderr, "terminate postgres container: %v\n", err)
+		}
+	}()
+
+	url, err := container.ConnectionString(ctx, "sslmode=disable")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "connection string: %v\n", err)
+		return 1
+	}
+	if err := postgres.Migrate(url, "../../../../migrations/analytics"); err != nil {
+		fmt.Fprintf(os.Stderr, "migrate analytics: %v\n", err)
+		return 1
+	}
+	analyticsURL = url
+	return m.Run()
 }
 
 func TestPostgresProjectionAndReport_RoundTrip(t *testing.T) {
-	url := requireAnalyticsURL(t)
-	migrateAnalytics(t, url)
+	url := analyticsURL
 
 	pool, err := analyticsstore.NewPool(context.Background(), url)
 	if err != nil {
@@ -97,8 +129,7 @@ func TestPostgresProjectionAndReport_RoundTrip(t *testing.T) {
 // TestReadOnlyPool_RejectsWrites asserts the reader pool is genuinely
 // read-only: an attempt to write through it must be rejected by Postgres.
 func TestReadOnlyPool_RejectsWrites(t *testing.T) {
-	url := requireAnalyticsURL(t)
-	migrateAnalytics(t, url)
+	url := analyticsURL
 
 	roPool, err := analyticsstore.NewReadOnlyPool(context.Background(), url)
 	if err != nil {
@@ -125,8 +156,7 @@ func TestReadOnlyPool_RejectsWrites(t *testing.T) {
 // empty table returns a single NULL row (not zero rows), which must be read as
 // a zero lag rather than a scan error.
 func TestFreshnessLag_EmptyStore(t *testing.T) {
-	url := requireAnalyticsURL(t)
-	migrateAnalytics(t, url)
+	url := analyticsURL
 
 	pool, err := analyticsstore.NewPool(context.Background(), url)
 	if err != nil {
@@ -156,8 +186,7 @@ func TestFreshnessLag_EmptyStore(t *testing.T) {
 // manifests, idempotently on eventId, on the SAME (task_type, station_id,
 // hour_bucket) grain the existing rollup uses.
 func TestPostgresProjectionAndReport_OnTimeToCPT_RoundTrip(t *testing.T) {
-	url := requireAnalyticsURL(t)
-	migrateAnalytics(t, url)
+	url := analyticsURL
 
 	pool, err := analyticsstore.NewPool(context.Background(), url)
 	if err != nil {

@@ -5,7 +5,6 @@ package postgres_test
 import (
 	"context"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
@@ -19,27 +18,12 @@ import (
 	"github.com/claudioed/fulfillment-execution/internal/domain/task"
 )
 
-func requireDatabaseURL(t *testing.T) string {
-	t.Helper()
-	url := os.Getenv("DATABASE_URL")
-	if url == "" {
-		t.Skip("DATABASE_URL not set, skipping postgres integration test")
-	}
-	return url
-}
-
+// newPool returns a pool over a throwaway, fully migrated Postgres. It
+// delegates to outboxDB (testcontainers — the test owns its own database
+// end to end), never an external DATABASE_URL, never t.Skip.
 func newPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	url := requireDatabaseURL(t)
-	if err := postgres.Migrate(url, "../../../../migrations"); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	pool, err := pgxpool.New(context.Background(), url)
-	if err != nil {
-		t.Fatalf("pgxpool.New: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
+	return outboxDB(t)
 }
 
 func TestTaskRepo_SaveAndFindById(t *testing.T) {

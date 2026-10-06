@@ -184,27 +184,15 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: fulfillment
-          POSTGRES_PASSWORD: fulfillment
-          POSTGRES_DB: fulfillment_execution
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
+      # Every Postgres and Kafka integration test boots its own container via
+      # testcontainers (the runner's Docker daemon); there is no service
+      # container and no DATABASE_URL.
       - name: Integration tests
-        env:
-          DATABASE_URL: "postgres://fulfillment:fulfillment@localhost:5432/fulfillment_execution?sslmode=disable"
         run: go test -tags=integration ./... -race -count=1
 
   # Fast, BLOCKING test-quality sensor: runs on every push/PR.
