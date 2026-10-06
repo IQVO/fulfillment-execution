@@ -3,7 +3,7 @@ id: domain-events
 title: Domain events
 sidebar_label: Domain events
 sidebar_position: 3
-description: All thirteen past-tense domain events raised by this bounded context, which aggregate raises each, what triggers it, and which are actually published outside the process today.
+description: All thirteen past-tense domain events raised by this bounded context — full CloudEvents type, topic, partition key, payload, producing use case and known consumers — plus the events consumed from upstream.
 ---
 
 # Domain events
@@ -18,43 +18,104 @@ type DomainEvent interface {
 }
 ```
 
-Events are **deliberately thin** — most carry only the aggregate id. Enrichment
-for the wire happens in the outbound adapter, never on the event itself. See
-[ADR-0004](../adr/0004-kafka-integration-events-and-envelope.md) for why.
+Events are **deliberately thin** — most carry only the aggregate id.
+Enrichment for the wire happens in the outbound adapter, never on the event
+itself (see "Why the events stay thin" below).
+
+## How an event leaves the process
+
+A use case hands its events to `ports.EventPublisher`. What happens next is
+decided at the composition root (`internal/composition/publisher.go`):
+
+| `EVENT_PUBLISHER` | `DATABASE_URL` | What `Publish` does |
+| --- | --- | --- |
+| `log` (default) | any | Logs the event to stdout. Nothing reaches Kafka. |
+| `kafka` | set | Runs **two encoders** inside the use case's own transaction — the integration encoder (`internal/adapters/outbound/kafka/publisher.go`) and the analytics encoder (`analytics_publisher.go`) — and inserts one `outbox_events` row per encoded message. The in-process relay in `cmd/execution` drains the rows onto Kafka in id order ([ADR-0020](../adr/0020-transactional-outbox.md)). `cmd/mcp` only inserts; it never runs the relay. |
+| `kafka` | unset | Same two encoders, written straight to the broker through `events.MultiPublisher` (no transaction to bind them to). |
+
+Each encoder has an **allowlist**. An event outside it is skipped, not
+errored — that is how the two Rebin events stay in-process.
+
+## Wire conventions (all published events)
+
+- **Envelope:** CloudEvents 1.0, structured content mode, built only by
+  `internal/adapters/kafka/cloudevents` (official `sdk-go/v2/event`); Kafka
+  header `content-type: application/cloudevents+json; charset=UTF-8`
+  ([ADR-0032](../adr/0032-cloudevents-mandatory-envelope.md)).
+- **`type`:** `com.warehouse.wes.fulfillment-execution.<entity>.<EventName>`,
+  where `entity` is `task` or `package` (the raising aggregate).
+- **`source`:** `/warehouse/fulfillment-execution`.
+- **`dataschema`:** `urn:warehouse:fulfillment-execution:events:<EventName>:v1`
+  on the integration topic, `urn:warehouse:fulfillment-execution:analytics:<EventName>:v1`
+  on the analytics topic.
+- **Partition key = `subject` = the raising aggregate's id** (task id or
+  package id), written with the `kafkago.Hash` balancer, so every event of
+  one aggregate lands on one partition, in order
+  ([ADR-0035](../adr/0035-kafka-hash-partition-key.md)).
+- **`id`:** UUID v4 minted once in `Encode` and persisted in the outbox row,
+  so a relay retry republishes the same `id` (the consumer dedupe key).
 
 ## The catalogue
 
-| Event | Aggregate | Raised when | Payload fields | Published externally? |
-| --- | --- | --- | --- | --- |
-| `TaskCreated` | Task | `CreateTask` puts a new unit of work in the pool | `TaskId` | No — in-process only |
-| `TaskClaimed` | Task | `ClaimNext` leases a task to a station | `TaskId`, `StationId` | No — in-process only |
-| `LeaseExpired` | Task | `ExpireLeases` frees a task whose lease lapsed | `TaskId` | No — in-process only |
-| `TaskCompleted` | Task | `CompleteTask` succeeds | `TaskId`, `StationId` | **Yes** — Kafka, `warehouse.fulfillment.events` |
-| `TaskCPTMissed` | Task | `SweepCPTMisses` finds an open task at or past its CPT | `TaskId`, `OrderRef`, `TaskType`, `CPT` | **Yes** — Kafka, `warehouse.fulfillment.events` ([ADR-0025](../adr/0025-cpt-missed-sweep-and-package-manifested.md)) |
-| `ItemPicked` | Task | *(defined; not raised today — see below)* | `TaskId` | No |
-| `PackageSealed` | Package | `SealPackage` seals a carton | `PackageId` | No — in-process only |
-| `WeightDiscrepancyDetected` | Package | SLAM finds actual weight outside tolerance | `PackageId`, `ExpectedWeight`, `ActualWeight` | No — in-process only |
-| `LabelApplied` | Package | SLAM passes and the shipping label is applied | `PackageId` | No — in-process only |
-| `PackageManifested` | Package | SLAM passes (raised alongside `LabelApplied`) | `PackageId`, `OrderRef` | **Yes** — Kafka, `warehouse.fulfillment.events` ([ADR-0025](../adr/0025-cpt-missed-sweep-and-package-manifested.md)) |
-| `PackageDiverted` | Package | SLAM fails and the package is routed off the standard path | `PackageId` | No — in-process only |
-| `ItemArrivedAtRebin` | OrderConsolidation | `ArriveAtRebin` records a line arrival | `OrderRef`, `LineId` | No — in-process only, not in `apis/asyncapi.yaml` |
-| `OrderConsolidated` | OrderConsolidation | The last required line arrives and the PACK task is created | `OrderRef` | No — in-process only, not in `apis/asyncapi.yaml` |
+| Event | Full CloudEvents `type` | Raised by (use case) | Domain payload | `warehouse.fulfillment.events` (integration) `data` | `warehouse.fulfillment.analytics` `data` |
+| --- | --- | --- | --- | --- | --- |
+| `TaskCreated` | `com.warehouse.wes.fulfillment-execution.task.TaskCreated` | `CreateTask` (REST `POST /tasks`, the `WorkReleased` consumer, and `ArriveAtRebin` on consolidation) | `TaskId` | — | `task_id`, `task_type` |
+| `TaskClaimed` | `com.warehouse.wes.fulfillment-execution.task.TaskClaimed` | `ClaimNext` | `TaskId`, `StationId` | — | `task_id`, `task_type`, `station_id` |
+| `LeaseExpired` | `com.warehouse.wes.fulfillment-execution.task.LeaseExpired` | `ExpireLeases` | `TaskId` | — | `task_id`, `task_type` |
+| `TaskCompleted` | `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` | `CompleteTask` (REST and MCP `complete_task`) | `TaskId`, `StationId` | `task_id`, `station_id`, `work_unit_id`, `associate_id`?, `duration_seconds`?, `task_type`? | `task_id`, `task_type`, `station_id` |
+| `TaskCPTMissed` | `com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed` | `SweepCPTMisses` | `TaskId`, `OrderRef`, `TaskType`, `CPT` | `task_id`, `order_ref`, `task_type`?, `cpt` | — |
+| `ItemPicked` | `com.warehouse.wes.fulfillment-execution.task.ItemPicked` | *(no use case raises it today)* | `TaskId` | — | `task_id`, `task_type` (encoder exists, never fed) |
+| `PackageSealed` | `com.warehouse.wes.fulfillment-execution.package.PackageSealed` | `SealPackage` | `PackageId` | — | `package_id` |
+| `WeightDiscrepancyDetected` | `com.warehouse.wes.fulfillment-execution.package.WeightDiscrepancyDetected` | `RunSlam` (outside tolerance) | `PackageId`, `ExpectedWeight`, `ActualWeight` | — | `package_id`, `expected_g`, `actual_g` |
+| `PackageDiverted` | `com.warehouse.wes.fulfillment-execution.package.PackageDiverted` | `RunSlam` (outside tolerance) | `PackageId` | — | `package_id` |
+| `LabelApplied` | `com.warehouse.wes.fulfillment-execution.package.LabelApplied` | `RunSlam` (within tolerance) | `PackageId` | — | `package_id` |
+| `PackageManifested` | `com.warehouse.wes.fulfillment-execution.package.PackageManifested` | `RunSlam` (within tolerance, alongside `LabelApplied`) | `PackageId`, `OrderRef` | `package_id`, `order_ref` | `package_id`, `order_ref`, `task_type`, `station_id`, `on_time`, `resolved` |
+| `ItemArrivedAtRebin` | *(none — never encoded)* | `ArriveAtRebin` | `OrderRef`, `LineId` | — | — |
+| `OrderConsolidated` | *(none — never encoded)* | `ArriveAtRebin` (completing arrival) | `OrderRef` | — | — |
 
-:::caution Published ≠ defined
-Only **`TaskCompleted`, `TaskCPTMissed` and `PackageManifested`** are carried
-onto the integration topic — the allowlist in
-`internal/adapters/outbound/kafka/publisher.go` is the source of truth. The
-analytics publisher separately forwards a projection-relevant subset to
-`warehouse.fulfillment.analytics` ([ADR-0012](../adr/0012-analytical-data-product.md)).
-Everything else goes only to the in-process publisher. `apis/asyncapi.yaml`
-documents eleven of the thirteen (all but the two Rebin events) and marks
-publication status per message; this table is the same truth in one place.
+`?` marks a field tagged `omitempty` — omitted when the value is unavailable
+(no occupant checked in, no recorded claim, task no longer found). The
+partition key is the task id for every `task.*` row and the package id for
+every `package.*` row.
 
-`ItemPicked` is the one event that is defined and tested but never raised by
-any use case. The Pick path is currently modelled at task granularity (claim →
-complete) rather than item granularity. It stays in the catalogue because it
-is part of the intended model, and removing it would lose that intent.
+Source: `internal/domain/shared/events.go`,
+`internal/adapters/outbound/kafka/publisher.go` (`inIntegrationContract`,
+`TaskCompletedData`, `TaskCPTMissedData`, `PackageManifestedData`),
+`internal/adapters/outbound/kafka/analytics_publisher.go`
+(`inAnalyticsContract`, `marshalData`), `apis/asyncapi.yaml`.
+
+:::caution[Published is not the same as defined]
+Only **`TaskCompleted`, `TaskCPTMissed` and `PackageManifested`** form the
+integration contract. Ten events go to the analytics topic (everything but
+`TaskCPTMissed` and the two Rebin events). `ItemArrivedAtRebin` and
+`OrderConsolidated` (ADR-0016) are in neither allowlist and are not in
+`apis/asyncapi.yaml`; if they are ever published their entity would be
+`orderconsolidation`.
+
+`ItemPicked` is defined, tested and has an analytics encoder, but no use
+case raises it. The Pick path is modelled at task granularity (claim →
+complete) rather than item granularity; the event stays in the catalogue
+because it is part of the intended model.
 :::
+
+## Who consumes what
+
+| Topic | `type` | Consumer | Effect |
+| --- | --- | --- | --- |
+| `warehouse.fulfillment.events` | `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` | `wes-work-planning` | `RecordCompletion(work_unit_id)` — the drum-buffer-rope feedback edge |
+| `warehouse.fulfillment.events` | `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` | `labor-performance` | Per-associate / per-task-type attribution ([ADR-0014](../adr/0014-labor-performance-integration-hooks.md), [ADR-0023](../adr/0023-task-type-on-wire.md)) |
+| `warehouse.fulfillment.events` | `com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed`, `com.warehouse.wes.fulfillment-execution.package.PackageManifested` | `order-management` | `RepromiseOrder` promise feedback loop ([ADR-0025](../adr/0025-cpt-missed-sweep-and-package-manifested.md)) |
+| `warehouse.fulfillment.analytics` | `...task.TaskClaimed`, `...task.TaskCompleted`, `...task.LeaseExpired`, `...package.WeightDiscrepancyDetected`, `...package.PackageManifested` | this service's `cmd/fulfillment-projector`, group `fulfillment-analytics` | Projects the throughput rollup ([Throughput report](../analytics/throughput-report.md)); every other analytics type is acknowledged without projecting |
+
+The downstream consumers are the ones listed in `apis/asyncapi.yaml`; their
+consumer-group ids live in their own repositories.
+
+## Events consumed from other contexts
+
+| Source | Topic | Full `type` | Consumer | Group | Effect |
+| --- | --- | --- | --- | --- | --- |
+| `wes-work-planning` | `warehouse.work-planning.events` | `com.warehouse.wes.work-planning.workunit.WorkReleased` | `internal/adapters/inbound/kafka/consumer.go` | `WORK_RELEASED_CONSUMER_GROUP` (default `fulfillment-execution`) | `CreateTask` — idempotent on the CloudEvents `id` via `processed_events`; a failure after 3 attempts (or any non-CloudEvent) is dead-lettered to `warehouse.work-planning.events.dlq` when `EVENT_PUBLISHER=kafka` wires the DLQ writer |
+| `process-path-management` | `warehouse.process-path-management.events` | `com.warehouse.wes.process-path-management.processpath.ProcessPathCreated` / `ProcessPathUpdated` / `ProcessPathDeactivated` | `internal/adapters/outbound/kafkacatalog/consumer.go` | unique per process (`fulfillment-execution-process-path-catalogue-` + host, pid, start time), replays from the first offset | Rebuilds the in-memory process-path catalogue — **only when `PATH_CATALOGUE_SOURCE=kafka`** |
 
 ## Which use case raises what
 
@@ -71,125 +132,113 @@ flowchart LR
     RS -->|outside tolerance| PD["PackageDiverted"]
     SW["SweepCPTMisses"] --> CM["TaskCPTMissed"]
     AR["ArriveAtRebin"] --> IA["ItemArrivedAtRebin"]
+    AR -->|last line| CT
     AR -->|last line| OC["OrderConsolidated"]
     TCP ==>|Kafka| K[("warehouse.fulfillment.events")]
     CM ==>|Kafka| K
     PM ==>|Kafka| K
+    TC -.->|analytics| A[("warehouse.fulfillment.analytics")]
+    TCL -.-> A
+    LE -.-> A
+    TCP -.-> A
+    PS -.-> A
+    LA -.-> A
+    PM -.-> A
+    WD -.-> A
+    PD -.-> A
 ```
 
+Source: `internal/application/usecases/*.go` and the two encoders'
+allowlists. Omits `ItemPicked` (never raised) and the log publisher.
+
 `RegisterStation`, `CheckInStation`, `CheckOutStation`, `RenewLease` and the
-three reads (`GetQueueDepth`, `GetTasksByOrderRef`, `GetInstalledCapacity`)
-raise **nothing**. Registering or staffing a station is an operational action
-with no existing fact that fits it, and the deliberate choice was not to
-invent events just for symmetry — an event catalogue padded with facts nobody
-consumes is worse than a short honest one.
+five reads (`GetQueueDepth`, `GetTasksByOrderRef`, `GetInstalledCapacity`,
+`GetPackage`, `GetPackagesByOrderRef`) raise **nothing**. Registering or
+staffing a station is an operational action with no existing fact that fits
+it, and the deliberate choice was not to invent events just for symmetry.
+`RenewLease` changes only the lease expiry.
 
-## The one event with two facts
+## The calls with two facts
 
-`RunSlam` publishes **two** events on the failure branch, in a single call:
+`RunSlam` publishes **two** events on each branch, in a single call:
 
 ```go
+// outside tolerance
 uc.Publisher.Publish(ctx,
     shared.NewWeightDiscrepancyDetected(packageId, expectedWeight, actualWeight, now),
     shared.NewPackageDiverted(packageId, now),
+)
+// within tolerance
+uc.Publisher.Publish(ctx,
+    shared.NewLabelApplied(packageId, now),
+    shared.NewPackageManifested(packageId, p.OrderRef(), now),
 )
 ```
 
 They are separate on purpose. `WeightDiscrepancyDetected` is the
 **measurement** — it carries both weights and is what a quality or
-loss-prevention consumer wants. `PackageDiverted` is the **routing decision** —
-it is what a materials-handling consumer wants. Collapsing them into one event
-would force every consumer to care about both concerns.
+loss-prevention consumer wants. `PackageDiverted` is the **routing
+decision**. On the pass branch, `LabelApplied` is the local fact and
+`PackageManifested` is the promise-loop fact `order-management` keys on.
 
 Note the argument order: the event is constructed as
 `(packageId, expected, actual, now)` while the use case's own signature is
 `Execute(ctx, packageId, actualWeight, expectedWeight)`. The API request body
-names both fields explicitly (`actualWeight`, `expectedWeight`) so callers are
-never relying on positional order.
+names both fields explicitly (`actualWeight`, `expectedWeight`) so callers
+are never relying on positional order.
 
-## Naming convention on the wire
+## `TaskCPTMissed` re-fires
 
-Externally published events use the CloudEvents `type` convention shared
-across the platform:
-
-```
-com.warehouse.<subdomain>.<bounded-context>.<entity>.<EventName>
-```
-
-For this context, for example:
-
-```
-com.warehouse.wes.fulfillment-execution.task.TaskCompleted
-com.warehouse.wes.fulfillment-execution.package.PackageDiverted
-```
-
-The `type` attribute encodes the full DDD coordinates of the fact — subdomain,
-bounded context, aggregate, event — so a consumer can route or filter purely
-on `type` without opening `data`.
-
-:::info CloudEvents 1.0 on the wire
-Every Kafka message this service produces or consumes is a CloudEvents 1.0
-event in structured content mode (`specversion` / `id` / `source` / `type` /
-`subject` / `time` / `datacontenttype` / `dataschema` / `data`) — see
-[ADR-0032](../adr/0032-cloudevents-mandatory-envelope.md). Integration
-events go to **`warehouse.fulfillment.events`** (read by `wes-work-planning`,
-`labor-performance` and `order-management`); analytics events to
-`warehouse.fulfillment.analytics`. There is no other envelope. See the
-[Events reference](../api-reference/events.md) for the full catalogue.
-:::
+`SweepCPTMisses` changes no task state, so a task that stays open past its
+CPT raises `TaskCPTMissed` again on every sweep pass — each a new occurrence
+with a new `id`. A consumer must be idempotent on its own business key
+(order-management's `RepromiseOrder` is designed for exactly that, per
+ADR-0025).
 
 ## Why the events stay thin
 
-`TaskCompleted` carries only `TaskId` and `StationId`. The wire format needs a
-third field, `work_unit_id`, so Work Planning can correlate the completion
-back to the unit it released.
+`TaskCompleted` carries only `TaskId` and `StationId`. The wire format needs
+`work_unit_id` so Work Planning can correlate the completion back to the
+unit it released, plus `associate_id`, `duration_seconds` and `task_type`
+for labor-performance.
 
-That field is **not** added to the domain event. Instead the Kafka publisher
-looks the task back up through `ports.TaskRepo` and reads `OrderRef()`:
+None of those are added to the domain event. The integration encoder looks
+the task back up through `ports.TaskRepo` (`OrderRef()`, `ClaimedAt()`,
+`Type()`) and the station through `ports.StationRepo` (current occupant):
 
 ```go
 t, err := p.Tasks.FindById(ctx, tc.TaskId)
 ...
-Data: TaskCompletedData{
+data := TaskCompletedData{
     TaskId:     string(tc.TaskId),
     StationId:  string(tc.StationId),
-    WorkUnitId: workUnitId,   // enriched here, in the adapter
+    WorkUnitId: workUnitId, // enriched here, in the adapter
+    ...
 }
 ```
 
-The reason is that `work_unit_id` is an *integration* concern — it exists
-because a particular downstream consumer needs a particular correlation key.
-Pushing it into the domain event would make the domain model shaped by a
-consumer's needs. The same repo-lookup-enrichment pattern is used in
-`inventory-storage`'s publisher for `ReservationRevoked`, so it is a platform
-convention rather than a local hack.
+`work_unit_id` is an *integration* concern — it exists because a particular
+downstream consumer needs a particular correlation key. Pushing it into the
+domain event would make the domain model shaped by a consumer's needs. The
+analytics encoder applies the same pattern for `task_type` and for the
+on-time-to-CPT verdict on `PackageManifested`
+([ADR-0026](../adr/0026-on-time-to-cpt-kpi.md)).
 
-## Fragile/FragileHandling did not extend any event payload
+`associate_id` reflects whoever is checked in **at publish time**, not
+necessarily whoever performed the whole task — a best-effort fact.
 
-The same "events stay thin" discipline applied when `Task.Fragile` and
-`Package.FragileHandling` were added: `TaskCreated` still carries only
-`TaskId`, and `PackageSealed` still carries only `PackageId`. Both flags are
-already visible on their aggregate's own GET response
-(`GET /tasks/{id}` — not yet a route today, but `TaskResponse` carries
-`fragile`; the `POST /tasks` and `claim-next` responses already do — and the
-`POST /tasks/{id}/seal-package` response carries `fragileHandling`), so
-nothing consuming these events in-process needs the value pushed onto the
-event itself. If a future external consumer needs `fragile` on the wire, the
-same repo-lookup-enrichment pattern used for `TaskCompleted`'s
-`work_unit_id` is the template to follow — enrich in the adapter, not the
-domain event.
+## Handling flags did not extend any event payload
 
-## `SortLane` did not extend any event payload either
+The same discipline applied when `Task.Fragile`, `Task.GiftWrap`,
+`Package.FragileHandling`, `Package.GiftWrapRequested` and
+`Package.SortLane()` were added: `TaskCreated` still carries only `TaskId`,
+and `PackageSealed` only `PackageId`. The flags are visible on the REST
+responses (`TaskResponse.fragile` / `giftWrap`, `PackageResponse.fragileHandling`
+/ `giftWrapRequested` / `sortLane`), which is where anything needing them
+reads them today. `SortLane` is a WES-tier decision only — no WCS
+integration exists to consume it
+([ADR-0010](../adr/0010-package-segregation-and-sort-lane.md)).
 
-[ADR-0010](../adr/0010-package-segregation-and-sort-lane.md) made the
-identical judgement call for `Package.SortLane()`: `PackageSealed` and
-`LabelApplied` still carry only `PackageId` (and `PackageManifested`, added
-later by ADR-0025, carries only `PackageId` + `OrderRef`). `SortLane` is fully visible
-on the `POST /tasks/{id}/seal-package` response's `sortLane` field, which
-is where anything needing it reads it today — there is no in-process
-consumer of `PackageSealed`/`LabelApplied` that needs the value on the
-event payload. This is a WES-tier decision only: no WCS
-device/conveyor/lane-controller integration exists in this repository, so
-there is not yet a concrete external consumer whose needs would even
-justify a payload change, the same honest gap already accepted for
-`fragileHandling`.
+See the [Events reference](../api-reference/events.md) for envelope examples
+and the [Domain Message Flow](./domain-message-flow.md) page for the events
+in end-to-end scenarios.

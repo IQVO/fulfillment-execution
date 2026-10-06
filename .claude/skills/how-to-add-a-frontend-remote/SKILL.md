@@ -66,7 +66,7 @@ script remotes). Confirm this repo's CI `web:` job
 `npm run build`, before assuming a new `.test.ts` file you add will
 actually run in CI — the job currently does: `npm ci`, `npm run lint`,
 `npx tsc -b`, `npm test`, `npm run build`, against a dual checkout of
-this repo plus `claudioed/warehouse-ui-kit@develop`.
+this repo plus `IQVO/warehouse-ui-kit@develop`.
 
 ## The Docker build recipe (packaging as a deployable nginx workload)
 
@@ -116,7 +116,7 @@ npm run build        # tsc -b && vite build -> dist/
 ```
 
 CI's `web:` job runs this exact sequence against a dual checkout (this
-repo + `claudioed/warehouse-ui-kit@develop`) — reproduce that locally by
+repo + `IQVO/warehouse-ui-kit@develop`) — reproduce that locally by
 checking out `warehouse-ui-kit` as a real sibling directory if `npm ci`
 behaves differently than CI. Note the `web:` job is entirely separate
 from the Go module's quality gate (`make check`/`check-all`) — this

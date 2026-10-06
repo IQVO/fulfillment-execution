@@ -2,10 +2,11 @@
 
 The documentation site for the **Fulfillment Execution** bounded context of
 `warehouse-systems`, published at
-<https://claudioed.github.io/fulfillment-execution/>.
+<https://iqvo.github.io/fulfillment-execution/>.
 
-Content lives in `docs/` (markdown), plus an API reference generated at build
-time from the repository's real `apis/openapi.yaml`.
+Content lives in `docs/` (markdown), plus an API reference generated from
+the repository's real `apis/openapi.yaml` by `npm run gen-api-docs
+fulfillment` and committed (CI's `docs-api-drift` job fails if it is stale).
 
 ## Local development
 

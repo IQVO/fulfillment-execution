@@ -17,19 +17,23 @@ representative of any real-world company**.
 :::
 
 **Fulfillment Execution turns released work into completed physical
-operations.** It owns the *task lifecycle* for the three process paths of the
-outbound value stream — **Pick**, **Pack**, and **SLAM** (Scan, Label, Apply,
-Manifest) — and nothing else.
+operations.** It owns the *task lifecycle* for the process paths of the
+outbound value stream — **Pick**, **Rebin** (order consolidation),
+**Pack**, and **SLAM** (Scan, Label, Apply, Manifest) — and nothing else.
 
-It sits between two neighbours in the `warehouse-systems` platform:
+It sits between its neighbours in the `warehouse-systems` platform:
 
-- **Upstream:** [`wes-work-planning`](https://github.com/claudioed/wes-work-planning),
+- **Upstream:** [`wes-work-planning`](https://github.com/IQVO/wes-work-planning),
   the conductor, decides *what* work to release and *when*. Every unit it
   releases arrives here as a `WorkReleased` integration event and becomes a
   `Task` in this service's pool.
-- **Downstream:** WCS / equipment (conveyors, print-and-apply labellers,
-  check-weighers) execute the physical steps this service commands. That edge
-  is strategically modelled but **not yet wired** — see
+- **Downstream (live):** `wes-work-planning` (completion feedback),
+  `labor-performance` and `order-management` consume the `TaskCompleted`,
+  `TaskCPTMissed` and `PackageManifested` events this service publishes on
+  `warehouse.fulfillment.events`.
+- **Downstream (strategic):** WCS / equipment (conveyors, print-and-apply
+  labellers, check-weighers) would execute the physical steps. That edge
+  is modelled as a deliberately empty port and is **not wired** — see
   [Context Map](../ecosystem/context-map.md).
 
 ## The one design rule that shapes everything
@@ -56,7 +60,7 @@ architecture decisions that encode it:
 
 | Owns | Does **not** own | Who does |
 | --- | --- | --- |
-| The `Task` pool for Pick / Pack / SLAM | Deciding *what* work to release and at what rate | `wes-work-planning` |
+| The `Task` pool for Pick / Rebin / Pack / SLAM | Deciding *what* work to release and at what rate | `wes-work-planning` |
 | Pull dispatch (`claimNext`) and lease lifecycle | Which associate stands at which station this shift | `workforce-management` |
 | The `Station` capability set used to filter claimable work | Stock truth, reservations, bin-accurate location | `inventory-storage` |
 | The `Package` aggregate: seal + SLAM weigh-check | Whether a coded location exists and is legal | `facility-layout` |
@@ -83,3 +87,7 @@ workforce planning.
   generated from the real `apis/openapi.yaml`.
 - **[Architecture Decision Records](../adr/index.md)** — why it is built this
   way, reconstructed from the decisions actually made in this repo.
+- **[DDD artifacts (ddd-crew)](../ddd/ddd-artifacts.md)** — core domain
+  chart, bounded context canvas, aggregate design canvas, domain message
+  flow, EventStorming, and UML class / ER / sequence diagrams, all derived
+  from the code.

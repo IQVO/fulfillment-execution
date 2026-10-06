@@ -29,6 +29,35 @@ const (
 	Completed Status = "COMPLETED"
 )
 
+// ErrUnknownType is returned by ParseType for a string that is not one of
+// the declared task types.
+var ErrUnknownType = errors.New("task: unknown type")
+
+// ErrUnknownStatus is returned by ParseStatus for a string that is not one
+// of the declared task statuses.
+var ErrUnknownStatus = errors.New("task: unknown status")
+
+// ParseType validates the persisted string form of a Type. Matching is
+// exact (case-sensitive): every writer persists the canonical constant.
+func ParseType(value string) (Type, error) {
+	switch Type(value) {
+	case Pick, Pack, Slam, Rebin:
+		return Type(value), nil
+	default:
+		return "", ErrUnknownType
+	}
+}
+
+// ParseStatus validates the persisted string form of a Status.
+func ParseStatus(value string) (Status, error) {
+	switch Status(value) {
+	case Pending, Claimed, Completed:
+		return Status(value), nil
+	default:
+		return "", ErrUnknownStatus
+	}
+}
+
 var (
 	// ErrCapabilityMismatch is returned when a station lacks the
 	// capabilities required by the task it is trying to claim.
