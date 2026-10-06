@@ -112,8 +112,12 @@ state, an overdue task re-fires on every pass until it completes — each pass
 is a new occurrence with a new CloudEvents `id`, so consumers must be
 idempotent on their own business key
 ([ADR-0025](../adr/0025-cpt-missed-sweep-and-package-manifested.md)). Nothing
-in this repository schedules either sweep; both are Clock-driven but
-externally triggered over HTTP.
+in the service runs either sweep on a timer; both are Clock-driven but
+externally triggered over HTTP. The Helm chart can deploy that external
+scheduler as Kubernetes `CronJob`s (`sweeps.enabled`, **off by default**, so
+nothing changes unless a deployment opts in — see
+[ADR-0003](../adr/0003-lease-based-at-most-once-claiming.md)); without it, some
+other caller has to POST the endpoints.
 
 ## The Pack path continues into Package
 

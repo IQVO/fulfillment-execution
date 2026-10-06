@@ -1,0 +1,84 @@
+{{- /*
+Scheduler for the two REST-triggered sweeps (ADR-0003, ADR-0025): nothing in
+this service calls POST /tasks/expire-leases or POST /tasks/sweep-cpt-misses
+on a timer, by design -- a Kubernetes CronJob is the external scheduler
+ADR-0003 names. Off by default (sweeps.enabled=false), which keeps today's
+behaviour of "an external caller invokes the endpoints". No in-process ticker
+is added (ADR-0025 rejected one).
+
+The Job reuses the service's own alpine image and busybox `wget` (no extra
+image to pull) and POSTs to the in-cluster Service. busybox wget exits
+non-zero on an HTTP error status, so a failing sweep fails the Job.
+*/ -}}
+{{- if .Values.sweeps.enabled }}
+{{- $root := . }}
+{{- $jobs := dict "expire-leases" .Values.sweeps.expireLeases "sweep-cpt-misses" .Values.sweeps.cptMisses }}
+{{- range $name, $job := $jobs }}
+{{- if $job.enabled }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ printf "%s-%s" (include "fulfillment-execution.fullname" $root) $name | trunc 52 | trimSuffix "-" }}
+  labels:
+    {{- include "fulfillment-execution.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: sweep-{{ $name | trimPrefix "sweep-" }}
+spec:
+  schedule: {{ $job.schedule | quote }}
+  # Never overlap two passes of the same sweep: they are idempotent, but a
+  # second concurrent pass would only repeat the work (and, for
+  # sweep-cpt-misses, re-publish TaskCPTMissed for the same tasks).
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: {{ $root.Values.sweeps.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: {{ $root.Values.sweeps.activeDeadlineSeconds }}
+      template:
+        metadata:
+          labels:
+            {{- include "fulfillment-execution.selectorLabels" $root | nindent 12 }}
+            app.kubernetes.io/component: sweep-{{ $name | trimPrefix "sweep-" }}
+        spec:
+          restartPolicy: Never
+          {{- with $root.Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          serviceAccountName: {{ include "fulfillment-execution.serviceAccountName" $root }}
+          securityContext:
+            {{- toYaml $root.Values.podSecurityContext | nindent 12 }}
+          containers:
+            - name: sweep
+              securityContext:
+                {{- toYaml $root.Values.securityContext | nindent 16 }}
+              image: "{{ $root.Values.image.repository }}:{{ $root.Values.image.tag | default $root.Chart.AppVersion }}"
+              imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+              command:
+                - wget
+                - -q
+                - -O
+                - "-"
+                - -T
+                - {{ $root.Values.sweeps.requestTimeoutSeconds | quote }}
+                - --post-data=
+                - {{ printf "http://%s:%v/tasks/%s" (include "fulfillment-execution.fullname" $root) $root.Values.service.port $name | quote }}
+              resources:
+                {{- toYaml $root.Values.sweeps.resources | nindent 16 }}
+          {{- with $root.Values.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $root.Values.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $root.Values.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
