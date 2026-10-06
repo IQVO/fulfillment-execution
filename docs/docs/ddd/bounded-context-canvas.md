@@ -134,8 +134,8 @@ Top terms:
   throttle intake.
 - An external scheduler calls `POST /tasks/expire-leases` and
   `POST /tasks/sweep-cpt-misses`; no code in this repository schedules them.
-  The Helm chart ships opt-in `CronJob`s for both (`sweeps.enabled`, default
-  off).
+  The Helm chart ships `CronJob`s for both, on by default (`sweeps.enabled`;
+  every minute / every 5 minutes; [ADR-0037](../adr/0037-sweeps-scheduled-by-cronjob-default-on.md)).
 - `WorkReleased.data.work_unit_id` is a stable correlation key, reused as
   `orderRef` and returned as `work_unit_id` on `TaskCompleted`.
 - Hazard classification and location roles fail open: if the lookup is
@@ -161,10 +161,11 @@ Top terms:
   catalogue?
 - Should `ItemArrivedAtRebin` and `OrderConsolidated` be published, and to
   whom?
-- Who owns the **schedule** for the lease and CPT sweeps in production? (The
-  chart can run them as opt-in `CronJob`s, `sweeps.enabled`; whether and how
-  often to turn that on is a per-environment choice, and `TaskCPTMissed`
-  volume scales with the CPT sweep's frequency.)
+- ~~Who owns the **schedule** for the lease and CPT sweeps in production?~~
+  Decided 2026-10-06: the chart's `CronJob`s, on by default — `expire-leases`
+  every minute, `sweep-cpt-misses` every 5 minutes, both configurable per
+  environment ([ADR-0037](../adr/0037-sweeps-scheduled-by-cronjob-default-on.md)).
+  `TaskCPTMissed` volume scales with the CPT sweep's frequency.
 - When does the WCS seam get its first method, and which vendor protocol
   does it translate?
 - MCP governance: authentication was removed fleet-wide

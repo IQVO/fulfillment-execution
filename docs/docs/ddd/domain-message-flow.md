@@ -91,8 +91,9 @@ already shown in scenario 1, and the Pick tasks that produced the lines.
 ## Scenario 3 — the sweeps: a lapsed lease and a missed CPT
 
 An external scheduler drives both sweeps; no code in this repository runs
-them on a timer (the Helm chart's opt-in `sweeps.enabled` CronJobs are that
-external scheduler, off by default).
+them on a timer (the Helm chart's `sweeps.enabled` CronJobs are that
+external scheduler, on by default: leases every minute, CPT every 5 minutes —
+[ADR-0037](../adr/0037-sweeps-scheduled-by-cronjob-default-on.md)).
 
 ```mermaid
 sequenceDiagram

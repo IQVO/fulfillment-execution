@@ -220,25 +220,35 @@ pathCatalogue:
   existingConfigMap: ""
 
 # ---------------------------------------------------------------------------
-# Sweep scheduler (ADR-0003, ADR-0025). POST /tasks/expire-leases and POST
-# /tasks/sweep-cpt-misses have no in-process ticker by design; an external
-# scheduler has to call them, and a Kubernetes CronJob is the one ADR-0003
-# names. Disabled by default so existing releases behave exactly as before
-# (an external caller invokes the endpoints, or nobody does). When enabled,
-# each CronJob reuses the service image and POSTs to this release's own
-# Service with busybox wget.
+# Sweep scheduler (ADR-0003, ADR-0025, ADR-0037). POST /tasks/expire-leases
+# and POST /tasks/sweep-cpt-misses have no in-process ticker by design; an
+# external scheduler has to call them, and a Kubernetes CronJob is the one
+# ADR-0003 names. ON by default (ADR-0037): without a scheduler leases are
+# only freed lazily and stuck tasks are never reported as CPT-missed. Set
+# sweeps.enabled=false when the endpoints are driven by an external caller
+# instead. Each CronJob reuses the service image and POSTs to this release's
+# own Service with busybox wget (an empty-body POST; the handlers read no
+# body and require no Content-Type, and the sweeps take no Idempotency-Key).
 #
-# Lazy lease expiry inside claim/renew/complete keeps correctness without the
-# sweep; expire-leases only affects queue-depth visibility and LeaseExpired
-# events. sweep-cpt-misses re-publishes TaskCPTMissed for EVERY still-open
-# overdue task on EVERY pass (ADR-0025 sec. 4), so its Kafka volume is
-# (overdue tasks) x (passes): choose the schedule with that in mind.
+# expire-leases (every minute) frees tasks whose lease has lapsed, so
+# queue-depth is accurate and LeaseExpired is emitted within ~1 min; lazy
+# expiry inside claim/renew/complete keeps correctness regardless.
+# sweep-cpt-misses (every 5 minutes) re-publishes TaskCPTMissed for EVERY
+# still-open overdue task on EVERY pass (ADR-0025 sec. 4), so its Kafka
+# volume is (overdue tasks) x (passes): TaskCPTMissed volume scales with this
+# cadence. Slow it down per environment if the overdue backlog is large.
+#
+# concurrencyPolicy is Forbid (not configurable): two passes of one sweep
+# never overlap. startingDeadlineSeconds (60) < the 1-minute cadence, so a
+# missed slot is skipped rather than piling up behind the next one.
 # ---------------------------------------------------------------------------
 sweeps:
-  enabled: false
+  enabled: true
   startingDeadlineSeconds: 60
   activeDeadlineSeconds: 120
   requestTimeoutSeconds: 30
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
   expireLeases:
     enabled: true
     schedule: "* * * * *"
