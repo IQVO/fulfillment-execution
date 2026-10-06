@@ -3,7 +3,7 @@ import { FULFILLMENT_API_BASE } from "../config";
 import type { QueueDepth, Task, TaskType } from "../types";
 import { Card, StatusPill, DataTable, useFetch } from "@warehouse/ui-kit";
 
-const TASK_TYPES: TaskType[] = ["PICK", "PACK", "SLAM"];
+const TASK_TYPES: TaskType[] = ["PICK", "PACK", "SLAM", "REBIN", "DISPATCH", "ARRIVAL"];
 
 const inputStyle = {
   flex: 1,

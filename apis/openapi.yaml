@@ -192,7 +192,7 @@ paths:
                     type: https://errors.fulfillment-execution.warehouse-systems.dev/invalid-request
                     title: The request is malformed or missing a required field
                     status: 400
-                    detail: type must be one of PICK, PACK, SLAM, REBIN
+                    detail: type must be one of PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL, DISPATCH, ARRIVAL
         "422":
           description: >
             The `Idempotency-Key` was already used with a request that had
@@ -1290,7 +1290,7 @@ components:
         via the WorkReleased Kafka event's rebin path (see the process-path
         catalogue) — but they exist in the task store and therefore appear
         in read-model responses alongside PICK/PACK/SLAM.
-      enum: [PICK, PACK, SLAM, REBIN]
+      enum: [PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL]
       example: PICK
 
     TaskStatus:
@@ -1803,7 +1803,7 @@ components:
             type: https://errors.fulfillment-execution.warehouse-systems.dev/invalid-request
             title: The request is malformed or missing a required field
             status: 400
-            detail: type must be one of PICK, PACK, SLAM, REBIN
+            detail: type must be one of PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL
 
     InternalError:
       description: An unexpected server-side failure (e.g. a repository or event-publisher error).

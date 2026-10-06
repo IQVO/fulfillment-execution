@@ -132,7 +132,19 @@ func run() error {
 	createTask := &usecases.CreateTask{Tasks: storage.taskRepo, Publisher: publisher, Clock: clock, NewId: newTaskId, UnitOfWork: storage.uow}
 	srv := newHTTPServer(storage, publisher, clock, metrics, lookups, createTask, readiness, logger, httpAddr)
 
-	consumer, closeConsumer := wireWorkReleasedConsumer(kafkaBrokers, catalogue, storage, createTask, logger)
+	// ApplyWorkReleased wraps the same CreateTask the HTTP surface uses,
+	// plus the processed-events claim, inside ONE UnitOfWork — the
+	// atomicity fix for the lost-WorkReleased bug (its own doc comment
+	// has the full story). CreateTask.UnitOfWork is the SAME instance, so
+	// its nested Execute joins the outer scope instead of opening a
+	// second transaction.
+	applyWorkReleased := &usecases.ApplyWorkReleased{
+		CreateTask: createTask,
+		Processed:  storage.processedEvents,
+		Catalogue:  catalogue,
+		UnitOfWork: storage.uow,
+	}
+	consumer, closeConsumer := wireWorkReleasedConsumer(kafkaBrokers, applyWorkReleased, logger)
 	defer closeConsumer()
 	if kafkaCatalogue != nil {
 		defer func() { _ = kafkaCatalogue.Close() }()
@@ -195,9 +207,9 @@ func newHTTPServer(storage storageAdapters, publisher ports.EventPublisher, cloc
 // dead-letter writer (when EVENT_PUBLISHER=kafka) and returns one close
 // func releasing the DLQ writer and then the consumer, mirroring the
 // original defer registration order.
-func wireWorkReleasedConsumer(brokers []string, catalogue ports.PathCatalogue, storage storageAdapters, createTask *usecases.CreateTask, logger *slog.Logger) (*inboundkafka.Consumer, func()) {
+func wireWorkReleasedConsumer(brokers []string, apply *usecases.ApplyWorkReleased, logger *slog.Logger) (*inboundkafka.Consumer, func()) {
 	consumerGroup := getenv("WORK_RELEASED_CONSUMER_GROUP", "fulfillment-execution")
-	consumer := inboundkafka.NewConsumerWithGroup(brokers, workReleasedTopic, consumerGroup, createTask, storage.processedEvents, catalogue, logger)
+	consumer := inboundkafka.NewConsumerWithGroup(brokers, workReleasedTopic, consumerGroup, apply, logger)
 	dlqWriter := maybeWireDeadLetter(consumer, brokers, logger)
 	return consumer, func() {
 		if dlqWriter != nil {

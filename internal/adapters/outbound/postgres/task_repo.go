@@ -34,9 +34,18 @@ func (r *TaskRepo) Save(ctx context.Context, t *task.Task) error {
 		leaseExpiry = &lease.Expiry
 	}
 
+	var transferRef, demandId, workKind, siteId, sku *string
+	var quantity *int
+	if tr := t.Transfer(); tr != nil {
+		transferRef, demandId, workKind = nullableString(tr.TransferRef), nullableString(tr.DemandId), nullableString(string(tr.WorkKind))
+		siteId, sku = nullableString(tr.SiteId), nullableString(tr.SKU)
+		q := tr.Quantity
+		quantity = &q
+	}
+
 	_, err := querierFrom(ctx, r.pool).Exec(ctx, `
-		INSERT INTO tasks (id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		INSERT INTO tasks (id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at, transfer_ref, demand_id, work_kind, site_id, sku, quantity)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 		ON CONFLICT (id) DO UPDATE SET
 			task_type = EXCLUDED.task_type,
 			status = EXCLUDED.status,
@@ -47,15 +56,34 @@ func (r *TaskRepo) Save(ctx context.Context, t *task.Task) error {
 			lease_expiry = EXCLUDED.lease_expiry,
 			fragile = EXCLUDED.fragile,
 			gift_wrap = EXCLUDED.gift_wrap,
-			claimed_at = EXCLUDED.claimed_at
+			claimed_at = EXCLUDED.claimed_at,
+			transfer_ref = EXCLUDED.transfer_ref,
+			demand_id = EXCLUDED.demand_id,
+			work_kind = EXCLUDED.work_kind,
+			site_id = EXCLUDED.site_id,
+			sku = EXCLUDED.sku,
+			quantity = EXCLUDED.quantity
 	`, string(t.Id()), string(t.Type()), string(t.Status()), t.CPT().Time(), string(t.OrderRef()),
-		capabilitiesToSlice(t.RequiredCapabilities()), leaseStationId, leaseExpiry, t.Fragile(), t.GiftWrap(), t.ClaimedAt())
+		capabilitiesToSlice(t.RequiredCapabilities()), leaseStationId, leaseExpiry, t.Fragile(), t.GiftWrap(), t.ClaimedAt(),
+		transferRef, demandId, workKind, siteId, sku, quantity)
 	return err
+}
+
+// nullableString maps "" to SQL NULL for the transfer-correlation block's
+// optional text columns: an absent value is stored as NULL, never as an
+// empty string, so a NULL transfer_ref keeps meaning "not transfer work"
+// and a present block with an absent demand_id stays distinguishable from
+// one carrying an empty-string demand id.
+func nullableString(v string) *string {
+	if v == "" {
+		return nil
+	}
+	return &v
 }
 
 func (r *TaskRepo) FindById(ctx context.Context, id shared.TaskId) (*task.Task, error) {
 	row := querierFrom(ctx, r.pool).QueryRow(ctx, `
-		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at
+		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at, transfer_ref, demand_id, work_kind, site_id, sku, quantity
 		FROM tasks WHERE id = $1
 	`, string(id))
 	t, err := scanTask(row)
@@ -67,7 +95,7 @@ func (r *TaskRepo) FindById(ctx context.Context, id shared.TaskId) (*task.Task, 
 
 func (r *TaskRepo) FindClaimableByType(ctx context.Context, taskType task.Type, now time.Time) ([]*task.Task, error) {
 	rows, err := querierFrom(ctx, r.pool).Query(ctx, `
-		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at
+		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at, transfer_ref, demand_id, work_kind, site_id, sku, quantity
 		FROM tasks
 		WHERE task_type = $1
 		  AND (status = 'PENDING' OR (status = 'CLAIMED' AND lease_expiry <= $2))
@@ -102,7 +130,7 @@ func (r *TaskRepo) SaveClaim(ctx context.Context, t *task.Task, now time.Time) (
 
 func (r *TaskRepo) FindAllClaimed(ctx context.Context) ([]*task.Task, error) {
 	rows, err := querierFrom(ctx, r.pool).Query(ctx, `
-		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at
+		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at, transfer_ref, demand_id, work_kind, site_id, sku, quantity
 		FROM tasks WHERE status = 'CLAIMED'
 	`)
 	if err != nil {
@@ -118,7 +146,7 @@ func (r *TaskRepo) FindAllClaimed(ctx context.Context) ([]*task.Task, error) {
 // own status guard.
 func (r *TaskRepo) FindOpenPastCPT(ctx context.Context, now time.Time) ([]*task.Task, error) {
 	rows, err := querierFrom(ctx, r.pool).Query(ctx, `
-		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at
+		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at, transfer_ref, demand_id, work_kind, site_id, sku, quantity
 		FROM tasks
 		WHERE status IN ('PENDING', 'CLAIMED') AND cpt <= $1
 	`, now)
@@ -139,7 +167,7 @@ func (r *TaskRepo) CountByTypeAndStatus(ctx context.Context, taskType task.Type,
 
 func (r *TaskRepo) FindByOrderRef(ctx context.Context, orderRef shared.OrderRef) ([]*task.Task, error) {
 	rows, err := querierFrom(ctx, r.pool).Query(ctx, `
-		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at
+		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at, transfer_ref, demand_id, work_kind, site_id, sku, quantity
 		FROM tasks WHERE order_ref = $1
 	`, string(orderRef))
 	if err != nil {
@@ -163,8 +191,14 @@ func scanTask(row rowScanner) (*task.Task, error) {
 		fragile                        bool
 		giftWrap                       bool
 		claimedAt                      *time.Time
+		transferRef                    *string
+		demandId                       *string
+		workKind                       *string
+		siteId                         *string
+		sku                            *string
+		quantity                       *int
 	)
-	if err := row.Scan(&id, &taskType, &status, &cpt, &orderRef, &requiredCapabilities, &leaseStationId, &leaseExpiry, &fragile, &giftWrap, &claimedAt); err != nil {
+	if err := row.Scan(&id, &taskType, &status, &cpt, &orderRef, &requiredCapabilities, &leaseStationId, &leaseExpiry, &fragile, &giftWrap, &claimedAt, &transferRef, &demandId, &workKind, &siteId, &sku, &quantity); err != nil {
 		return nil, err
 	}
 
@@ -182,7 +216,11 @@ func scanTask(row rowScanner) (*task.Task, error) {
 		lease = &task.Lease{StationId: shared.StationId(*leaseStationId), Expiry: *leaseExpiry}
 	}
 
-	return task.Rehydrate(
+	transfer, err := scanTransferDetails(id, transferRef, demandId, workKind, siteId, sku, quantity)
+	if err != nil {
+		return nil, err
+	}
+	return task.RehydrateTransfer(
 		shared.TaskId(id),
 		taskTypeParsed,
 		statusParsed,
@@ -193,7 +231,41 @@ func scanTask(row rowScanner) (*task.Task, error) {
 		fragile,
 		giftWrap,
 		claimedAt,
+		transfer,
 	), nil
+}
+
+// scanTransferDetails rebuilds the nullable transfer-correlation block
+// from its columns. A NULL transfer_ref is "not transfer work" — nil,
+// exactly like a task created before this column existed. A present
+// transfer_ref with an unknown work_kind fails the rehydrate (same
+// discipline as the status/type validation), because a task whose
+// completion cannot select a transfer fact must not silently load.
+func scanTransferDetails(id string, transferRef, demandId, workKind, siteId, sku *string, quantity *int) (*task.TransferDetails, error) {
+	if transferRef == nil {
+		return nil, nil
+	}
+	transfer := &task.TransferDetails{TransferRef: *transferRef}
+	if demandId != nil {
+		transfer.DemandId = *demandId
+	}
+	if workKind != nil {
+		parsed, err := task.ParseWorkKind(*workKind)
+		if err != nil {
+			return nil, fmt.Errorf("rehydrate task %q: %w", id, err)
+		}
+		transfer.WorkKind = parsed
+	}
+	if siteId != nil {
+		transfer.SiteId = *siteId
+	}
+	if sku != nil {
+		transfer.SKU = *sku
+	}
+	if quantity != nil {
+		transfer.Quantity = *quantity
+	}
+	return transfer, nil
 }
 
 func scanTasks(rows pgx.Rows) ([]*task.Task, error) {

@@ -102,10 +102,13 @@ sequenceDiagram
 ```
 
 Source: `internal/adapters/inbound/kafka/consumer.go` (`HandleMessage`,
-`handleClaimedEvent`, `handleMessageWithRetry`, `SendToDeadLetter`),
-`internal/domain/pathcatalog/path_definition.go`. Omits backoff timing and
-the `recover.go` panic guard. `MarkProcessed` runs before, and outside the
-transaction of, `CreateTask`.
+`handleMessageWithRetry`, `SendToDeadLetter`) and
+`internal/application/usecases/consume_work_released.go`
+(`ApplyWorkReleased`). Omits backoff timing and the `recover.go` panic
+guard. Since ADR-0036 the `MarkProcessed` claim, the catalogue lookup,
+the `CreateTask` save and the `TaskCreated` outbox publish all run inside
+ONE UnitOfWork — a failed create rolls the claim back with it, so a
+redelivery re-applies instead of being lost.
 
 ## 3. Claim the next task
 

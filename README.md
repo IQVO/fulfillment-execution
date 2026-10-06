@@ -219,7 +219,7 @@ still starts and serves at full speed — telemetry is simply dropped.
 | Signal | What |
 |--------|------|
 | Traces | One server span per HTTP request (via `otelchi`), named after the **route pattern** (`POST /tasks/{id}/complete`) rather than the raw path; a child span per Postgres query/batch/copy/acquire (via `otelpgx`), carrying the parameterised SQL — query values are never recorded; `kafka.publish <topic>` / `kafka.consume <topic>` spans around the Kafka boundary |
-| Metrics | `http.server.request.duration` (histogram, seconds, by route + method + status); `fulfillment.tasks.claimed` and `fulfillment.tasks.completed` counters attributed by `task.type` (PICK \| PACK \| SLAM \| REBIN); pgxpool connection gauges; Go runtime metrics (goroutines, GC, memory) |
+| Metrics | `http.server.request.duration` (histogram, seconds, by route + method + status); `fulfillment.tasks.claimed` and `fulfillment.tasks.completed` counters attributed by `task.type` (PICK \| PACK \| SLAM \| REBIN \| DISPATCH \| ARRIVAL); pgxpool connection gauges; Go runtime metrics (goroutines, GC, memory) |
 | Logs | Structured JSON on stdout. Any log emitted while a span is active also carries `trace_id` and `span_id`, so a log line links straight to its trace |
 
 The two task counters are incremented inside the `ClaimNext` and

@@ -14,10 +14,12 @@ import (
 type Type string
 
 const (
-	Pick  Type = "PICK"
-	Pack  Type = "PACK"
-	Slam  Type = "SLAM"
-	Rebin Type = "REBIN"
+	Pick     Type = "PICK"
+	Pack     Type = "PACK"
+	Slam     Type = "SLAM"
+	Rebin    Type = "REBIN"
+	Dispatch Type = "DISPATCH"
+	Arrival  Type = "ARRIVAL"
 )
 
 // Status is the lifecycle state of a task.
@@ -37,11 +39,73 @@ var ErrUnknownType = errors.New("task: unknown type")
 // of the declared task statuses.
 var ErrUnknownStatus = errors.New("task: unknown status")
 
+// ErrUnknownWorkKind is returned by ParseWorkKind for a string that is not
+// one of the declared transfer work kinds.
+var ErrUnknownWorkKind = errors.New("task: unknown transfer work kind")
+
+// WorkKind is the kind of inter-warehouse-transfer work a task carries,
+// stamped by wes-work-planning at release time (work_kind on WorkReleased's
+// optional transfer correlation block). It selects which transfer fact a
+// completion publishes — see the transfer-task-facts ADR.
+type WorkKind string
+
+const (
+	// WorkKindTransferPick is transfer work whose completion reports that
+	// the transfer's stock was picked at the origin site.
+	WorkKindTransferPick WorkKind = "TRANSFER_PICK"
+	// WorkKindTransferDispatch is transfer work whose completion reports
+	// that the transfer left the origin site.
+	WorkKindTransferDispatch WorkKind = "TRANSFER_DISPATCH"
+	// WorkKindTransferArrival is transfer work whose completion reports
+	// that the transfer arrived at the destination site.
+	WorkKindTransferArrival WorkKind = "TRANSFER_ARRIVAL"
+)
+
+// ParseWorkKind validates the wire/persisted string form of a WorkKind.
+// Matching is exact (case-sensitive), like ParseType: every writer
+// persists the canonical constant.
+func ParseWorkKind(value string) (WorkKind, error) {
+	switch WorkKind(value) {
+	case WorkKindTransferPick, WorkKindTransferDispatch, WorkKindTransferArrival:
+		return WorkKind(value), nil
+	default:
+		return "", ErrUnknownWorkKind
+	}
+}
+
+// TransferDetails is the optional inter-warehouse-transfer correlation a
+// Task carries when it was released for a network-inventory-planning
+// transfer rather than a customer order. A nil *TransferDetails means the
+// task is not transfer work: it publishes no transfer fact on completion
+// and every field here is meaningless for it.
+//
+// TransferRef is the transfer's own correlation id (network-inventory-
+// planning's TransferAllocationRequested transfer_id); DemandId is the
+// work-demand reference the release carried (WorkReleased's ref, or an
+// explicit demand_id when the producer sends one); SiteId is the site the
+// fact is about (origin for pick/dispatch work, destination for arrival
+// work — the producer decides); SKU and Quantity are the stock the task
+// moves. WorkKind selects the completion fact (TransferPicked /
+// TransferDispatched / TransferArrived).
+//
+// These fields never affect claiming, capability matching or lease
+// behaviour — they are pure correlation payload, carried on the task so
+// the completion path can publish the fact without a lookup back into
+// another context.
+type TransferDetails struct {
+	TransferRef string
+	DemandId    string
+	WorkKind    WorkKind
+	SiteId      string
+	SKU         string
+	Quantity    int
+}
+
 // ParseType validates the persisted string form of a Type. Matching is
 // exact (case-sensitive): every writer persists the canonical constant.
 func ParseType(value string) (Type, error) {
 	switch Type(value) {
-	case Pick, Pack, Slam, Rebin:
+	case Pick, Pack, Slam, Rebin, Dispatch, Arrival:
 		return Type(value), nil
 	default:
 		return "", ErrUnknownType
@@ -98,6 +162,10 @@ type Task struct {
 	fragile              bool
 	giftWrap             bool
 	claimedAt            *time.Time
+	// transfer, when non-nil, is the inter-warehouse-transfer correlation
+	// this task carries (see TransferDetails). Nil for every non-transfer
+	// task — including all tasks created before this field existed.
+	transfer *TransferDetails
 }
 
 // New creates a task in the Pending state, ready for the pool. fragile is a
@@ -123,6 +191,17 @@ func New(id shared.TaskId, taskType Type, cpt shared.CPT, orderRef shared.OrderR
 	}
 }
 
+// NewTransferTask creates a task in the Pending state carrying an
+// inter-warehouse-transfer correlation block. Same construction
+// invariants as New; transfer is carried verbatim (the consumer has
+// already validated its WorkKind — see ParseWorkKind).
+func NewTransferTask(id shared.TaskId, taskType Type, cpt shared.CPT, orderRef shared.OrderRef, required shared.CapabilitySet, fragile bool, giftWrap bool, transfer TransferDetails) *Task {
+	t := New(id, taskType, cpt, orderRef, required, fragile, giftWrap)
+	cp := transfer
+	t.transfer = &cp
+	return t
+}
+
 // Rehydrate reconstructs a Task from persisted state without re-validating
 // construction invariants (used by repository adapters). claimedAt restores
 // the timestamp of the task's current (or most recent) claim, recorded by
@@ -141,6 +220,19 @@ func Rehydrate(id shared.TaskId, taskType Type, status Status, cpt shared.CPT, o
 		giftWrap:             giftWrap,
 		claimedAt:            claimedAt,
 	}
+}
+
+// RehydrateTransfer is Rehydrate for a task that carries an
+// inter-warehouse-transfer correlation block. transfer may be nil, which
+// makes this exactly Rehydrate — repos use it uniformly so one read path
+// serves both shapes.
+func RehydrateTransfer(id shared.TaskId, taskType Type, status Status, cpt shared.CPT, orderRef shared.OrderRef, required shared.CapabilitySet, lease *Lease, fragile bool, giftWrap bool, claimedAt *time.Time, transfer *TransferDetails) *Task {
+	t := Rehydrate(id, taskType, status, cpt, orderRef, required, lease, fragile, giftWrap, claimedAt)
+	if transfer != nil {
+		cp := *transfer
+		t.transfer = &cp
+	}
+	return t
 }
 
 func (t *Task) Id() shared.TaskId                          { return t.id }
@@ -174,6 +266,11 @@ func (t *Task) Fragile() bool { return t.fragile }
 // deliberately unlike hazmat, is never used for station-eligibility/
 // capability matching (see ADR-0011).
 func (t *Task) GiftWrap() bool { return t.giftWrap }
+
+// Transfer returns the inter-warehouse-transfer correlation block this
+// task carries, or nil when this is not transfer work. The returned
+// pointer is the task's own — callers must not mutate it.
+func (t *Task) Transfer() *TransferDetails { return t.transfer }
 
 // IsAvailable reports whether the task can be claimed at `now`: it is
 // Pending, or Claimed with an expired lease (which frees it in the caller's

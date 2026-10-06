@@ -21,7 +21,7 @@ type createTaskRequest struct {
 // testing — scripts/contract-test.sh).
 func isValidTaskType(v string) bool {
 	switch task.Type(v) {
-	case task.Pick, task.Pack, task.Slam, task.Rebin:
+	case task.Pick, task.Pack, task.Slam, task.Rebin, task.Dispatch, task.Arrival:
 		return true
 	default:
 		return false
@@ -35,7 +35,7 @@ func (r createTaskRequest) validate() string {
 	case r.Type == "":
 		return "type is required"
 	case !isValidTaskType(r.Type):
-		return "type must be one of PICK, PACK, SLAM, REBIN"
+		return "type must be one of PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL"
 	case r.CPT.IsZero():
 		return "cpt is required"
 	case r.OrderRef == "":

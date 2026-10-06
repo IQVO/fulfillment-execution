@@ -26,13 +26,13 @@ draw no relationship lines. The logical links are explained below the
 diagrams — each one crosses an aggregate boundary, which is exactly why it
 is held by id and not by a constraint.
 
-## OLTP schema (final, after 0013)
+## OLTP schema (final, after 0014)
 
 ```mermaid
 erDiagram
     tasks {
         text id PK
-        text task_type "PICK, PACK, SLAM, REBIN"
+        text task_type "PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL"
         text status "PENDING, CLAIMED, COMPLETED"
         timestamptz cpt
         text order_ref "indexed"
@@ -42,6 +42,12 @@ erDiagram
         boolean fragile "0003"
         boolean gift_wrap "0005"
         timestamptz claimed_at "0007, nullable"
+        text transfer_ref "0014, nullable - present means transfer work"
+        text demand_id "0014, nullable"
+        text work_kind "0014, nullable - TRANSFER_PICK|TRANSFER_DISPATCH|TRANSFER_ARRIVAL"
+        text site_id "0014, nullable"
+        text sku "0014, nullable"
+        integer quantity "0014, nullable"
     }
     stations {
         text id PK

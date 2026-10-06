@@ -100,6 +100,9 @@ occurrence on both topics; `dataschema` distinguishes the payload shape.
 com.warehouse.wes.fulfillment-execution.task.TaskCompleted        -> wes-work-planning, labor-performance
 com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed        -> order-management
 com.warehouse.wes.fulfillment-execution.package.PackageManifested -> order-management
+com.warehouse.wes.fulfillment-execution.transfer.TransferPicked      -> network-inventory-planning (transfer saga), destination receipt correlation
+com.warehouse.wes.fulfillment-execution.transfer.TransferDispatched  -> network-inventory-planning (transfer saga)
+com.warehouse.wes.fulfillment-execution.transfer.TransferArrived     -> network-inventory-planning (transfer saga), destination receipt/stow
 ```
 
 **Published — analytics (`warehouse.fulfillment.analytics`):**
