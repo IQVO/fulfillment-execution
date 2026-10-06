@@ -41,6 +41,22 @@ const sidebars: SidebarsConfig = {
         'ddd/domain-events',
         'ddd/use-cases',
         'ddd/context-relationships',
+        {
+          type: 'category',
+          label: 'DDD artifacts (ddd-crew)',
+          collapsed: false,
+          link: {type: 'doc', id: 'ddd/ddd-artifacts'},
+          items: [
+            'ddd/core-domain-chart',
+            'ddd/bounded-context-canvas',
+            'ddd/aggregate-design-canvas',
+            'ddd/domain-message-flow',
+            'ddd/eventstorming',
+            'ddd/class-diagram',
+            'ddd/entity-relationship',
+            'ddd/sequence-diagrams',
+          ],
+        },
       ],
     },
     {
