@@ -19,6 +19,21 @@ const (
 	Diverted Status = "DIVERTED"
 )
 
+// ErrUnknownStatus is returned by ParseStatus for a string that is not one
+// of the declared package statuses.
+var ErrUnknownStatus = errors.New("package: unknown status")
+
+// ParseStatus validates the persisted string form of a Status. Matching is
+// exact (case-sensitive): every writer persists the canonical constant.
+func ParseStatus(value string) (Status, error) {
+	switch Status(value) {
+	case Open, Sealed, Labeled, Diverted:
+		return Status(value), nil
+	default:
+		return "", ErrUnknownStatus
+	}
+}
+
 // SortLane values are the WES-tier sortation routing decision Package
 // derives via SortLane() — see ADR-0010. This is a decision only: no WCS
 // device/conveyor integration exists or is planned in this repository. A

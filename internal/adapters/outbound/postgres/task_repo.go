@@ -168,6 +168,15 @@ func scanTask(row rowScanner) (*task.Task, error) {
 		return nil, err
 	}
 
+	taskTypeParsed, err := task.ParseType(taskType)
+	if err != nil {
+		return nil, fmt.Errorf("rehydrate task %q: %w", id, err)
+	}
+	statusParsed, err := task.ParseStatus(status)
+	if err != nil {
+		return nil, fmt.Errorf("rehydrate task %q: %w", id, err)
+	}
+
 	var lease *task.Lease
 	if leaseStationId != nil && leaseExpiry != nil {
 		lease = &task.Lease{StationId: shared.StationId(*leaseStationId), Expiry: *leaseExpiry}
@@ -175,8 +184,8 @@ func scanTask(row rowScanner) (*task.Task, error) {
 
 	return task.Rehydrate(
 		shared.TaskId(id),
-		task.Type(taskType),
-		task.Status(status),
+		taskTypeParsed,
+		statusParsed,
 		shared.NewCPT(cpt),
 		shared.OrderRef(orderRef),
 		sliceToCapabilities(requiredCapabilities),
