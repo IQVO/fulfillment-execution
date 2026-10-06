@@ -219,6 +219,40 @@ pathCatalogue:
   # When set, content above is ignored and no ConfigMap is created here.
   existingConfigMap: ""
 
+# ---------------------------------------------------------------------------
+# Sweep scheduler (ADR-0003, ADR-0025). POST /tasks/expire-leases and POST
+# /tasks/sweep-cpt-misses have no in-process ticker by design; an external
+# scheduler has to call them, and a Kubernetes CronJob is the one ADR-0003
+# names. Disabled by default so existing releases behave exactly as before
+# (an external caller invokes the endpoints, or nobody does). When enabled,
+# each CronJob reuses the service image and POSTs to this release's own
+# Service with busybox wget.
+#
+# Lazy lease expiry inside claim/renew/complete keeps correctness without the
+# sweep; expire-leases only affects queue-depth visibility and LeaseExpired
+# events. sweep-cpt-misses re-publishes TaskCPTMissed for EVERY still-open
+# overdue task on EVERY pass (ADR-0025 sec. 4), so its Kafka volume is
+# (overdue tasks) x (passes): choose the schedule with that in mind.
+# ---------------------------------------------------------------------------
+sweeps:
+  enabled: false
+  startingDeadlineSeconds: 60
+  activeDeadlineSeconds: 120
+  requestTimeoutSeconds: 30
+  expireLeases:
+    enabled: true
+    schedule: "* * * * *"
+  cptMisses:
+    enabled: true
+    schedule: "*/5 * * * *"
+  resources:
+    limits:
+      cpu: 50m
+      memory: 32Mi
+    requests:
+      cpu: 10m
+      memory: 16Mi
+
 # startupProbe covers this fleet's known ~10s post-start first-outbound-dial
 # reset (Istio native sidecars; holdApplicationUntilProxyStarts is a no-op
 # for them): failureThreshold * periodSeconds = 60s gives the app-side boot
