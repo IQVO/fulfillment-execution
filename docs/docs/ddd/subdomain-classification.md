@@ -76,10 +76,13 @@ Supporting classification would have said "integrate a product."
 | Discipline | Where |
 | --- | --- |
 | Every invariant has a failing-path unit test | `internal/domain/**/*_test.go` |
-| The dependency rule is executable | `internal/architecture/architecture_test.go` (arch-go, 5 rules) |
-| Business rules are readable by non-developers | `features/*.feature`, run by godog |
+| The dependency rule is executable | `internal/architecture/` (arch-go: 9 dependency subtests, plus fleet fitness tests), `arch-test` CI job |
+| Business rules are readable by non-developers | `features/*.feature` (10 files), run by godog |
 | Both published contracts are linted in CI | `apis/openapi.yaml` + `apis/asyncapi.yaml` via Spectral |
-| Mutation testing on the domain | `gremlins`, on schedule/dispatch |
+| Mutation testing on the domain | `gremlins`: blocking `mutation-fast` subset (`./internal/domain/task`) on every push and PR, full `mutation` run on schedule/dispatch |
+
+The same classification is plotted on the ddd-crew
+[Core Domain Chart](./core-domain-chart.md).
 
 ## Where the neighbours sit
 
