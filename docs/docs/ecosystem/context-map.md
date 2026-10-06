@@ -47,7 +47,7 @@ flowchart LR
         OA["warehouse-ops-agent"]
     end
     subgraph WMS["WMS tier"]
-        OM["order-management<br/>Core"]
+        OM["order-management<br/>Generic/Supporting"]
         IS["inventory-storage<br/>Core"]
         FL["facility-layout<br/>Generic"]
     end
