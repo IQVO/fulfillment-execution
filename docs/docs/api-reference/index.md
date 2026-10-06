@@ -17,17 +17,20 @@ repository and are linted by Spectral on every push:
 | Synchronous REST | `apis/openapi.yaml` (OpenAPI 3.0.3) | [REST API](./rest/fulfillment-execution-api.info.mdx) — generated directly from the spec |
 | Asynchronous events | `apis/asyncapi.yaml` (AsyncAPI 2.6.0) | [Events](./events.md) — hand-authored from the spec |
 
-The REST pages under **REST API** are generated from the real spec file at
-build time by `docusaurus-plugin-openapi-docs`. They are not transcribed by
-hand, so they cannot drift from the contract that CI validates.
+The REST pages under **REST API** are generated from the real spec file by
+`docusaurus-plugin-openapi-docs` (`npm run gen-api-docs fulfillment`) and
+committed; `npm run build` does not regenerate them. They are not transcribed
+by hand, and the `docs-api-drift` CI job (on pull requests into `main`)
+regenerates them and fails on any diff, so they cannot silently drift from
+the contract.
 
-## Endpoint coverage: 17 / 17
+## Endpoint coverage: 19 / 19
 
 Cross-checked against `internal/adapters/inbound/http/router.go`:
 
 | Method | Path | Use case | In `openapi.yaml`? |
 | --- | --- | --- | --- |
-| `POST` | `/tasks` | `CreateTask` | Yes |
+| `POST` | `/tasks` | `CreateTask` (`Idempotency-Key` header required when Postgres is wired, [ADR-0028](../adr/0028-idempotency-key-middleware.md)) | Yes |
 | `GET` | `/tasks?orderRef=` | `GetTasksByOrderRef` ([ADR-0013](../adr/0013-fulfillment-mfe-console-adoption.md)) | Yes |
 | `POST` | `/stations` | `RegisterStation` (optional `locationCode`, [ADR-0024](../adr/0024-station-location-code-and-workcenter-role-check.md)) | Yes |
 | `POST` | `/stations/{stationId}/claim-next` | `ClaimNext` | Yes |
@@ -36,7 +39,9 @@ Cross-checked against `internal/adapters/inbound/http/router.go`:
 | `POST` | `/tasks/{id}/renew-lease` | `RenewLease` | Yes |
 | `POST` | `/tasks/{id}/complete` | `CompleteTask` | Yes |
 | `POST` | `/tasks/{id}/seal-package` | `SealPackage` | Yes |
-| `POST` | `/packages/{id}/slam` | `RunSlam` | Yes |
+| `GET` | `/packages/{id}` | `GetPackage` ([ADR-0033](../adr/0033-package-read-model.md)) | Yes |
+| `GET` | `/packages?orderRef=` | `GetPackagesByOrderRef` ([ADR-0033](../adr/0033-package-read-model.md)) | Yes |
+| `POST` | `/packages/{id}/slam` | `RunSlam` (`204` in both outcomes) | Yes |
 | `GET` | `/queues/{taskType}/depth` | `GetQueueDepth` | Yes |
 | `GET` | `/capacity/{capability}` | `GetInstalledCapacity` ([ADR-0018](../adr/0018-installed-capacity-read-endpoint.md)) | Yes |
 | `POST` | `/tasks/expire-leases` | `ExpireLeases` | Yes |
@@ -140,6 +145,8 @@ as a permanent failure.
 | Slug | Status | Title |
 | --- | --- | --- |
 | `invalid-request` | 400 | The request is malformed or missing a required field |
+| `idempotency-key-required` | 400 | Idempotency-Key header is required (`POST /tasks` with Postgres, ADR-0028) |
+| `malformed-request-body` | 400 | The request body could not be read (idempotency middleware) |
 | `task-not-found` | 404 | Task not found |
 | `station-not-found` | 404 | Station not found |
 | `package-not-found` | 404 | Package not found |
@@ -160,6 +167,7 @@ as a permanent failure.
 | `rebin-unknown-line` | 422 | Line is not part of this order's required consolidation set |
 | `wrong-task-type` | 422 | Wrong task type for this operation |
 | `station-location-not-workcenter` | 422 | Station's locationCode does not resolve to a facility-layout WorkCenter |
+| `idempotency-key-reused` | 422 | Idempotency-Key was already used with a different request |
 | `internal-error` | 500 | Internal server error |
 
 All types share the base URI

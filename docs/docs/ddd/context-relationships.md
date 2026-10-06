@@ -88,7 +88,7 @@ determines the pattern on this edge. At its lower boundary a WCS is inevitably
 **Anti-Corruption Layer** on this side, so that vendor protocol shapes never
 climb up into the `Task` or `Package` model.
 
-:::info Not wired today
+:::info[Not wired today]
 There is **no WCS integration in this repository**: no adapter, no topic, no
 command channel. `apis/openapi.yaml` says so explicitly — driving physical
 equipment "is a separate command channel," out of scope for this API. The edge
@@ -157,6 +157,29 @@ This service conforms to facility-layout's location vocabulary for that one
 check, translated at `ports.LocationRoleLookup`. A `Task` still says *what*
 work and *by when*, never *where*.
 
+### `process-path-management` → `fulfillment-execution` — **Published Language, Conformist (opt-in)**
+
+`process-path-management` owns the declared process-path catalogue. With
+`PATH_CATALOGUE_SOURCE=kafka`, `internal/adapters/outbound/kafkacatalog`
+replays its `ProcessPathCreated` / `ProcessPathUpdated` /
+`ProcessPathDeactivated` events into an in-memory `pathcatalog.Catalogue`
+and blocks readiness until the replay catches up. This side conforms to the
+upstream's path definition (`path_id`, `match_prefix`,
+`required_capabilities`, ...) without negotiating it — Conformist on a
+Published Language. With the default `file` source the same shape arrives
+as a YAML file instead and there is no runtime edge
+([ADR-0017](../adr/0017-process-path-catalogue-as-configuration.md)).
+
+### `warehouse-ops-agent` → `fulfillment-execution` — **Open Host Service (MCP + REST reads)**
+
+`warehouse-ops-agent` calls this service's MCP server (`cmd/mcp`,
+Streamable HTTP) and hosts the console BFF that calls
+`GET /tasks?orderRef=` for the cross-service Order Lifecycle screen
+([ADR-0013](../adr/0013-fulfillment-mfe-console-adoption.md)). Both are
+general-purpose, unauthenticated surfaces this side publishes for any
+client ([ADR-0022](../adr/0022-remove-rest-mcp-auth.md)); the caller
+conforms to them.
+
 ## Summary
 
 | Edge | Pattern | Wired today? |
@@ -166,6 +189,11 @@ work and *by when*, never *where*.
 | this → `labor-performance` | Published Language | **Yes** — Kafka `warehouse.fulfillment.events` (`TaskCompleted`) |
 | this → `order-management` | Published Language | **Yes** — Kafka `warehouse.fulfillment.events` (`TaskCPTMissed`, `PackageManifested`) |
 | `workforce-management` → this | Open Host Service | **Yes** — HTTP `GET /capacity/{capability}` |
+| `warehouse-ops-agent` → this | Open Host Service | **Yes** — MCP server and HTTP `GET /tasks?orderRef=` |
+| `process-path-management` → this | Published Language, Conformist on this side | Opt-in — Kafka `warehouse.process-path-management.events` (`PATH_CATALOGUE_SOURCE=kafka`) |
 | this → `inventory-storage` | Customer/Supplier, ACL on this side | Opt-in — HTTP classification lookup |
 | this → `facility-layout` | Conformist behind ACL | Opt-in — HTTP location-role lookup |
 | this → WCS / equipment | Customer/Supplier + Conformist behind ACL | No — strategic only |
+
+The technical view of the same edges, with the U/D direction and the
+adapter evidence for each, is the [Context map](../ecosystem/context-map.md).

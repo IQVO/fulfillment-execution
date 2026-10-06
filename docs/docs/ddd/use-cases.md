@@ -3,7 +3,7 @@ id: use-cases
 title: Use cases & ports
 sidebar_label: Use cases & ports
 sidebar_position: 4
-description: The fifteen application-layer use cases, the outbound ports they depend on, and the adapters that satisfy them.
+description: The seventeen application-layer use cases, the outbound ports they depend on, and the adapters that satisfy them.
 ---
 
 # Use cases & ports
@@ -12,19 +12,19 @@ The application layer is one struct per use case, each holding its
 dependencies as plain fields. There is no DI container and no base class. Each
 use case depends only on the domain and on `ports` — never on an adapter.
 
-## The fifteen use cases
+## The seventeen use cases
 
 One file each in `internal/application/usecases/`.
 
 | # | Use case | Signature (abridged) | Raises | Endpoint |
 | --- | --- | --- | --- | --- |
-| 1 | `CreateTask` | `Execute(ctx, taskType, cpt, orderRef, required, fragile, giftWrap) (*Task, error)` | `TaskCreated` | `POST /tasks`; also the `WorkReleased` consumer |
+| 1 | `CreateTask` | `Execute(ctx, taskType, cpt, orderRef, required, fragile, giftWrap) (*Task, error)` | `TaskCreated` | `POST /tasks` (behind the `Idempotency-Key` middleware when Postgres is wired, ADR-0028); also the `WorkReleased` consumer and `ArriveAtRebin` |
 | 2 | `ClaimNext` | `Execute(ctx, stationId, taskType) (*Task, error)` | `TaskClaimed` | `POST /stations/{stationId}/claim-next` |
 | 3 | `RenewLease` | `Execute(ctx, taskId, stationId) error` | — | `POST /tasks/{id}/renew-lease` |
-| 4 | `CompleteTask` | `Execute(ctx, taskId, stationId) error` | `TaskCompleted` | `POST /tasks/{id}/complete` |
+| 4 | `CompleteTask` | `Execute(ctx, taskId, stationId) error` | `TaskCompleted` | `POST /tasks/{id}/complete`; MCP `complete_task` |
 | 5 | `SealPackage` | `Execute(ctx, taskId, stationId, contents) (*Package, error)` | `PackageSealed` | `POST /tasks/{id}/seal-package` |
 | 6 | `RunSlam` | `Execute(ctx, packageId, actualWeight, expectedWeight) error` | `LabelApplied` + `PackageManifested` **or** `WeightDiscrepancyDetected` + `PackageDiverted` | `POST /packages/{id}/slam` |
-| 7 | `GetQueueDepth` | `Execute(ctx, taskType) (int, error)` | — | `GET /queues/{taskType}/depth` |
+| 7 | `GetQueueDepth` | `Execute(ctx, taskType) (int, error)` | — | `GET /queues/{taskType}/depth`; MCP `get_queue_status` and the `queue://fulfillment/...` resources |
 | 8 | `ExpireLeases` | `Execute(ctx) (int, error)` | `LeaseExpired` per task freed | `POST /tasks/expire-leases` |
 | 9 | `RegisterStation` | `Execute(ctx, stationId, capabilities, locationCode) (*Station, error)` | — | `POST /stations` |
 | 10 | `CheckInStation` | `Execute(ctx, stationId, occupant) (*Station, error)` | — | `POST /stations/{stationId}/check-in` |
@@ -33,6 +33,13 @@ One file each in `internal/application/usecases/`.
 | 13 | `GetInstalledCapacity` | `Execute(ctx, capability) (int, error)` | — | `GET /capacity/{capability}` |
 | 14 | `SweepCPTMisses` | `Execute(ctx) (int, error)` | `TaskCPTMissed` per overdue open task | `POST /tasks/sweep-cpt-misses` |
 | 15 | `ArriveAtRebin` | `Execute(ctx, orderRef, lineId, requiredLineIds, packCPT, packRequired, packFragile, packGiftWrap) error` | `ItemArrivedAtRebin`; on completion also `TaskCreated` (via `CreateTask`) + `OrderConsolidated` | `POST /rebin/arrivals` |
+| 16 | `GetPackage` | `Execute(ctx, packageId) (*Package, error)` | — | `GET /packages/{id}` ([ADR-0033](../adr/0033-package-read-model.md)) |
+| 17 | `GetPackagesByOrderRef` | `Execute(ctx, orderRef) ([]*Package, error)` | — | `GET /packages?orderRef=` ([ADR-0033](../adr/0033-package-read-model.md)) |
+
+The MCP tools `find_claimable_work` and `diagnose_stuck_tasks` read
+`TaskRepo` directly through a narrow query port (`mcp.TaskQueries`) rather
+than through a use case; the two report tools call `cmd/fulfillment-reports`
+over REST.
 
 `RegisterStation` exists to close a real gap — without it, a freshly started
 server had no way to create a `Station` over HTTP, so every `claim-next` call
@@ -45,10 +52,12 @@ is the promise-feedback sweep
 `ArriveAtRebin` is the Rebin fan-in
 ([ADR-0016](../adr/0016-rebin-and-order-consolidation.md)).
 
-Every state-changing use case wraps its save + publish in
+Every state-changing use case that raises events wraps its save + publish in
 `ports.UnitOfWork` when one is wired, so with Postgres the state change and
 the outbox row commit atomically
-([ADR-0020](../adr/0020-transactional-outbox.md)).
+([ADR-0020](../adr/0020-transactional-outbox.md)). `RenewLease`,
+`RegisterStation`, `CheckInStation` and `CheckOutStation` raise nothing and
+save directly.
 
 ## Notes on the ones with subtleties
 
@@ -62,16 +71,19 @@ now := uc.Clock.Now()
 candidates, _ := uc.Tasks.FindClaimableByType(ctx, taskType, now)   // earliest-CPT-first
 
 for _, t := range candidates {
-    if err := t.Claim(stationId, st.Capabilities(), now, leaseDuration); err == nil {
-        uc.Tasks.Save(ctx, t)
-        uc.Publisher.Publish(ctx, shared.NewTaskClaimed(t.Id(), stationId, now))
-        return t, nil
+    if t.Claim(stationId, st.Capabilities(), now, leaseDuration) != nil {
+        continue                                        // capability mismatch etc.: try the next one
     }
+    won, _ := uc.persistClaim(ctx, t, stationId, now)  // SaveClaim CAS + Publish(TaskClaimed), one UnitOfWork
+    if !won {
+        continue                                        // another station's claim committed first
+    }
+    return t, nil
 }
 return nil, ErrNoClaimableTask
 ```
 
-Three things worth noticing:
+Four things worth noticing:
 
 1. **Capabilities are resolved server-side.** The ubiquitous-language name is
    `claimNext(stationId, capabilities)`, but the HTTP request body carries only
@@ -82,7 +94,13 @@ Three things worth noticing:
    match this station's capabilities, `Claim` returns an error and the loop
    simply moves to the next candidate. The result is "the earliest-CPT task
    this station can actually do."
-3. **An empty result is `ErrNoClaimableTask`, not an empty 200.** An idle
+3. **The save is a compare-and-set.** `FindClaimableByType` is a plain read,
+   so concurrent stations can load the same Pending task. `TaskRepo.SaveClaim`
+   only writes while the stored row is still claimable
+   (`status = 'PENDING' OR (status = 'CLAIMED' AND lease_expiry <= now)`);
+   the losers get `won=false`, publish nothing, and move on
+   ([ADR-0034](../adr/0034-concurrency-control-for-consolidation-and-claim.md)).
+4. **An empty result is `ErrNoClaimableTask`, not an empty 200.** An idle
    station gets a definite answer, mapped to `409` — see
    [ADR-0005](../adr/0005-rfc-7807-problem-details.md) for the status-code
    reasoning.
@@ -93,7 +111,9 @@ It reads the `Task` to check three things — that it exists, that it is a
 `PACK` task (`ErrWrongTaskType`), and that `stationId` holds the active claim
 (`task.ErrNotOwner`) — then writes only the new `Package`. Neither aggregate
 is asked to know about the other; the rule lives in the layer that can see
-both.
+both. It is idempotent on the task id: `PackageRepo.FindByTaskId` runs first
+and a retried call returns the already-sealed package (backed by the
+partial unique index on `packages.task_id`, migration 0011).
 
 When `ClassificationLookup` (`ports.ProductClassificationLookup`) is wired,
 `SealPackage` also performs a live, synchronous classification lookup per
@@ -131,7 +151,18 @@ Same shape as `ExpireLeases`: no `now` argument, time from `ports.Clock`.
 It asks `TaskRepo.FindOpenPastCPT(now)` for every Pending or Claimed task
 at or past its CPT and publishes one `TaskCPTMissed` per task. It changes no
 task state, so an overdue task re-fires on every pass until it completes —
-consumers deduplicate on `taskId`.
+each pass is a new event `id`, so consumers must be idempotent on their own
+business key.
+
+### `ArriveAtRebin` — serialized per order
+
+The read-modify-write of the `OrderConsolidation` runs inside the unit of
+work behind `OrderConsolidationRepo.FindByOrderRefForUpdate`, which takes a
+transaction-scoped advisory lock on the order ref plus `SELECT ... FOR
+UPDATE` in Postgres, so two lines arriving at once are serialized and none
+is lost ([ADR-0034](../adr/0034-concurrency-control-for-consolidation-and-claim.md)).
+The PACK task is created exactly once — on the arrival that first completes
+the set; later arrivals for a complete order are no-ops.
 
 ## The outbound ports
 
@@ -141,11 +172,11 @@ application layer depends on these interfaces; adapters implement them.
 
 | Port | Methods | Implemented by |
 | --- | --- | --- |
-| `TaskRepo` | `Save`, `FindById`, `FindClaimableByType`, `FindAllClaimed`, `FindOpenPastCPT`, `CountByTypeAndStatus`, `FindByOrderRef` | `memory`, `postgres` |
+| `TaskRepo` | `Save`, `SaveClaim`, `FindById`, `FindClaimableByType`, `FindAllClaimed`, `FindOpenPastCPT`, `CountByTypeAndStatus`, `FindByOrderRef` | `memory`, `postgres` |
 | `StationRepo` | `Save`, `FindById`, `CountByCapability` | `memory`, `postgres` |
-| `OrderConsolidationRepo` | `Save`, `FindByOrderRef` | `memory`, `postgres` |
-| `PackageRepo` | `Save`, `FindById` | `memory`, `postgres` |
-| `EventPublisher` | `Publish(ctx, events...)` | `events` (log/buffered), `kafka` |
+| `OrderConsolidationRepo` | `Save`, `FindByOrderRef`, `FindByOrderRefForUpdate` | `memory`, `postgres` |
+| `PackageRepo` | `Save`, `FindById`, `FindByTaskId`, `FindByOrderRef` | `memory`, `postgres` |
+| `EventPublisher` | `Publish(ctx, events...)` | `events` (log / buffered / multi), `kafka` (integration + analytics), `postgres.OutboxPublisher` |
 | `Clock` | `Now()` | `memory.SystemClock`, fixed clocks in tests |
 | `ProcessedEvents` | `MarkProcessed(ctx, eventId) (bool, error)` | `memory`, `postgres` |
 | `ProductClassificationLookup` | `GetClassification(ctx, sku) (ClassificationInfo, error)` | `productclassification` (http client, permissive no-op) |
@@ -184,6 +215,7 @@ sequenceDiagram
     participant S as Station (client)
     participant H as http.Handlers
     participant U as usecases.ClaimNext
+    participant SR as ports.StationRepo
     participant R as ports.TaskRepo
     participant T as task.Task
     participant P as ports.EventPublisher
@@ -191,19 +223,24 @@ sequenceDiagram
     S->>H: POST /stations/station-03/claim-next
     H->>H: decode + validate DTO
     H->>U: Execute(ctx, station-03, PICK)
-    U->>R: FindById(station-03) via StationRepo
+    U->>SR: FindById(station-03)
     U->>R: FindClaimableByType(PICK, now)
     R-->>U: candidates, earliest CPT first
-    loop until one Claim succeeds
+    loop until a Claim succeeds and its SaveClaim wins
         U->>T: Claim(stationId, capabilities, now, lease)
         T-->>U: nil or ErrAlreadyClaimed or ErrCapabilityMismatch
+        U->>R: SaveClaim(task, now) inside UnitOfWork
+        R-->>U: won or lost the compare-and-set
     end
-    U->>R: Save(task)
-    U->>P: Publish(TaskClaimed)
+    U->>P: Publish(TaskClaimed) in the same UnitOfWork
     U-->>H: claimed task
     H->>H: map to taskResponse DTO
     H-->>S: 200 + JSON
 ```
+
+Source: `internal/application/usecases/claim_next.go`,
+`internal/adapters/inbound/http/handlers.go`. The full set of per-use-case
+sequence diagrams is on [Sequence diagrams](./sequence-diagrams.md).
 
 The handler never touches a domain type on the way out — it maps to a DTO
 defined in `internal/adapters/inbound/http/dto.go`. Domain structs are not

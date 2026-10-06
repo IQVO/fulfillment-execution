@@ -24,7 +24,7 @@ flowchart TB
     end
 
     subgraph app["Application layer"]
-        UC["usecases<br/>one struct per use case (15)"]
+        UC["usecases<br/>one struct per use case (17)"]
         P["ports<br/>TaskRepo · StationRepo · PackageRepo · OrderConsolidationRepo<br/>EventPublisher · UnitOfWork · Clock · ProcessedEvents · PathCatalogue<br/>ProductClassificationLookup · LocationRoleLookup · Metrics"]
     end
 
@@ -94,7 +94,7 @@ internal/
   analytics/report/            analytical read model + store ports
   application/
     ports/                     OUT interfaces (see Use cases & ports)
-    usecases/                  one struct per use case (15 of them)
+    usecases/                  one struct per use case (17 of them)
   adapters/
     inbound/http/              chi router, handlers, DTOs, RFC 7807 error mapping
     inbound/kafka/             WorkReleased consumer + analytics projector consumer
@@ -125,8 +125,8 @@ language, and only the Go identifier bends.
 
 `internal/architecture/` encodes the rule as real Go tests
 using [arch-go](https://github.com/arch-go/arch-go) — the Go equivalent of
-ArchUnit. Seven subtests (five in `architecture_test.go`, two MCP-specific in
-`fitness_test.go`) run on every push in the `arch-test` CI job:
+ArchUnit — plus a few source-scanning fitness functions. They run in the
+`arch-test` CI job (`make arch-test`). The arch-go dependency subtests:
 
 | Subtest | What it forbids |
 | --- | --- |
@@ -135,8 +135,19 @@ ArchUnit. Seven subtests (five in `architecture_test.go`, two MCP-specific in
 | `inbound adapters do not depend on outbound adapters` | The HTTP layer talking to pgx directly |
 | `outbound adapters do not depend on inbound adapters` | A repo importing an HTTP DTO |
 | `only cmd wires every layer together` | Wiring leaking out of the composition root |
+| `analytics imports nothing internal except analytics` | The analytics read model reaching into OLTP code |
+| `domain and application do not import analytics` | The OLTP core depending on the analytics read side |
 | `mcp adapter depends only on application and domain` | MCP tools reaching into other adapters |
 | `nothing else depends on the mcp adapter` | Other packages importing MCP tool code |
+
+The remaining fitness tests in the same package guard fleet rules rather
+than layering: `TestRepositoryPortImplementersFollowRepoNamingConvention`,
+`TestNoAuthMiddlewareReintroduced` (ADR-0022),
+`TestKafkaConsumerGroupNeverHardcodedInline`,
+`TestKafkaIntegrationTestsUseTestcontainers`, `TestCloudEventsOnly`
+(ADR-0032), `TestReplayConsumersSetCommitInterval`, and
+`TestEventCatalogueMatchesContract` / `TestEventCatalogueDetector` (the
+published event catalogue matches `apis/asyncapi.yaml`).
 
 Rationale and the alternatives considered are in
 [ADR-0001](../adr/0001-hexagonal-ports-and-adapters.md) and
@@ -150,17 +161,29 @@ entirely from environment variables:
 - `DATABASE_URL` **unset** → in-memory repositories (`memory.NewTaskRepo()` and
   friends). This is why the service runs with a single `go run` and no
   infrastructure.
-- `DATABASE_URL` **set** → migrations are applied via `golang-migrate`, then
-  `pgxpool` repositories are wired.
-- `EVENT_PUBLISHER=kafka` → the outbound Kafka publisher replaces the default
-  log publisher for `ports.EventPublisher`. Note that the same interface backs
-  both, so no use case knows which one it got.
+- `DATABASE_URL` **set** → migrations are applied via `golang-migrate`
+  (over `MIGRATIONS_DATABASE_URL` when set, ADR-0031), then `pgxpool`
+  repositories, a Postgres `UnitOfWork` and the `POST /tasks`
+  `Idempotency-Key` middleware (ADR-0028) are wired.
+- `EVENT_PUBLISHER=kafka` → `ports.EventPublisher` fans every domain event to
+  the integration encoder (`TaskCompleted`, `TaskCPTMissed`,
+  `PackageManifested` → `warehouse.fulfillment.events`) and the analytics
+  encoder (→ `warehouse.fulfillment.analytics`). With Postgres the encoded
+  messages are written to `outbox_events` inside the use case's own
+  transaction and drained by an in-process relay (ADR-0020); without
+  Postgres they go straight to the broker. The default is the log
+  publisher. The same interface backs all of them, so no use case knows
+  which one it got. The wiring is shared with `cmd/mcp` through
+  `internal/composition`.
+- The process-path catalogue comes from `PATH_CATALOGUE_SOURCE`: `file`
+  (default, `PATH_CATALOGUE_FILE`) or `kafka` (replays
+  `warehouse.process-path-management.events`, ADR-0017).
 - The `WorkReleased` Kafka consumer always starts, reading
-  `warehouse.work-planning.events` from `KAFKA_BROKERS`.
+  `warehouse.work-planning.events` from `KAFKA_BROKERS`; its dead-letter
+  writer (`<topic>.dlq`) is wired only when `EVENT_PUBLISHER=kafka`.
 
 Every use case receives its dependencies as struct fields — there is no DI
-container, no service locator, and no global state. The wiring is about thirty
-readable lines.
+container, no service locator, and no global state.
 
 ## Read models are projections
 

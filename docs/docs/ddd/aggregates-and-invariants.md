@@ -8,10 +8,12 @@ description: The four aggregate roots of this bounded context, every invariant e
 
 # Aggregates & invariants
 
-Three aggregate roots, each enforcing its own invariants in pure Go with no
+Four aggregate roots, each enforcing its own invariants in pure Go with no
 framework or SQL types anywhere near them. Every invariant listed here has a
 **failing-path** unit test — asserting the rule *rejects* the bad case, not
-merely that the happy path works.
+merely that the happy path works. The ddd-crew view of the same four roots
+(state transitions, handled commands, created events, throughput and size)
+is the [Aggregate Design Canvas](./aggregate-design-canvas.md).
 
 ```mermaid
 classDiagram
@@ -26,6 +28,7 @@ classDiagram
         -Lease* lease
         -bool fragile
         -bool giftWrap
+        -time* claimedAt
         +Claim(stationId, capabilities, now, duration) error
         +RenewLease(stationId, now, duration) error
         +Complete(stationId, now) error
@@ -55,9 +58,11 @@ classDiagram
         <<Aggregate Root>>
         -PackageId id
         -OrderRef orderRef
+        -TaskId taskId
         -Status status : OPEN|SEALED|LABELED|DIVERTED
         -string[] scannedContents
         -bool fragileHandling
+        -bool giftWrapRequested
         -int[] scannedHazardClasses
         +ScanItem(sku) error
         +ScanItemWithClass(sku, hazardClass) error
@@ -148,13 +153,15 @@ no shift window — those belong to `workforce-management`, which stops at the
 process-path boundary. Keeping `Station` this thin is what keeps that boundary
 from leaking.
 
-:::note Honest status
-Occupancy (`CheckIn` / `CheckOut`) is fully modelled and unit-tested on the
-aggregate, but no HTTP endpoint exposes it today, and `ClaimNext` does not
-require a station to be occupied before it can claim. The registered
-capability set is the only station state the dispatch path reads. `POST /stations`
-returns `occupied` in its response, always `false` for a freshly registered
-station.
+:::note[Honest status]
+Occupancy (`CheckIn` / `CheckOut`) is exposed over HTTP as
+`POST /stations/{stationId}/check-in` and `POST /stations/{stationId}/check-out`
+([ADR-0014](../adr/0014-labor-performance-integration-hooks.md)); it raises no
+domain event. `ClaimNext` still does **not** require a station to be occupied
+before it can claim — the registered capability set is the only station
+state the dispatch path reads. The occupant is read once more at publish
+time, to stamp `associate_id` onto `TaskCompleted`. `POST /stations`
+returns `occupied`, always `false` for a freshly registered station.
 :::
 
 ## Package
@@ -168,13 +175,16 @@ SLAM weigh-check.
 | P2 | **Cannot seal twice**, and cannot scan into a non-`Open` package. | `Package.Seal`, `Package.ScanItem` | `pack.ErrAlreadySealed` | `409` |
 | P3 | **SLAM requires a sealed package.** | `Package.Weigh` | `pack.ErrNotSealed` | `409` |
 | P4 | **SLAM runs once.** A labelled or diverted package rejects a second weigh-check. | `Package.Weigh` | `pack.ErrAlreadyProcessed` | `409` |
-| P5 | **SLAM diverts on weight discrepancy.** If `\|actual − expected\| > WeightTolerance` the package becomes `DIVERTED` instead of `LABELED`. | `Package.Weigh` | *(not an error — a domain outcome)* | `200` |
+| P5 | **SLAM diverts on weight discrepancy.** If `\|actual − expected\| > WeightTolerance` the package becomes `DIVERTED` instead of `LABELED`. | `Package.Weigh` | *(not an error — a domain outcome)* | `204` |
 | P6 | **Same-package DOT hazard segregation.** A scanned item's hazard class must be compatible with every already-scanned item's hazard class, per a class-level 49 CFR §177.848-derived matrix. An unclassified item (hazard class 0) never triggers or blocks this — fail-open. | `Package.ScanItemWithClass` → `pack.IsSegregationIncompatible` | `pack.ErrPackageSegregationViolation` | `409` |
 
 P5 is worth dwelling on: a diverted package is **not an error**. It is a
 successful weigh-check with a negative result, so `POST /packages/{id}/slam`
-returns `200` with the package in `DIVERTED` status, and raises
-`WeightDiscrepancyDetected` *and* `PackageDiverted`. Modelling it as a `4xx`
+returns `204` — the same status as a pass — and raises
+`WeightDiscrepancyDetected` *and* `PackageDiverted`. A caller learns the
+outcome by reading the package back with `GET /packages/{id}`, whose `status`
+is `LABELED` or `DIVERTED`
+([ADR-0033](../adr/0033-package-read-model.md)). Modelling a divert as a `4xx`
 would conflate "your request was wrong" with "the carton is wrong," and the
 second is a normal, expected operational event.
 
@@ -217,8 +227,10 @@ layer that can see both, not inside one of them.
 Queue depth is computed from task state on every request via
 `TaskRepo.CountByTypeAndStatus(ctx, taskType, task.Pending)`. There is no
 counter field on any aggregate, and nothing to keep in sync. The same applies
-to any future throughput metric: derive it from the events, do not store it on
-the thing the events are about.
+to the throughput report: it is derived from the analytics events by a
+separate projector into a separate database
+([Throughput report](../analytics/throughput-report.md)), never stored on the
+thing the events are about.
 
 ## Product-classification-derived handling flags
 

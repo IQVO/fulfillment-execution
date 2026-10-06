@@ -7,8 +7,9 @@
 > **not a production system** and is **not affiliated with, endorsed by, or
 > representative of any real-world company**.
 
-The task-lifecycle core bounded context for Pick, Pack, and SLAM. Downstream
-of Work Planning (which releases work); issues commands to WCS/equipment.
+The task-lifecycle core bounded context for Pick, Pack, Rebin, and SLAM.
+Downstream of Work Planning (which releases work); WCS/equipment is a
+strategic downstream behind a deliberately unimplemented port (ADR-0015).
 Dispatch is **pull, not push**: a station calls `claimNext(stationId,
 capabilities)` and the system selects the best-fit pending task — the system
 never names a station in advance. Claims are at-most-once and time-boxed by a
@@ -20,10 +21,13 @@ See `CLAUDE.md` for the full architecture and ubiquitous language, and
 
 ## Documentation
 
-Full documentation site: **<https://claudioed.github.io/fulfillment-execution/>**
+Full documentation site: **<https://iqvo.github.io/fulfillment-execution/>**
 
 It covers the business context and ubiquitous language, the DDD model
-(subdomain classification, aggregates and invariants, domain events), an API
+(subdomain classification, aggregates and invariants, domain events, and the
+ddd-crew artifact pack: core domain chart, bounded context canvas, aggregate
+design canvas, domain message flow, EventStorming, UML class / ER / sequence
+diagrams), an API
 reference generated from `apis/openapi.yaml` plus a hand-written Events page
 from `apis/asyncapi.yaml`, the ecosystem context map, and the Architecture
 Decision Records. Source lives in `docs/` and deploys via
@@ -39,26 +43,35 @@ application/domain.**
 cmd/execution/               main.go — OLTP composition root
 cmd/fulfillment-projector/   analytics WRITER: analytics topic -> analytical DB
 cmd/fulfillment-reports/     analytics READ-ONLY READER: serves GET /reports/...
-cmd/mcp/                      MCP server (adds the report tool)
+cmd/mcp/                     MCP server (Streamable HTTP; adds the two report tools)
 internal/
   domain/
-    task/                    Task aggregate (Pick|Pack|SLAM lifecycle, lease)
-    station/                 Station aggregate (occupant, capabilities)
-    package/                 Package aggregate (pack -> sealed; SLAM weigh-check)
-    shared/                  value objects: TaskId, StationId, CPT, Capability, events
+    task/                    Task aggregate (Pick|Pack|SLAM|Rebin lifecycle, lease, CPT-missed)
+    station/                 Station aggregate (occupant, capabilities, locationCode)
+    package/                 Package aggregate (pack -> sealed; segregation; SLAM weigh-check)
+    consolidation/           OrderConsolidation aggregate (Rebin fan-in, ADR-0016)
+    pathcatalog/             process-path catalogue model (prefix-match lookup, ADR-0017)
+    shared/                  value objects: TaskId, StationId, PackageId, OrderRef, CPT, Capability, 13 events
   analytics/report/          analytical read model + store ports (ADR-0012)
   application/
-    ports/                   OUT: TaskRepo, StationRepo, PackageRepo, EventPublisher, Clock
-    usecases/                one struct per use case
+    ports/                   OUT: TaskRepo, StationRepo, PackageRepo, OrderConsolidationRepo,
+                             EventPublisher, UnitOfWork, Clock, ProcessedEvents, PathCatalogue,
+                             ProductClassificationLookup, LocationRoleLookup, Metrics,
+                             EquipmentCommandPort (empty WCS seam)
+    usecases/                one struct per use case (17)
   adapters/
     inbound/http/            chi handlers, DTOs, error mapping (OLTP + reports)
     inbound/kafka/           WorkReleased consumer + analytics projector consumer
-    inbound/mcp/             MCP tools (incl. get_fulfillment_throughput_report)
-    outbound/postgres/       pgxpool repos + migrations
+    inbound/mcp/             MCP tools (incl. get_fulfillment_throughput_report, get_on_time_to_cpt)
+    outbound/postgres/       pgxpool repos + migrations + transactional outbox + relay
     outbound/analyticsstore/ analytical DB writer + read-only reader
     outbound/memory/         in-memory repos for tests/local
     outbound/kafka/          integration publisher + analytics publisher
     outbound/events/         log/buffered/multi publisher
+    outbound/filecatalog/    process-path catalogue YAML loader
+    outbound/kafkacatalog/   process-path catalogue Kafka replay (PATH_CATALOGUE_SOURCE=kafka)
+    outbound/productclassification/  inventory-storage hazard lookup (opt-in)
+    outbound/facilitylayout/ facility-layout location-role lookup (opt-in)
 migrations/                  golang-migrate SQL files
 migrations/analytics/        analytical schema migrations
 ```
@@ -143,7 +156,7 @@ and `GET /healthz` unauthenticated for the liveness/readiness probes. The
 fleet's REST identity layer was removed (see the ADR below), so all MCP
 tool calls are unauthenticated. When `analytics.enabled=true` the pod also
 gets `REPORTS_BASE_URL` pointed at the chart's reports Service so the
-`get_fulfillment_throughput_report` tool is registered (override with
+`get_fulfillment_throughput_report` and `get_on_time_to_cpt` tools are registered (override with
 `mcp.reportsBaseUrl`). Locally:
 
 ```sh
@@ -164,15 +177,19 @@ Terraform, and warehouse-ops-agent's `FULFILLMENT_MCP_ENDPOINT` points at
 |----------------|---------|-----------------------------------|
 | `HTTP_ADDR`    | `:8080` | HTTP listen address               |
 | `DATABASE_URL` | (unset) | Postgres DSN; unset selects memory adapters |
-| `KAFKA_BROKERS` | `localhost:9092` | Comma-separated Kafka broker list, used by both the `WorkReleased` consumer and the `TaskCompleted` publisher |
+| `MIGRATIONS_DATABASE_URL` | `DATABASE_URL` | Direct (non-PgBouncer) DSN used only for the golang-migrate startup step, in `cmd/execution` and `cmd/mcp` — see [ADR-0031](docs/docs/adr/0031-migrations-direct-postgres-connection.md) |
+| `KAFKA_BROKERS` | `localhost:9092` | Comma-separated Kafka broker list, used by the consumers, the publishers and the outbox relay |
+| `WORK_RELEASED_CONSUMER_GROUP` | `fulfillment-execution` | Consumer group of the `WorkReleased` consumer on `warehouse.work-planning.events` |
+| `PATH_CATALOGUE_SOURCE` | `file` | `file` loads `PATH_CATALOGUE_FILE` at boot; `kafka` replays `warehouse.process-path-management.events` into memory and blocks readiness until the replay catches up — see [ADR-0017](docs/docs/adr/0017-process-path-catalogue-as-configuration.md) |
 | `PATH_CATALOGUE_FILE` | `/etc/fulfillment-execution/process-paths.yaml` | Path to the declared process-path catalogue YAML (see `warehouse-infra`'s `config/process-paths/sortable-fc.yaml`). Loaded once at startup; a missing or invalid file is a fatal boot-time error — see [ADR-0017](docs/docs/adr/0017-process-path-catalogue-as-configuration.md) |
-| `EVENT_PUBLISHER` | `log` | `log` publishes domain events to stdout only; `kafka` additionally publishes `TaskCompleted` to `warehouse.fulfillment.events` AND fans every domain event to `warehouse.fulfillment.analytics` (feeds the report). When `DATABASE_URL` is also set, both topics are fed through the **transactional outbox** (`outbox_events`, committed in the use case's own transaction and drained by an in-process relay — see [ADR-0020](docs/docs/adr/0020-transactional-outbox.md)); without Postgres, events go straight to the broker |
+| `EVENT_PUBLISHER` | `log` | `log` publishes domain events to stdout only; `kafka` additionally publishes `TaskCompleted`, `TaskCPTMissed` and `PackageManifested` to `warehouse.fulfillment.events` AND fans every domain event to `warehouse.fulfillment.analytics` (feeds the report). When `DATABASE_URL` is also set, both topics are fed through the **transactional outbox** (`outbox_events`, committed in the use case's own transaction and drained by an in-process relay — see [ADR-0020](docs/docs/adr/0020-transactional-outbox.md)); without Postgres, events go straight to the broker |
 | `OUTBOX_RELAY_INTERVAL` | `1s` | How long the outbox relay sleeps between passes when it found nothing to publish (Go duration, e.g. `500ms`). Only used with `EVENT_PUBLISHER=kafka` and `DATABASE_URL` set |
 | `ANALYTICS_DATABASE_URL` | (unset) | Analytical DB DSN, read by `cmd/fulfillment-projector` (read-write) and `cmd/fulfillment-reports` (read-only role). MUST be a different database from `DATABASE_URL` |
 | `ANALYTICS_MIGRATIONS_PATH` | `migrations/analytics` | Analytical golang-migrate migrations the projector runs on start |
 | `ADMIN_ADDR` | `:8091` | `cmd/fulfillment-projector` admin/health listen address |
 | `MCP_ADDR` | `:8090` | `cmd/mcp` listen address — MCP Streamable HTTP at `/` and `/mcp`, unauthenticated `GET /healthz` |
-| `REPORTS_BASE_URL` | (unset) | `cmd/mcp` only: base URL of `cmd/fulfillment-reports`; when set, registers the `get_fulfillment_throughput_report` tool |
+| `REPORTS_BASE_URL` | (unset) | `cmd/mcp` only: base URL of `cmd/fulfillment-reports`; when set, registers the `get_fulfillment_throughput_report` and `get_on_time_to_cpt` tools |
+| `CORS_ALLOWED_ORIGINS` | `http://localhost:5173,http://localhost:5184` | Comma-separated browser origins allowed by the CORS middleware on the OLTP API ([ADR-0013](docs/docs/adr/0013-fulfillment-mfe-console-adoption.md)) |
 | `PRODUCT_CLASSIFICATION_MODE` | `permissive` | `permissive` (default, no-op, every scanned SKU treated as unclassified) or `http` — live per-scanned-SKU DOT hazard classification lookup from inventory-storage at seal time (ADR-0010) |
 | `INVENTORY_STORAGE_BASE_URL` | (unset) | Base URL for inventory-storage's REST API; required when `PRODUCT_CLASSIFICATION_MODE=http` |
 | `LOCATION_ROLE_MODE` | `permissive` | `permissive` (default, no-op, a supplied `locationCode` is recorded unchecked) or `http` — live registration-time lookup of a station's `locationCode` role from facility-layout, rejecting a KNOWN non-WorkCenter role (ADR-0024) |
@@ -202,7 +219,7 @@ still starts and serves at full speed — telemetry is simply dropped.
 | Signal | What |
 |--------|------|
 | Traces | One server span per HTTP request (via `otelchi`), named after the **route pattern** (`POST /tasks/{id}/complete`) rather than the raw path; a child span per Postgres query/batch/copy/acquire (via `otelpgx`), carrying the parameterised SQL — query values are never recorded; `kafka.publish <topic>` / `kafka.consume <topic>` spans around the Kafka boundary |
-| Metrics | `http.server.request.duration` (histogram, seconds, by route + method + status); `fulfillment.tasks.claimed` and `fulfillment.tasks.completed` counters attributed by `task.type` (Pick \| Pack \| SLAM); pgxpool connection gauges; Go runtime metrics (goroutines, GC, memory) |
+| Metrics | `http.server.request.duration` (histogram, seconds, by route + method + status); `fulfillment.tasks.claimed` and `fulfillment.tasks.completed` counters attributed by `task.type` (PICK \| PACK \| SLAM \| REBIN); pgxpool connection gauges; Go runtime metrics (goroutines, GC, memory) |
 | Logs | Structured JSON on stdout. Any log emitted while a span is active also carries `trace_id` and `span_id`, so a log line links straight to its trace |
 
 The two task counters are incremented inside the `ClaimNext` and
@@ -280,6 +297,12 @@ implementation for Go. The feature files live under `features/`:
 | `features/lease.feature` | Lease renewal before expiry, and lease expiry returning a Task to the pool |
 | `features/complete_task.feature` | Completing a claimed Task, and rejecting a non-owner |
 | `features/pack_slam.feature` | Sealing a Package, and the SLAM weigh-check applying a label vs diverting |
+| `features/task_guards.feature` | Lifecycle guards: unregistered station, double-complete, non-owner / unclaimed renew, empty seal, double SLAM |
+| `features/station_occupancy.feature` | Station check-in / check-out, one occupant at a time, no domain event published |
+| `features/installed_capacity.feature` | `GET /capacity/{capability}` installed-capacity read model |
+| `features/order_ref_lookup.feature` | `GET /tasks?orderRef=` lookup |
+| `features/package_read_model.feature` | `GET /packages/{id}` and `GET /packages?orderRef=` (ADR-0033) |
+| `features/cpt_missed_sweep.feature` | `POST /tasks/sweep-cpt-misses` raising `TaskCPTMissed` (ADR-0025) |
 
 The step definitions live in `features_test.go` at the repo root. They are
 black-box: each scenario spins up the real chi router (in-memory repositories,
@@ -336,7 +359,12 @@ curl -sX POST localhost:8080/tasks \
 
 `fragile` is optional (defaults to `false`); it is a packing hint normally
 stamped by `wes-work-planning` at release time, not something a human caller
-typically sets by hand. `requiredCapabilities` may include `hazmat` — see
+typically sets by hand. When the service runs against Postgres, `POST /tasks`
+also requires an `Idempotency-Key` header (missing: `400`
+`idempotency-key-required`; same key with a different body: `422`
+`idempotency-key-reused`; same key and body: the stored response is replayed —
+[ADR-0028](docs/docs/adr/0028-idempotency-key-middleware.md)); the in-memory
+mode does not wire the middleware. `requiredCapabilities` may include `hazmat` — see
 [Integration](#integration) below and `docs/docs/adr/0009-fragile-and-hazmat-handling-flags.md`
 for why that needs no special handling beyond the value itself.
 
@@ -440,7 +468,36 @@ curl -sX POST localhost:8080/tasks/expire-leases
 
 ```sh
 curl -s localhost:8080/healthz
+curl -s localhost:8080/readyz     # 503 {"status":"not_ready"} once graceful shutdown starts (ADR-0029)
 ```
+
+### Every route
+
+The router (`internal/adapters/inbound/http/router.go`) and `apis/openapi.yaml`
+are kept in a two-way 1:1 match (19 operations) by
+`internal/adapters/inbound/http/openapi_routes_test.go`:
+
+| Method | Path | Use case |
+|---|---|---|
+| `POST` | `/tasks` | `CreateTask` — requires an `Idempotency-Key` header when Postgres is configured (ADR-0028) |
+| `GET` | `/tasks?orderRef=` | `GetTasksByOrderRef` |
+| `POST` | `/stations` | `RegisterStation` |
+| `POST` | `/stations/{stationId}/claim-next` | `ClaimNext` |
+| `POST` | `/stations/{stationId}/check-in` | `CheckInStation` |
+| `POST` | `/stations/{stationId}/check-out` | `CheckOutStation` |
+| `POST` | `/tasks/{id}/renew-lease` | `RenewLease` |
+| `POST` | `/tasks/{id}/complete` | `CompleteTask` |
+| `POST` | `/tasks/{id}/seal-package` | `SealPackage` |
+| `GET` | `/packages/{id}` | `GetPackage` |
+| `GET` | `/packages?orderRef=` | `GetPackagesByOrderRef` |
+| `POST` | `/packages/{id}/slam` | `RunSlam` |
+| `GET` | `/queues/{taskType}/depth` | `GetQueueDepth` |
+| `GET` | `/capacity/{capability}` | `GetInstalledCapacity` |
+| `POST` | `/tasks/expire-leases` | `ExpireLeases` |
+| `POST` | `/tasks/sweep-cpt-misses` | `SweepCPTMisses` |
+| `POST` | `/rebin/arrivals` | `ArriveAtRebin` |
+| `GET` | `/healthz` | liveness |
+| `GET` | `/readyz` | readiness |
 
 ## Integration
 
@@ -452,8 +509,9 @@ through a new one. It also **publishes** `TaskCompleted` back to Work
 Planning to close the control loop (drum-buffer-rope feedback edge:
 Execution -> Orchestration).
 
-- **Consumed topic**: `warehouse.work-planning.events` (consumer group `fulfillment-execution`)
-- **Published topic**: `warehouse.fulfillment.events`
+- **Consumed topic**: `warehouse.work-planning.events` (consumer group `WORK_RELEASED_CONSUMER_GROUP`, default `fulfillment-execution`)
+- **Published topic**: `warehouse.fulfillment.events` (`TaskCompleted`, `TaskCPTMissed`, `PackageManifested`) plus the internal analytics topic `warehouse.fulfillment.analytics`
+- **Optionally consumed**: `warehouse.process-path-management.events` when `PATH_CATALOGUE_SOURCE=kafka`
 - **Broker**: `KAFKA_BROKERS` env var, default `localhost:9092`. This connects
   to the fleet's shared broker in the `warehouse-infra` kind cluster (host
   listener `localhost:9092`);
@@ -499,9 +557,11 @@ hard handling error — there is no default-to-Pick. The rest of the mapping:
 | WorkReleased field     | Task field                                          |
 |-------------------------|------------------------------------------------------|
 | `data.path_id`          | task type (catalogue lookup; unknown = error)          |
-| `data.work_unit_id`     | `ref`                                                 |
+| `data.work_unit_id`     | `orderRef` (`shared.OrderRef`)                        |
 | `data.cpt`               | `cpt`                                                 |
 | `data.fragile` (optional, default `false`) | `fragile` — a packing hint, see below |
+| `data.gift_wrap` (optional, default `false`) | `giftWrap` — a packing hint ([ADR-0011](docs/docs/adr/0011-gift-wrap-handling-flag.md)) |
+| `data.ref`               | decoded, not mapped                                   |
 | matched path             | required capabilities (from the catalogue)             |
 
 **`data.fragile` is optional**: it is sourced from
@@ -632,6 +692,10 @@ is `"order-smoke-1"`.
   `FixedClock`.
 - **SLAM weight-diversion**: `internal/domain/package/package_test.go` —
   `TestWeigh_DivertsOutsideTolerance`.
+- **Package segregation rejection**: `internal/domain/package/package_test.go` —
+  `TestScanItemWithClass_IncompatibleClassRejectedAndNotAppended`; also
+  exercised through `SealPackage` in
+  `internal/application/usecases/usecases_test.go`.
 
 ## Operator micro-frontend (`web/`)
 

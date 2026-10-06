@@ -11,7 +11,9 @@ description: Pending → Claimed(leased) → Completed, and the lease-expiry edg
 A `Task` is a unit of physical work with a type (`PICK`, `PACK`, `REBIN`, or
 `SLAM`), a **CPT** deadline that determines its priority, an `orderRef` back
 to the work unit that produced it, and a set of `requiredCapabilities` a
-station must hold to claim it.
+station must hold to claim it. The full aggregate design (invariants,
+commands, events, size estimates) is on the
+[Aggregate Design Canvas](../ddd/aggregate-design-canvas.md).
 
 Its lifecycle has exactly three states and one cycle:
 
@@ -106,9 +108,12 @@ happens — the task stays claimable and completable. Instead, the Clock-driven
 `POST /tasks/sweep-cpt-misses` runs `SweepCPTMisses`, which publishes one
 `TaskCPTMissed` per overdue open task onto `warehouse.fulfillment.events` so
 `order-management` can re-promise the order. Because the sweep changes no
-state, an overdue task re-fires on every pass until it completes; consumers
-deduplicate on `taskId`
-([ADR-0025](../adr/0025-cpt-missed-sweep-and-package-manifested.md)).
+state, an overdue task re-fires on every pass until it completes — each pass
+is a new occurrence with a new CloudEvents `id`, so consumers must be
+idempotent on their own business key
+([ADR-0025](../adr/0025-cpt-missed-sweep-and-package-manifested.md)). Nothing
+in this repository schedules either sweep; both are Clock-driven but
+externally triggered over HTTP.
 
 ## The Pack path continues into Package
 
