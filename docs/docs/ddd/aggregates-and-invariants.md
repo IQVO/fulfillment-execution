@@ -101,8 +101,8 @@ The unit of physical work. Its invariants are the reason this context exists.
 | T2 | **A claim requires matching capabilities.** The claiming station's capability set must contain every required capability. | `Task.Claim` → `CapabilitySet.HasAll` | `task.ErrCapabilityMismatch` | `422` |
 | T3 | **An expired lease frees the task.** A lapsed claim returns the task to `Pending` before any further decision is made. | `Task.ExpireLeaseIfDue`, called from `Claim`, and checked in `RenewLease` / `Complete` | `task.ErrNotClaimed` on renew/complete | `409` |
 | T4 | **No double-complete.** A completed task rejects every further operation. | `Task.Claim` / `RenewLease` / `Complete` | `task.ErrAlreadyCompleted` | `409` |
-| T5 | **Only the claim owner may renew or complete.** `SealPackage` applies the same ownership test, with the lease expiry check, through `Task.VerifyHeldBy`. | `Task.RenewLease`, `Task.Complete`, `Task.VerifyHeldBy` | `task.ErrNotOwner` | `409` |
-| T6 | **Renew/complete require an active claim.** Acting on a `Pending` task is rejected. | `Task.RenewLease`, `Task.Complete` | `task.ErrNotClaimed` | `409` |
+| T5 | **Only the claim owner may renew or complete.** `SealPackage` applies the same ownership test, with the lease expiry check, through `Task.VerifyHeldBy`. A missing or expired lease is `ErrNotClaimed` (T6, decided 2026-10-06, ADR 0038); only an active lease held by another station is `ErrNotOwner`. | `Task.RenewLease`, `Task.Complete`, `Task.VerifyHeldBy` | `task.ErrNotOwner` | `409` |
+| T6 | **Renew/complete/seal require an active claim.** Acting on a `Pending` task, or on a lapsed lease, is rejected — the same error on every endpoint. | `Task.RenewLease`, `Task.Complete`, `Task.VerifyHeldBy` | `task.ErrNotClaimed` | `409` |
 
 ### The ordering inside `Claim` is itself an invariant
 

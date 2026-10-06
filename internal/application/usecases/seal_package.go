@@ -43,9 +43,10 @@ type SealPackage struct {
 }
 
 // Execute validates that stationId holds the active, unexpired claim on
-// taskId (which must be a Pack task; Task.VerifyHeldBy, so an expired lease
-// is task.ErrNotOwner), then scans contents and seals a new Package for the
-// task's order.
+// taskId (which must be a Pack task; Task.VerifyHeldBy: a missing or expired
+// lease is task.ErrNotClaimed, as in Complete/RenewLease; an active lease of
+// another station is task.ErrNotOwner — ADR-0038), then scans contents and
+// seals a new Package for the task's order.
 //
 // Before doing any of that, it checks whether a Package has already been
 // sealed for taskId (idempotency guard, see the type doc comment): if one

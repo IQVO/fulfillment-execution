@@ -53,7 +53,9 @@ While claimed:
 
 - No other station can claim it. `Task.Claim` returns `ErrAlreadyClaimed`.
 - Only the owning station may renew or complete it — anyone else gets
-  `ErrNotOwner`, mapped to HTTP `409`.
+  `ErrNotOwner`, mapped to HTTP `409`. A lease that has lapsed (or never
+  existed) is `ErrNotClaimed` on renew, complete **and** seal-package, whoever
+  asks ([ADR-0038](../adr/0038-seal-package-expired-lease-is-not-claimed.md)).
 - The owner may extend the lease indefinitely via
   `POST /tasks/{id}/renew-lease` — the right move for legitimately long work
   (a deep-aisle pick, an awkward carton) rather than picking one lease
