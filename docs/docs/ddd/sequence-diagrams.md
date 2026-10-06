@@ -272,7 +272,9 @@ sequenceDiagram
     UC->>R: FindById
     alt not a PACK task
         UC-->>H: ErrWrongTaskType - 422
-    else lease missing, expired, or held by another station
+    else lease missing or expired
+        UC-->>H: ErrNotClaimed - 409
+    else lease held by another station
         UC-->>H: ErrNotOwner - 409
     end
     UC->>PK: pack.New with fragile and giftWrap from the task
@@ -299,7 +301,11 @@ circuit breaker around the classification client. The ownership check is
 `Task.VerifyHeldBy(stationId, now)`: it requires a lease held by the caller
 that has not expired at the `Clock`'s `now` (expiry is inclusive, as in
 `Complete`), and it does not free the task, so an expired lease is rejected
-with `ErrNotOwner` even when no sweep has run yet.
+with `ErrNotClaimed` (the same error `Complete` and `RenewLease` return for
+that condition) even when no sweep has run yet; a missing lease is also
+`ErrNotClaimed`, and an active lease held by another station stays
+`ErrNotOwner` (decided 2026-10-06,
+[ADR-0038](../adr/0038-seal-package-expired-lease-is-not-claimed.md)).
 
 ## 7. Run SLAM
 

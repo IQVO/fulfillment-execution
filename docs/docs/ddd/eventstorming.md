@@ -181,7 +181,7 @@ flowchart LR
     OM["order-management"]:::external
     P2["Policy: whenever a CPT is missed, re-promise the order"]:::policy
     PJ["Throughput rollup"]:::readmodel
-    H1["Hotspot: no in-process scheduler; chart CronJobs are opt-in"]:::hotspot
+    H1["Decided 2026-10-06: no in-process scheduler; chart CronJobs on by default (ADR 0037)"]:::decision
     H2["Hotspot: TaskCPTMissed re-fires on every pass"]:::hotspot
 
     SCH --> C1 --> T1 --> E1 --> P1
@@ -200,6 +200,7 @@ flowchart LR
     classDef readmodel fill:#7dcea0,stroke:#1e8449,color:#000
     classDef external fill:#f1948a,stroke:#922b21,color:#000
     classDef hotspot fill:#e74c3c,stroke:#7b241c,color:#fff
+    classDef decision fill:#58d68d,stroke:#1e8449,color:#000
 ```
 
 Source: `internal/application/usecases/expire_leases.go`,
@@ -229,5 +230,5 @@ without raising `LeaseExpired`. The re-promise policy lives in
 | `ItemPicked` never raised | Hotspot | [Domain events](./domain-events.md); no caller of `shared.NewItemPicked` outside tests |
 | Rebin events never leave the process | Hotspot | not in `inIntegrationContract` / `inAnalyticsContract`, not in `apis/asyncapi.yaml` ([ADR-0016](../adr/0016-rebin-and-order-consolidation.md)) |
 | SortLane with no WCS | Hotspot | `Package.SortLane`; `ports.EquipmentCommandPort` has no methods ([ADR-0010](../adr/0010-package-segregation-and-sort-lane.md), [ADR-0015](../adr/0015-wcs-equipment-anti-corruption-seam.md)) |
-| Sweeps are not scheduled in-process | Hotspot | [Task lifecycle](../overview/task-lifecycle.md); no ticker in `cmd/execution/main.go` (by design, ADR-0003/0025); opt-in `charts/fulfillment-execution/templates/sweeps-cronjob.yaml` (`sweeps.enabled`, default off) |
+| Sweeps are not scheduled in-process | Decided 2026-10-06: no in-process scheduler; chart CronJobs on by default — `expire-leases` every minute, `sweep-cpt-misses` every 5 minutes (ADR 0037) | [Task lifecycle](../overview/task-lifecycle.md); no ticker in `cmd/execution/main.go` (by design, ADR-0003/0025); `charts/fulfillment-execution/templates/sweeps-cronjob.yaml` (`sweeps.enabled`, default on, per-environment schedules) |
 | `TaskCPTMissed` re-fires | Hotspot | `sweep_cpt_misses.go` changes no state ([ADR-0025](../adr/0025-cpt-missed-sweep-and-package-manifested.md)) |

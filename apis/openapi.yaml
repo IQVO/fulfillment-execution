@@ -743,9 +743,12 @@ paths:
                 instance: /tasks/20260101T120100.000000000/seal-package
         "409":
           description: >
-            Either `stationId` does not hold the active claim on this task
-            (it was never claimed by this station, or the claim/lease is no
-            longer active — `task-not-owner`), or a scanned item's live DOT
+            One of: `stationId` has no active claim on this task — it was
+            never claimed, or the lease has expired, whichever station held it
+            (`task-not-claimed`, the same type `complete` and `renew-lease`
+            return for that condition; [ADR-0038](/docs/adr/0038-seal-package-expired-lease-is-not-claimed));
+            an ACTIVE lease on the task is held by a different station
+            (`task-not-owner`); or a scanned item's live DOT
             hazard classification lookup found it incompatible — per the
             class-level 49 CFR §177.848-derived segregation matrix — with an
             item already scanned into this same package

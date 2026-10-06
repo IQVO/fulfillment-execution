@@ -231,10 +231,15 @@ func TestVerifyHeldBy_RejectsExpiredLeaseOfOwner(t *testing.T) {
 	tk := newPickTask()
 	_ = tk.Claim(shared.StationId("s1"), shared.NewCapabilitySet("pick"), now, time.Minute)
 	// Boundary: a lease is expired AT its expiry instant (same as Lease.expired).
+	// Decision 2026-10-06 (ADR-0038): an expired lease is ErrNotClaimed, the
+	// same error Complete and RenewLease return for the same condition.
 	for _, at := range []time.Time{now.Add(time.Minute), now.Add(2 * time.Minute)} {
 		err := tk.VerifyHeldBy(shared.StationId("s1"), at)
-		if !errors.Is(err, task.ErrNotOwner) {
-			t.Fatalf("at %v: expected ErrNotOwner for an expired lease, got %v", at, err)
+		if !errors.Is(err, task.ErrNotClaimed) {
+			t.Fatalf("at %v: expected ErrNotClaimed for an expired lease, got %v", at, err)
+		}
+		if errors.Is(err, task.ErrNotOwner) {
+			t.Fatalf("at %v: an expired lease must not be ErrNotOwner", at)
 		}
 	}
 	if tk.Status() != task.Claimed || tk.Lease() == nil {
@@ -242,11 +247,41 @@ func TestVerifyHeldBy_RejectsExpiredLeaseOfOwner(t *testing.T) {
 	}
 }
 
-func TestVerifyHeldBy_RejectsOtherStationAndMissingLease(t *testing.T) {
-	tk := newPickTask()
-	if err := tk.VerifyHeldBy(shared.StationId("s1"), now); !errors.Is(err, task.ErrNotOwner) {
-		t.Fatalf("unclaimed: expected ErrNotOwner, got %v", err)
+// The same condition must produce the same error across endpoints: for an
+// expired lease VerifyHeldBy, Complete and RenewLease all say ErrNotClaimed,
+// even when the caller is not the former holder.
+func TestVerifyHeldBy_ExpiredLeaseMatchesCompleteAndRenew(t *testing.T) {
+	for _, st := range []string{"s1", "s2"} {
+		at := now.Add(2 * time.Minute)
+		held := newPickTask()
+		_ = held.Claim(shared.StationId("s1"), shared.NewCapabilitySet("pick"), now, time.Minute)
+		verifyErr := held.VerifyHeldBy(shared.StationId(st), at)
+
+		completed := newPickTask()
+		_ = completed.Claim(shared.StationId("s1"), shared.NewCapabilitySet("pick"), now, time.Minute)
+		completeErr := completed.Complete(shared.StationId(st), at)
+
+		renewed := newPickTask()
+		_ = renewed.Claim(shared.StationId("s1"), shared.NewCapabilitySet("pick"), now, time.Minute)
+		renewErr := renewed.RenewLease(shared.StationId(st), at, time.Minute)
+
+		for name, err := range map[string]error{"VerifyHeldBy": verifyErr, "Complete": completeErr, "RenewLease": renewErr} {
+			if !errors.Is(err, task.ErrNotClaimed) {
+				t.Fatalf("station %s: %s on an expired lease: expected ErrNotClaimed, got %v", st, name, err)
+			}
+		}
 	}
+}
+
+func TestVerifyHeldBy_MissingLeaseIsNotClaimed(t *testing.T) {
+	tk := newPickTask()
+	if err := tk.VerifyHeldBy(shared.StationId("s1"), now); !errors.Is(err, task.ErrNotClaimed) {
+		t.Fatalf("unclaimed: expected ErrNotClaimed, got %v", err)
+	}
+}
+
+func TestVerifyHeldBy_OtherStationActiveLeaseIsNotOwner(t *testing.T) {
+	tk := newPickTask()
 	_ = tk.Claim(shared.StationId("s1"), shared.NewCapabilitySet("pick"), now, time.Minute)
 	if err := tk.VerifyHeldBy(shared.StationId("s2"), now.Add(time.Second)); !errors.Is(err, task.ErrNotOwner) {
 		t.Fatalf("other station: expected ErrNotOwner, got %v", err)

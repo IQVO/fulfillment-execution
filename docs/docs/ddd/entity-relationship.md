@@ -178,7 +178,7 @@ Source: `migrations/analytics/0001_report.up.sql`,
 | `outbox_events` | transactional outbox, drained by the relay in `cmd/execution` ([ADR-0020](../adr/0020-transactional-outbox.md)) | infrastructure |
 | `processed_events` | inbox dedupe for the `WorkReleased` consumer (`ports.ProcessedEvents`) | infrastructure |
 | `idempotency_keys` | `Idempotency-Key` replay store for `POST /tasks` ([ADR-0028](../adr/0028-idempotency-key-middleware.md)) | infrastructure |
-| `domain_events` | created by `0001_init`, **not read or written by any code today** | legacy infrastructure |
+| `domain_events` | created by `0001_init`; **Decided 2026-10-06: KEEP — legacy, unused; retained (additive migrations only).** Not read or written by any code; dropping is destructive and needs explicit approval, dead schema is harmless | legacy infrastructure |
 | `schema_migrations` | golang-migrate version table (one per database) | infrastructure |
 | `throughput_rollup` | throughput and on-time-to-CPT projection ([ADR-0026](../adr/0026-on-time-to-cpt-kpi.md)) | analytics projection |
 | `analytics_pending_claims` | claim times waiting for a completion | analytics projection state |

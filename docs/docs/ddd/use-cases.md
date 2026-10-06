@@ -109,8 +109,9 @@ Four things worth noticing:
 
 It reads the `Task` to check three things — that it exists, that it is a
 `PACK` task (`ErrWrongTaskType`), and that `stationId` holds the active,
-unexpired claim (`Task.VerifyHeldBy` → `task.ErrNotOwner`; a lapsed lease
-cannot seal even before a sweep frees the task) — then writes only the new `Package`. Neither aggregate
+unexpired claim (`Task.VerifyHeldBy` → `task.ErrNotClaimed` for a missing or
+lapsed lease — a lapsed lease cannot seal even before a sweep frees the task —
+and `task.ErrNotOwner` for an active lease of another station, ADR-0038) — then writes only the new `Package`. Neither aggregate
 is asked to know about the other; the rule lives in the layer that can see
 both. It is idempotent on the task id: `PackageRepo.FindByTaskId` runs first
 and a retried call returns the already-sealed package (backed by the

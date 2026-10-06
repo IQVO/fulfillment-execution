@@ -263,6 +263,36 @@ func TestFullPickLifecycle_ClaimThenComplete(t *testing.T) {
 		"/tasks/"+claimed.Id+"/complete")
 }
 
+func TestSealPackage_ExpiredLeaseIsNotClaimedAndOtherStationIsNotOwner(t *testing.T) {
+	srv, _, stations, _, clock := newTestServer()
+	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pack")))
+	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
+		"type": "PACK", "cpt": clock.Now().Add(time.Hour * 24), "orderRef": "order-1", "requiredCapabilities": []string{"pack"},
+	})
+	claimRec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "PACK"})
+	var claimed struct {
+		Id string `json:"id"`
+	}
+	_ = json.NewDecoder(claimRec.Body).Decode(&claimed)
+	path := "/tasks/" + claimed.Id + "/seal-package"
+	body := map[string]any{"stationId": "s1", "contents": []string{"sku-1"}}
+
+	// Another station while the lease is ACTIVE: 409 task-not-owner.
+	other := doJSON(t, srv, stdhttp.MethodPost, path, map[string]any{"stationId": "s2", "contents": []string{"sku-1"}})
+	assertProblemDetails(t, other, stdhttp.StatusConflict,
+		"https://errors.fulfillment-execution.warehouse-systems.dev/task-not-owner", path)
+
+	// The former holder after its lease expired: 409 task-not-claimed — the
+	// same problem type /complete and /renew-lease return for that condition.
+	clock.Advance(usecases.DefaultLeaseDuration + time.Minute)
+	expired := doJSON(t, srv, stdhttp.MethodPost, path, body)
+	assertProblemDetails(t, expired, stdhttp.StatusConflict,
+		"https://errors.fulfillment-execution.warehouse-systems.dev/task-not-claimed", path)
+	complete := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/complete", map[string]any{"stationId": "s1"})
+	assertProblemDetails(t, complete, stdhttp.StatusConflict,
+		"https://errors.fulfillment-execution.warehouse-systems.dev/task-not-claimed", "/tasks/"+claimed.Id+"/complete")
+}
+
 func TestPackAndSlamLifecycle(t *testing.T) {
 	srv, _, stations, _, clock := newTestServer()
 	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pack")))

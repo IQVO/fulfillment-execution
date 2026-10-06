@@ -1175,7 +1175,7 @@ func TestSealPackage_ReturnsErrWrongTaskType(t *testing.T) {
 	}
 }
 
-func TestSealPackage_ReturnsErrNotOwnerWhenUnclaimed(t *testing.T) {
+func TestSealPackage_ReturnsErrNotClaimedWhenUnclaimed(t *testing.T) {
 	h := newHarness()
 	ctx := context.Background()
 	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
@@ -1183,8 +1183,8 @@ func TestSealPackage_ReturnsErrNotOwnerWhenUnclaimed(t *testing.T) {
 
 	seal := &usecases.SealPackage{Tasks: h.tasks, Packages: h.packages, Publisher: h.publisher, Clock: h.clock, NewId: func() shared.PackageId { return "p1" }}
 	_, err := seal.Execute(ctx, tk.Id(), "s1", []string{"sku-1"})
-	if !errors.Is(err, task.ErrNotOwner) {
-		t.Fatalf("expected ErrNotOwner, got %v", err)
+	if !errors.Is(err, task.ErrNotClaimed) {
+		t.Fatalf("expected ErrNotClaimed for a missing lease, got %v", err)
 	}
 }
 
@@ -1206,7 +1206,9 @@ func TestSealPackage_ReturnsErrNotOwnerForNonOwningStation(t *testing.T) {
 
 // An expired lease must not authorise a seal: the lease no longer holds the
 // task, even though the task row is still CLAIMED (no sweep has run) and the
-// lease's station id still matches. Nothing may be persisted or published.
+// lease's station id still matches. Decision 2026-10-06 (ADR-0038): the error
+// is ErrNotClaimed, the same one Complete and RenewLease return for the same
+// condition. Nothing may be persisted or published.
 func TestSealPackage_RejectsExpiredLease(t *testing.T) {
 	h := newHarness()
 	ctx := context.Background()
@@ -1223,8 +1225,11 @@ func TestSealPackage_RejectsExpiredLease(t *testing.T) {
 
 	seal := &usecases.SealPackage{Tasks: h.tasks, Packages: h.packages, Publisher: h.publisher, Clock: h.clock, NewId: func() shared.PackageId { return "p1" }}
 	_, err = seal.Execute(ctx, claimed.Id(), "s1", []string{"sku-1"})
-	if !errors.Is(err, task.ErrNotOwner) {
-		t.Fatalf("expected ErrNotOwner for an expired lease, got %v", err)
+	if !errors.Is(err, task.ErrNotClaimed) {
+		t.Fatalf("expected ErrNotClaimed for an expired lease, got %v", err)
+	}
+	if errors.Is(err, task.ErrNotOwner) {
+		t.Fatalf("an expired lease must not be reported as ErrNotOwner")
 	}
 	if got, _ := h.packages.FindByTaskId(ctx, claimed.Id()); got != nil {
 		t.Fatalf("no package may be saved for an expired lease, found %v", got.Id())
