@@ -8,7 +8,7 @@ description: What Pick, Pack, Rebin and SLAM actually are on a warehouse floor, 
 
 # Process paths — Pick, Pack, Rebin, SLAM
 
-A **process path** is one of Pick, Pack, Rebin, or SLAM. In this model they
+A **process path** is one of Pick, Pack, Rebin, SLAM, Dispatch or Arrival. In this model they
 are **named task types — that is, queues — not steps in a workflow**. That
 distinction is small to write down and large in consequence, so it is worth
 being precise about both what the paths physically are and why they are
@@ -85,6 +85,26 @@ A single-line order (order-management's `FulfillmentClass.SINGLE`, per that
 repository's ADR-0008) has exactly one required line, so it "completes"
 immediately on that line's arrival — no special-casing needed, since
 completeness is just `len(arrived) == len(required)` for any line count.
+
+### Dispatch and Arrival — inter-warehouse transfer legs
+
+An inter-warehouse transfer (the network-inventory-planning saga) has two
+site-boundary legs this building executes physically: **Dispatch** loads
+the transfer's picked stock onto the outbound carrier at the origin, and
+**Arrival** receives it at the destination dock. In this service they are
+`DISPATCH` and `ARRIVAL` tasks — full members of the same queue model,
+claimable only by stations holding the matching `dispatch`/`arrival`
+capability.
+
+A transfer task carries the transfer's **correlation block**
+(`transfer_ref`, `work_kind`, `site_id`, `sku`, `quantity`) stamped by
+wes-work-planning at release time. It never changes claiming, leasing or
+capability matching — it is pure payload. On completion, the block
+selects exactly one custody fact (`TransferPicked`, `TransferDispatched`
+or `TransferArrived`) published alongside the unchanged `TaskCompleted`
+so the saga can advance and destination receiving can correlate its
+receipt. A `TRANSFER_PICK` work kind rides a regular `PICK` task. See
+[ADR-0036](../adr/0036-transfer-task-types-and-facts.md).
 
 ### SLAM — Scan, Label, Apply, Manifest
 

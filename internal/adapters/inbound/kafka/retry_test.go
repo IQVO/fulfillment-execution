@@ -11,9 +11,7 @@ import (
 	kafkago "github.com/segmentio/kafka-go"
 
 	"github.com/claudioed/fulfillment-execution/internal/adapters/inbound/kafka"
-	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/events"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
-	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
 	"github.com/claudioed/fulfillment-execution/internal/domain/pathcatalog"
 )
 
@@ -41,17 +39,10 @@ func (f *flakyCatalogue) Lookup(id string) (pathcatalog.PathDefinition, error) {
 func newConsumerWithCatalogue(t *testing.T, catalogue *flakyCatalogue) (*kafka.Consumer, *memory.TaskRepo, *fakeDeadLetterSink) {
 	t.Helper()
 	tasks := memory.NewTaskRepo()
-	createTask := &usecases.CreateTask{
-		Tasks:     tasks,
-		Publisher: events.NewBufferedPublisher(),
-		Clock:     memory.NewFixedClock(epoch),
-		NewId:     idSeq("t"),
-	}
+	apply := newApplyWorkReleased(tasks, memory.NewProcessedEventsRepo(), catalogue)
 	dlq := &fakeDeadLetterSink{}
 	c := &kafka.Consumer{
-		CreateTask: createTask,
-		Processed:  memory.NewProcessedEventsRepo(),
-		Catalogue:  catalogue,
+		Apply:      apply,
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		DeadLetter: dlq,
 	}

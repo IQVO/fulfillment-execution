@@ -20,7 +20,7 @@ classDiagram
     class Task {
         <<Aggregate Root>>
         -TaskId id
-        -Type taskType : PICK|PACK|SLAM|REBIN
+        -Type taskType : PICK|PACK|SLAM|REBIN|DISPATCH|ARRIVAL
         -Status status : PENDING|CLAIMED|COMPLETED
         -CPT cpt
         -OrderRef orderRef
@@ -29,6 +29,7 @@ classDiagram
         -bool fragile
         -bool giftWrap
         -time* claimedAt
+        -TransferDetails* transfer : nullable correlation block (ADR-0036)
         +Claim(stationId, capabilities, now, duration) error
         +RenewLease(stationId, now, duration) error
         +Complete(stationId, now) error
@@ -37,6 +38,7 @@ classDiagram
         +IsCPTMissed(now) bool
         +Fragile() bool
         +GiftWrap() bool
+        +Transfer() TransferDetails*
     }
     class Lease {
         <<Value Object>>

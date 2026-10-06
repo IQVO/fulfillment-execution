@@ -189,3 +189,77 @@ type PackageManifested struct {
 func NewPackageManifested(id PackageId, orderRef OrderRef, at time.Time) PackageManifested {
 	return PackageManifested{base: base{Name: "PackageManifested", At: at}, PackageId: id, OrderRef: orderRef}
 }
+
+// TransferFact is the interface of the three inter-warehouse-transfer
+// facts a transfer task's completion publishes (see the transfer-task-
+// facts ADR). It exists so the Kafka publisher (and tests) can treat the
+// selected fact uniformly while each concrete type keeps its own
+// EventName.
+type TransferFact interface {
+	DomainEvent
+	// TransferDetails returns the correlation the fact carries on the wire.
+	TransferDetails() TaskTransferDetails
+}
+
+// TaskTransferDetails is the wire payload of a transfer fact — exactly the
+// correlation block the completed Task carried, stamped at release time.
+// It lives in shared (not task) because the domain events below and the
+// Kafka payload type need it without importing the task package.
+type TaskTransferDetails struct {
+	TransferRef string
+	DemandId    string
+	WorkUnitId  string
+	WorkKind    string
+	SiteId      string
+	SKU         string
+	Quantity    int
+}
+
+// TransferPicked is raised when a task carrying a TRANSFER_PICK work kind
+// completes: the transfer's stock was picked at the origin site. Consumed
+// by inventory-planning's transfer saga to advance Picking -> Dispatched.
+type TransferPicked struct {
+	base
+	TaskId TaskId
+	TaskTransferDetails
+}
+
+func NewTransferPicked(id TaskId, d TaskTransferDetails, at time.Time) TransferPicked {
+	return TransferPicked{base: base{Name: "TransferPicked", At: at}, TaskId: id, TaskTransferDetails: d}
+}
+
+// TransferDispatched is raised when a task carrying a TRANSFER_DISPATCH
+// work kind completes: the transfer left the origin site. Consumed by
+// inventory-planning's transfer saga to advance Dispatched -> InTransit.
+type TransferDispatched struct {
+	base
+	TaskId TaskId
+	TaskTransferDetails
+}
+
+func NewTransferDispatched(id TaskId, d TaskTransferDetails, at time.Time) TransferDispatched {
+	return TransferDispatched{base: base{Name: "TransferDispatched", At: at}, TaskId: id, TaskTransferDetails: d}
+}
+
+// TransferArrived is raised when a task carrying a TRANSFER_ARRIVAL work
+// kind completes: the transfer reached the destination site. Consumed by
+// inventory-planning's transfer saga to advance InTransit -> Arrived and
+// by destination receipt/stow correlation.
+type TransferArrived struct {
+	base
+	TaskId TaskId
+	TaskTransferDetails
+}
+
+func NewTransferArrived(id TaskId, d TaskTransferDetails, at time.Time) TransferArrived {
+	return TransferArrived{base: base{Name: "TransferArrived", At: at}, TaskId: id, TaskTransferDetails: d}
+}
+
+// TransferDetails implements TransferFact.
+func (e TransferPicked) TransferDetails() TaskTransferDetails { return e.TaskTransferDetails }
+
+// TransferDetails implements TransferFact.
+func (e TransferDispatched) TransferDetails() TaskTransferDetails { return e.TaskTransferDetails }
+
+// TransferDetails implements TransferFact.
+func (e TransferArrived) TransferDetails() TaskTransferDetails { return e.TaskTransferDetails }

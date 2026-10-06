@@ -15,9 +15,7 @@ import (
 	tckafka "github.com/testcontainers/testcontainers-go/modules/kafka"
 
 	"github.com/claudioed/fulfillment-execution/internal/adapters/inbound/kafka"
-	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/events"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
-	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
 	"github.com/claudioed/fulfillment-execution/internal/domain/task"
 )
 
@@ -73,14 +71,9 @@ func TestRun_PoisonMessage_GoesToDeadLetterTopicAndLoopContinues(t *testing.T) {
 	}
 
 	tasks := memory.NewTaskRepo()
-	createTask := &usecases.CreateTask{
-		Tasks:     tasks,
-		Publisher: events.NewBufferedPublisher(),
-		Clock:     memory.NewFixedClock(time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)),
-		NewId:     idSeq("t"),
-	}
+	apply := newApplyWorkReleased(tasks, memory.NewProcessedEventsRepo(), testCatalogue())
 
-	consumer := kafka.NewConsumer(brokers, topic, createTask, memory.NewProcessedEventsRepo(), testCatalogue(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	consumer := kafka.NewConsumer(brokers, topic, apply, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	t.Cleanup(func() { _ = consumer.Close() })
 
 	dlqWriter := &kafkago.Writer{Addr: kafkago.TCP(brokers...)}

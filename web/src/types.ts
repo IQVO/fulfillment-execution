@@ -4,7 +4,7 @@
  *  convention as order-mgmt-mfe's types.ts. */
 
 /** Task.Type: the process path a task belongs to (see internal/domain/task/task.go). */
-export type TaskType = "PICK" | "PACK" | "SLAM";
+export type TaskType = "PICK" | "PACK" | "SLAM" | "REBIN" | "DISPATCH" | "ARRIVAL";
 
 /** Task.Status: Pending -> Claimed(leased) -> Completed, or lease-expires
  *  back to Pending. Exact enum values from internal/domain/task/task.go. */

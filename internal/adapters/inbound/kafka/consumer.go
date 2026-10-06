@@ -22,8 +22,6 @@ import (
 	"github.com/claudioed/fulfillment-execution/internal/adapters/kafka/cloudevents"
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
-	"github.com/claudioed/fulfillment-execution/internal/domain/pathcatalog"
-	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
 	"github.com/claudioed/fulfillment-execution/internal/domain/task"
 	"github.com/claudioed/fulfillment-execution/internal/observability"
 )
@@ -95,6 +93,27 @@ type WorkReleasedData struct {
 	// producer that does not carry a gift-wrap request for the order
 	// simply omits the field, and it defaults to false (see ADR-0011).
 	GiftWrap bool `json:"gift_wrap"`
+	// TransferRef, when present, marks this release as inter-warehouse-
+	// transfer work (network-inventory-planning's transfer saga). The
+	// transfer fields below are a strictly additive, all-optional
+	// correlation block: a legacy payload that omits every one of them
+	// decodes exactly as before and creates a non-transfer task. Absent
+	// means absent — none of them is ever published as an explicit empty
+	// string or zero. demand_id on the resulting transfer fact is the
+	// release's own ref.
+	TransferRef string `json:"transfer_ref,omitempty"`
+	// WorkKind is the kind of transfer work (TRANSFER_PICK |
+	// TRANSFER_DISPATCH | TRANSFER_ARRIVAL); it selects which transfer
+	// fact the created task's completion publishes.
+	WorkKind string `json:"work_kind,omitempty"`
+	// SiteId is the site the transfer fact is about (origin for
+	// pick/dispatch work, destination for arrival work — the producer
+	// decides).
+	SiteId string `json:"site_id,omitempty"`
+	// SKU is the stock the transfer moves.
+	SKU string `json:"sku,omitempty"`
+	// Quantity is the number of units of SKU the transfer moves.
+	Quantity int `json:"quantity,omitempty"`
 }
 
 // Consumer reads WorkReleased CloudEvents off warehouse.work-planning.events
@@ -112,8 +131,14 @@ type WorkReleasedData struct {
 // "<topic>.dlq" suffix is this consumer's own convention, not an existing
 // fleet standard being followed.
 type Consumer struct {
-	Reader     *kafkago.Reader
-	CreateTask *usecases.CreateTask
+	Reader *kafkago.Reader
+	// Apply is the use case that turns one WorkReleased occurrence into a
+	// Task exactly once: it claims the CloudEvents id, validates the
+	// path_id against the catalogue, saves the Task and publishes
+	// TaskCreated all inside ONE UnitOfWork (see usecases.ApplyWorkReleased,
+	// which fixed the lost-event bug this consumer's own claim-then-create
+	// shape had).
+	Apply      *usecases.ApplyWorkReleased
 	Processed  ports.ProcessedEvents
 	Catalogue  ports.PathCatalogue
 	Logger     *slog.Logger
@@ -138,18 +163,18 @@ func DeadLetterTopic(topic string) string {
 
 // NewConsumer constructs a Consumer reading topic from brokers as part of
 // consumer group "fulfillment-execution".
-func NewConsumer(brokers []string, topic string, createTask *usecases.CreateTask, processed ports.ProcessedEvents, catalogue ports.PathCatalogue, logger *slog.Logger) *Consumer {
-	return newConsumer(brokers, topic, "fulfillment-execution", kafkago.FirstOffset, createTask, processed, catalogue, logger)
+func NewConsumer(brokers []string, topic string, apply *usecases.ApplyWorkReleased, logger *slog.Logger) *Consumer {
+	return newConsumer(brokers, topic, "fulfillment-execution", kafkago.FirstOffset, apply, logger)
 }
 
 // NewConsumerWithGroup constructs an isolated Consumer. Its first assignment
 // begins at the latest offset, so a system-test database is populated only by
 // events released after the test's service process is ready.
-func NewConsumerWithGroup(brokers []string, topic, groupID string, createTask *usecases.CreateTask, processed ports.ProcessedEvents, catalogue ports.PathCatalogue, logger *slog.Logger) *Consumer {
-	return newConsumer(brokers, topic, groupID, kafkago.LastOffset, createTask, processed, catalogue, logger)
+func NewConsumerWithGroup(brokers []string, topic, groupID string, apply *usecases.ApplyWorkReleased, logger *slog.Logger) *Consumer {
+	return newConsumer(brokers, topic, groupID, kafkago.LastOffset, apply, logger)
 }
 
-func newConsumer(brokers []string, topic, groupID string, startOffset int64, createTask *usecases.CreateTask, processed ports.ProcessedEvents, catalogue ports.PathCatalogue, logger *slog.Logger) *Consumer {
+func newConsumer(brokers []string, topic, groupID string, startOffset int64, apply *usecases.ApplyWorkReleased, logger *slog.Logger) *Consumer {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -159,7 +184,7 @@ func newConsumer(brokers []string, topic, groupID string, startOffset int64, cre
 		GroupID:     groupID,
 		StartOffset: startOffset,
 	})
-	return &Consumer{Reader: reader, CreateTask: createTask, Processed: processed, Catalogue: catalogue, Logger: logger}
+	return &Consumer{Reader: reader, Apply: apply, Logger: logger}
 }
 
 // Run reads and handles messages until ctx is cancelled or the reader
@@ -277,131 +302,112 @@ func (c *Consumer) Handle(ctx context.Context, msg kafkago.Message) error {
 	return nil
 }
 
-// handleMessageWithRetry retries HandleMessage up to maxHandlerAttempts
-// times with jittered exponential backoff, bounded by ctx's own
-// deadline/cancellation.
+// handleMessageWithRetry retries the atomic application of one WorkReleased
+// occurrence up to maxHandlerAttempts times with jittered exponential
+// backoff, bounded by ctx's own deadline/cancellation.
 //
-// It does NOT simply wrap HandleMessage whole: HandleMessage's first
-// step, MarkProcessed, claims the CloudEvents id exactly once (idempotency gate)
-// and is not safe to re-enter after it has already returned isNew=true
-// — a second call for the same id always reports isNew=false, so
-// naively retrying the WHOLE of HandleMessage would make attempt 2
-// silently report success without ever creating a Task, the moment a
-// LATER step (Catalogue.Lookup or CreateTask.Execute) merely blipped.
-// So the claim happens exactly once, up front, via its own small retry
-// (transient Processed-store errors ARE safely retryable — the claim
-// has not yet succeeded, so retrying it cannot double-effect anything);
-// only once isNew is confirmed true does the retryable, event-creating
-// work (handleClaimedEvent) get its own up-to-maxHandlerAttempts
-// retries.
+// Unlike the pre-atomicity-fix shape, there is no separate claim step to
+// keep out of the retry loop: ApplyWorkReleased.Execute claims the
+// CloudEvents id and creates the Task inside ONE UnitOfWork, so a failed
+// attempt leaves NO processed marker behind (a transactional scope rolls
+// the claim back with the task; the in-memory configuration undoes it via
+// ports.ProcessedEventReleaser). Retrying the whole call is therefore
+// always safe — attempt 2 either genuinely re-applies (the failure
+// blipped) or reports the already-applied redelivery (attempt 1 actually
+// succeeded and the error was a commit-time false negative, which the
+// processed-events claim still dedupes).
 func (c *Consumer) handleMessageWithRetry(ctx context.Context, raw []byte) error {
 	env, ok, err := decodeWorkReleased(raw)
 	if err != nil || !ok {
 		return err
 	}
 
-	isNew, err := c.markProcessedWithRetry(ctx, env.EventId)
-	if err != nil {
-		return fmt.Errorf("kafka: mark processed: %w", err)
-	}
-	if !isNew {
-		// Already applied by a prior delivery of this CloudEvents id; ack
-		// without creating a duplicate Task.
-		return nil
-	}
-
 	policy := backoff.NewExponentialBackOff(
 		backoff.WithInitialInterval(retryInitialInterval),
 		backoff.WithMaxInterval(retryMaxInterval),
 	)
 	bounded := backoff.WithContext(backoff.WithMaxRetries(policy, maxHandlerAttempts-1), ctx)
 
+	transfer, terr := transferDetailsOf(env.Data)
+	if terr != nil {
+		// A deterministic payload-contract violation (transfer_ref with
+		// an unknown work_kind): like an unknown path_id, retrying can
+		// never fix it. Returned as a permanent error, so Run
+		// dead-letters it.
+		return terr
+	}
+
 	return backoff.Retry(func() error {
-		return c.handleClaimedEvent(ctx, env)
+		req := usecases.WorkReleasedRequest{
+			EventId:    env.EventId,
+			PathId:     env.Data.PathId,
+			WorkUnitId: env.Data.WorkUnitId,
+			CPT:        env.Data.CPT,
+			Ref:        env.Data.Ref,
+			Fragile:    env.Data.Fragile,
+			GiftWrap:   env.Data.GiftWrap,
+			Transfer:   transfer,
+		}
+		if err := c.Apply.Execute(ctx, req); err != nil {
+			return fmt.Errorf("kafka: apply work released: %w", err)
+		}
+		return nil
 	}, bounded)
 }
 
-// markProcessedWithRetry retries ONLY the MarkProcessed claim itself
-// (a transient Processed-store error), up to maxHandlerAttempts
-// attempts — safe to retry in isolation because, until it returns
-// isNew=true, no event-creating work has happened yet for this
-// CloudEvents id.
-func (c *Consumer) markProcessedWithRetry(ctx context.Context, eventId string) (bool, error) {
-	policy := backoff.NewExponentialBackOff(
-		backoff.WithInitialInterval(retryInitialInterval),
-		backoff.WithMaxInterval(retryMaxInterval),
-	)
-	bounded := backoff.WithContext(backoff.WithMaxRetries(policy, maxHandlerAttempts-1), ctx)
-
-	return backoff.RetryNotifyWithData(func() (bool, error) {
-		return c.Processed.MarkProcessed(ctx, eventId)
-	}, bounded, nil)
-}
-
-// handleClaimedEvent performs the actual, non-idempotent work for a
-// WorkReleased event ALREADY claimed by markProcessedWithRetry (isNew
-// was true) — the retryable portion of message handling. It is safe to
-// call more than once for the SAME env only because the caller
-// (handleMessageWithRetry) guarantees it is only ever entered after a
-// single successful claim, i.e. genuine retries of a transient
-// Catalogue/CreateTask failure, never a redelivery racing a fresh
-// MarkProcessed claim.
-func (c *Consumer) handleClaimedEvent(ctx context.Context, env workReleased) error {
-	pathDef, err := c.Catalogue.Lookup(env.Data.PathId)
+// transferDetailsOf maps WorkReleasedData's optional transfer-correlation
+// fields onto the domain's task.TransferDetails. A payload with no
+// transfer_ref is not transfer work: nil, and the created task publishes
+// no transfer fact on completion. A payload WITH a transfer_ref but an
+// unknown work_kind is a hard error — never a silent default, mirroring
+// the path_id discipline (ADR-0017).
+func transferDetailsOf(d WorkReleasedData) (*task.TransferDetails, error) {
+	if d.TransferRef == "" {
+		return nil, nil
+	}
+	kind, err := task.ParseWorkKind(d.WorkKind)
 	if err != nil {
-		// A path_id this catalogue does not recognize is a hard error —
-		// NOT a silent default to task.Pick. The old prefix-guessing
-		// convention (documented as a "known simplification" that this
-		// catalogue retires) meant a malformed path_id quietly became a
-		// Pick task; that was a real, acknowledged bug, not a feature.
-		return fmt.Errorf("kafka: path_id %q not found in the process-path catalogue: %w", env.Data.PathId, err)
+		return nil, fmt.Errorf("kafka: transfer_ref %q carries unknown work_kind %q: %w", d.TransferRef, d.WorkKind, err)
 	}
-
-	taskType := task.Type(pathDef.Id)
-	required := shared.NewCapabilitySet(capabilitiesOf(pathDef)...)
-	orderRef := shared.OrderRef(env.Data.WorkUnitId)
-
-	if _, err := c.CreateTask.Execute(ctx, taskType, shared.NewCPT(env.Data.CPT), orderRef, required, env.Data.Fragile, env.Data.GiftWrap); err != nil {
-		return fmt.Errorf("kafka: create task: %w", err)
-	}
-	return nil
+	return &task.TransferDetails{
+		TransferRef: d.TransferRef,
+		DemandId:    d.Ref,
+		WorkKind:    kind,
+		SiteId:      d.SiteId,
+		SKU:         d.SKU,
+		Quantity:    d.Quantity,
+	}, nil
 }
 
 // HandleMessage decodes raw as a CloudEvents 1.0 structured-mode event
-// (see decodeWorkReleased) and, if it is a not-yet-processed WorkReleased
-// event, creates a Task via CreateTask. It is exported separately from
-// Handle/Run so tests can feed it a raw CloudEvent without a live broker.
-// It performs exactly ONE attempt at each step (no retry) — Handle is
-// what wraps the retryable portion (see handleMessageWithRetry's doc
-// comment for why the claim and the retryable work must not share a
-// single retry loop).
+// (see decodeWorkReleased) and, if it is a WorkReleased event, applies it
+// atomically via ApplyWorkReleased — the CloudEvents-id claim, the
+// process-path catalogue validation, the Task save and the TaskCreated
+// outbox publish all inside ONE UnitOfWork. It is exported separately
+// from Handle/Run so tests can feed it a raw CloudEvent without a live
+// broker. It performs exactly ONE attempt (no retry) — Handle is what
+// wraps the retryable portion.
 func (c *Consumer) HandleMessage(ctx context.Context, raw []byte) error {
 	env, ok, err := decodeWorkReleased(raw)
 	if err != nil || !ok {
 		return err
 	}
 
-	isNew, err := c.Processed.MarkProcessed(ctx, env.EventId)
+	transfer, err := transferDetailsOf(env.Data)
 	if err != nil {
-		return fmt.Errorf("kafka: mark processed: %w", err)
-	}
-	if !isNew {
-		// Already applied by a prior delivery of this CloudEvents id; ack without
-		// creating a duplicate Task.
-		return nil
+		return err
 	}
 
-	return c.handleClaimedEvent(ctx, env)
-}
-
-// capabilitiesOf converts a catalogue path definition's declared
-// capability strings into the domain's shared.Capability type.
-func capabilitiesOf(def pathcatalog.PathDefinition) []shared.Capability {
-	out := make([]shared.Capability, len(def.RequiredCapabilities))
-	for i, c := range def.RequiredCapabilities {
-		out[i] = shared.Capability(c)
-	}
-	return out
+	return c.Apply.Execute(ctx, usecases.WorkReleasedRequest{
+		EventId:    env.EventId,
+		PathId:     env.Data.PathId,
+		WorkUnitId: env.Data.WorkUnitId,
+		CPT:        env.Data.CPT,
+		Ref:        env.Data.Ref,
+		Fragile:    env.Data.Fragile,
+		GiftWrap:   env.Data.GiftWrap,
+		Transfer:   transfer,
+	})
 }
 
 // reader returns the read seam: the test hook when set, else Reader.

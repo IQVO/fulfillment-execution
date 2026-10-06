@@ -47,8 +47,9 @@ const Topic = "warehouse.fulfillment.events"
 // aggregate that raised the event, as already catalogued in
 // apis/asyncapi.yaml.
 const (
-	entityTask    = "task"
-	entityPackage = "package"
+	entityTask     = "task"
+	entityPackage  = "package"
+	entityTransfer = "transfer"
 )
 
 // TaskCompletedData is the payload of a published TaskCompleted event,
@@ -90,6 +91,24 @@ type TaskCPTMissedData struct {
 type PackageManifestedData struct {
 	PackageId string `json:"package_id"`
 	OrderRef  string `json:"order_ref"`
+}
+
+// TransferFactData is the payload of a published TransferPicked,
+// TransferDispatched or TransferArrived event: the inter-warehouse-
+// transfer correlation the completed Task carried, stamped at release
+// time. Every field comes straight off the domain event — no repo
+// enrichment needed. task_id is the message key and the CloudEvents
+// subject, so per-task ordering holds; transfer_ref/work_unit_id are the
+// correlation keys downstream sagas dispatch on.
+type TransferFactData struct {
+	TransferRef string `json:"transfer_ref"`
+	DemandId    string `json:"demand_id,omitempty"`
+	WorkUnitId  string `json:"work_unit_id"`
+	TaskId      string `json:"task_id"`
+	WorkKind    string `json:"work_kind"`
+	SiteId      string `json:"site_id,omitempty"`
+	SKU         string `json:"sku,omitempty"`
+	Quantity    int    `json:"quantity,omitempty"`
 }
 
 // Writer is the subset of *kafkago.Writer the Publisher needs, so tests can
@@ -164,6 +183,12 @@ func (p *Publisher) Encode(ctx context.Context, evts ...shared.DomainEvent) ([]E
 			encs, err = p.encodeTaskCPTMissed(ev)
 		case shared.PackageManifested:
 			encs, err = p.encodePackageManifested(ev)
+		case shared.TransferPicked:
+			encs, err = p.encodeTransferFact("TransferPicked", ev.TaskId, ev.OccurredAt(), ev.TaskTransferDetails)
+		case shared.TransferDispatched:
+			encs, err = p.encodeTransferFact("TransferDispatched", ev.TaskId, ev.OccurredAt(), ev.TaskTransferDetails)
+		case shared.TransferArrived:
+			encs, err = p.encodeTransferFact("TransferArrived", ev.TaskId, ev.OccurredAt(), ev.TaskTransferDetails)
 		default:
 			continue
 		}
@@ -241,6 +266,43 @@ func (p *Publisher) encodePackageManifested(ev shared.PackageManifested) ([]Enco
 	return []Encoded{enc}, nil
 }
 
+// encodeTransferFact builds the wire form of one transfer fact. The
+// subject/key is the completing task's id; the CloudEvents time is the
+// completion time (the domain event's occurred-at). Every payload field
+// rides on the domain event itself — no repo enrichment, exactly like
+// TaskCPTMissed/PackageManifested.
+func (p *Publisher) encodeTransferFact(eventName string, taskId shared.TaskId, occurredAt time.Time, d shared.TaskTransferDetails) ([]Encoded, error) {
+	data := TransferFactData{
+		TransferRef: d.TransferRef,
+		DemandId:    d.DemandId,
+		WorkUnitId:  d.WorkUnitId,
+		TaskId:      string(taskId),
+		WorkKind:    d.WorkKind,
+		SiteId:      d.SiteId,
+		SKU:         d.SKU,
+		Quantity:    d.Quantity,
+	}
+	payload, err := cloudevents.New(cloudevents.Spec{
+		ID:        p.NewId(),
+		Entity:    entityTransfer,
+		EventName: eventName,
+		Subject:   string(taskId),
+		Time:      occurredAt,
+		Stream:    cloudevents.StreamEvents,
+		Version:   1,
+		Data:      data,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("kafka: encode %s: %w", eventName, err)
+	}
+	return []Encoded{{
+		Topic:     Topic,
+		EventType: cloudevents.Type(entityTransfer, eventName),
+		Key:       []byte(string(taskId)),
+		Value:     payload,
+	}}, nil
+}
+
 // encodeIntegration wraps data in the CloudEvents 1.0 envelope for the
 // integration stream (dataschema urn:warehouse:fulfillment-execution:
 // events:<EventName>:v1). subject is the raising aggregate's id, which is
@@ -287,7 +349,8 @@ func (p *Publisher) Publish(ctx context.Context, evts ...shared.DomainEvent) err
 // wire message, so Publish can skip a foreign event before opening a span.
 func inIntegrationContract(e shared.DomainEvent) bool {
 	switch e.(type) {
-	case shared.TaskCompleted, shared.TaskCPTMissed, shared.PackageManifested:
+	case shared.TaskCompleted, shared.TaskCPTMissed, shared.PackageManifested,
+		shared.TransferPicked, shared.TransferDispatched, shared.TransferArrived:
 		return true
 	default:
 		return false

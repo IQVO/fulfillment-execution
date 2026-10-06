@@ -17,7 +17,7 @@ code and `INTEGRATION.md`, not from intent.
 | Direction | Topic | Event | Adapter |
 | --- | --- | --- | --- |
 | Consume | `warehouse.work-planning.events` | `WorkReleased` | `internal/adapters/inbound/kafka/consumer.go` |
-| Publish | `warehouse.fulfillment.events` | `TaskCompleted`, `TaskCPTMissed`, `PackageManifested` | `internal/adapters/outbound/kafka/publisher.go` |
+| Publish | `warehouse.fulfillment.events` | `TaskCompleted`, `TaskCPTMissed`, `PackageManifested`, `TransferPicked`, `TransferDispatched`, `TransferArrived` | `internal/adapters/outbound/kafka/publisher.go` |
 | Consume (opt-in) | `warehouse.process-path-management.events` | process-path catalogue events | `internal/adapters/outbound/kafkacatalog` — only when `PATH_CATALOGUE_SOURCE=kafka` |
 | Publish + consume | `warehouse.fulfillment.analytics` | analytics events (ADR-0012) | `outbound/kafka/analytics_publisher.go` → `inbound/kafka/analytics_consumer.go` |
 
@@ -131,12 +131,40 @@ loop continues. A message that is not a valid CloudEvents 1.0 event —
 including the retired flat `event_id`/`event_type` envelope — is a
 deterministic poison message: it is dead-lettered immediately, never retried
 and never parsed any other way. The DLQ writer is wired only when
-`EVENT_PUBLISHER=kafka`; otherwise the failure is only logged. Because
-`MarkProcessed` runs *before* (and outside the transaction of) `CreateTask`,
-replaying a dead-lettered event requires clearing its `processed_events` row
-first.
+`EVENT_PUBLISHER=kafka`; otherwise the failure is only logged. Since
+ADR-0036 the processed-event claim, the catalogue lookup and the task
+creation commit in ONE UnitOfWork (`usecases.ApplyWorkReleased`), so a
+failed create leaves no `processed_events` row — a replayed dead-lettered
+message simply re-applies, no manual clearing needed. Only a message that
+genuinely completed keeps its row.
 
 Consumer group: `WORK_RELEASED_CONSUMER_GROUP`, default `fulfillment-execution`.
+
+WorkReleased may carry an optional inter-warehouse-transfer correlation
+block (`transfer_ref`, `work_kind`, `site_id`, `sku`, `quantity`); see
+[ADR-0036](../adr/0036-transfer-task-types-and-facts.md). Its presence
+turns the created task into transfer work whose completion publishes a
+transfer fact; absence is exactly the pre-ADR-0036 behavior.
+
+## Outbound: transfer facts (`TransferPicked` / `TransferDispatched` / `TransferArrived`)
+
+When a task carrying a transfer correlation block completes, exactly ONE
+fact is selected by `work_kind` and published on
+`warehouse.fulfillment.events` alongside the unchanged `TaskCompleted`,
+committing with the task's Completed state in the same outbox transaction:
+
+| `work_kind` | fact |
+| --- | --- |
+| `TRANSFER_PICK` | `TransferPicked` |
+| `TRANSFER_DISPATCH` | `TransferDispatched` |
+| `TRANSFER_ARRIVAL` | `TransferArrived` |
+
+Envelope: type `com.warehouse.wes.fulfillment-execution.transfer.<Fact>`,
+dataschema `urn:warehouse:fulfillment-execution:events:<Fact>:v1`,
+subject and Kafka key = the completing task id, `time` = the completion
+time. Payload: `{transfer_ref, demand_id?, work_unit_id, task_id,
+work_kind, site_id?, sku?, quantity?}` — `demand_id` is the release's own
+`ref`. Non-transfer tasks never publish a transfer fact.
 
 ## Outbound: `TaskCompleted`
 
