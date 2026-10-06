@@ -24,8 +24,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/testcontainers/testcontainers-go"
-	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	inboundhttp "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/http"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/events"
@@ -34,35 +32,18 @@ import (
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
 )
 
-// idempotencyDB boots a throwaway Postgres (testcontainers — the test
-// owns its own database, never an external DATABASE_URL) and runs every
-// migration in this repo, including the idempotency_keys one.
+// idempotencyDB returns a pool over the package's shared testcontainers
+// Postgres (see main_integration_test.go — never an external DATABASE_URL),
+// already migrated with every migration in this repo including the
+// idempotency_keys one, and with every table emptied for this test.
 func idempotencyDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	ctx := context.Background()
-	container, err := tcpostgres.Run(ctx, "postgres:16-alpine",
-		tcpostgres.WithDatabase("fulfillment_execution"),
-		tcpostgres.WithUsername("fulfillment"),
-		tcpostgres.WithPassword("fulfillment"),
-		tcpostgres.BasicWaitStrategies(),
-	)
-	if err != nil {
-		t.Fatalf("start postgres container: %v", err)
-	}
-	t.Cleanup(func() { _ = testcontainers.TerminateContainer(container) })
-
-	url, err := container.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		t.Fatalf("connection string: %v", err)
-	}
-	if err := postgres.Migrate(url, "../../../../migrations"); err != nil {
-		t.Fatalf("run migrations: %v", err)
-	}
-	pool, err := postgres.NewPool(ctx, url)
+	pool, err := postgres.NewPool(context.Background(), sharedPostgresURL(t))
 	if err != nil {
 		t.Fatalf("open pool: %v", err)
 	}
 	t.Cleanup(pool.Close)
+	truncateAll(t, pool)
 	return pool
 }
 
