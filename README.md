@@ -463,6 +463,12 @@ curl -s localhost:8080/queues/PICK/depth
 curl -sX POST localhost:8080/tasks/expire-leases
 ```
 
+Nothing in the service calls this (or `POST /tasks/sweep-cpt-misses`) on a
+timer. In Kubernetes, set `sweeps.enabled=true` on the Helm chart to run both
+as `CronJob`s (default off; schedules via `sweeps.expireLeases.schedule` /
+`sweeps.cptMisses.schedule`). `sweep-cpt-misses` re-publishes `TaskCPTMissed`
+for every overdue task on every pass, so keep its schedule coarse.
+
 ### Health check
 
 ```sh
@@ -740,7 +746,9 @@ Chart invariants are asserted by:
 
 ```bash
 python3 charts/fulfillment-execution/tests/test_service_selectors.py
+python3 charts/fulfillment-execution/tests/test_sweeps_cronjob.py
 ```
 
 which proves every Service selects exactly one Deployment — the OLTP Service
-must never select the frontend, analytics or MCP pods.
+must never select the frontend, analytics or MCP pods — and that the opt-in
+sweep CronJobs render only when `sweeps.enabled=true`.

@@ -108,8 +108,9 @@ Four things worth noticing:
 ### `SealPackage` — a cross-aggregate rule in the right place
 
 It reads the `Task` to check three things — that it exists, that it is a
-`PACK` task (`ErrWrongTaskType`), and that `stationId` holds the active claim
-(`task.ErrNotOwner`) — then writes only the new `Package`. Neither aggregate
+`PACK` task (`ErrWrongTaskType`), and that `stationId` holds the active,
+unexpired claim (`Task.VerifyHeldBy` → `task.ErrNotOwner`; a lapsed lease
+cannot seal even before a sweep frees the task) — then writes only the new `Package`. Neither aggregate
 is asked to know about the other; the rule lives in the layer that can see
 both. It is idempotent on the task id: `PackageRepo.FindByTaskId` runs first
 and a retried call returns the already-sealed package (backed by the

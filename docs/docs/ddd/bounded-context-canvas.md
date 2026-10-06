@@ -133,7 +133,9 @@ Top terms:
 - `wes-work-planning` releases work at the right rate; this context does not
   throttle intake.
 - An external scheduler calls `POST /tasks/expire-leases` and
-  `POST /tasks/sweep-cpt-misses`; nothing in this repository schedules them.
+  `POST /tasks/sweep-cpt-misses`; no code in this repository schedules them.
+  The Helm chart ships opt-in `CronJob`s for both (`sweeps.enabled`, default
+  off).
 - `WorkReleased.data.work_unit_id` is a stable correlation key, reused as
   `orderRef` and returned as `work_unit_id` on `TaskCompleted`.
 - Hazard classification and location roles fail open: if the lookup is
@@ -159,7 +161,10 @@ Top terms:
   catalogue?
 - Should `ItemArrivedAtRebin` and `OrderConsolidated` be published, and to
   whom?
-- Who owns the **schedule** for the lease and CPT sweeps in production?
+- Who owns the **schedule** for the lease and CPT sweeps in production? (The
+  chart can run them as opt-in `CronJob`s, `sweeps.enabled`; whether and how
+  often to turn that on is a per-environment choice, and `TaskCPTMissed`
+  volume scales with the CPT sweep's frequency.)
 - When does the WCS seam get its first method, and which vendor protocol
   does it translate?
 - MCP governance: authentication was removed fleet-wide

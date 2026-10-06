@@ -1204,6 +1204,33 @@ func TestSealPackage_ReturnsErrNotOwnerForNonOwningStation(t *testing.T) {
 	}
 }
 
+// An expired lease must not authorise a seal: the lease no longer holds the
+// task, even though the task row is still CLAIMED (no sweep has run) and the
+// lease's station id still matches. Nothing may be persisted or published.
+func TestSealPackage_RejectsExpiredLease(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"), false, false)
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pack")))
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock, LeaseDuration: time.Minute}
+	claimed, err := claim.Execute(ctx, "s1", task.Pack)
+	if err != nil || claimed == nil {
+		t.Fatalf("setup claim failed: %v", err)
+	}
+
+	h.clock.Advance(2 * time.Minute)
+
+	seal := &usecases.SealPackage{Tasks: h.tasks, Packages: h.packages, Publisher: h.publisher, Clock: h.clock, NewId: func() shared.PackageId { return "p1" }}
+	_, err = seal.Execute(ctx, claimed.Id(), "s1", []string{"sku-1"})
+	if !errors.Is(err, task.ErrNotOwner) {
+		t.Fatalf("expected ErrNotOwner for an expired lease, got %v", err)
+	}
+	if got, _ := h.packages.FindByTaskId(ctx, claimed.Id()); got != nil {
+		t.Fatalf("no package may be saved for an expired lease, found %v", got.Id())
+	}
+}
+
 func TestSealPackage_PropagatesSealError(t *testing.T) {
 	h := newHarness()
 	ctx := context.Background()
