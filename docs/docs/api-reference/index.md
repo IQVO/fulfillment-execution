@@ -20,8 +20,8 @@ repository and are linted by Spectral on every push:
 The REST pages under **REST API** are generated from the real spec file by
 `docusaurus-plugin-openapi-docs` (`npm run gen-api-docs fulfillment`) and
 committed; `npm run build` does not regenerate them. They are not transcribed
-by hand, and the `docs-api-drift` CI job (on pull requests into `main`)
-regenerates them and fails on any diff, so they cannot silently drift from
+by hand, and the `docs-api-drift` CI job regenerates them on every push
+and pull request and fails on any diff, so they cannot silently drift from
 the contract.
 
 ## Endpoint coverage: 19 / 19

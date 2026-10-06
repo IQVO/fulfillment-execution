@@ -23,10 +23,7 @@ generator.
 
 ## How to check for drift
 
-CI does this on every pull request **into `main`** (the job is gated on
-`github.event_name == 'pull_request' && github.base_ref == 'main'`, so it
-is skipped on PRs into `develop` — run it locally before merging a docs or
-spec change into `develop`): the `docs-api-drift` job in
+CI already does this on every PR: the `docs-api-drift` job in
 `.github/workflows/ci.yml` runs, inside `docs/`,
 
 ```bash
