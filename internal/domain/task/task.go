@@ -255,6 +255,22 @@ func (t *Task) RenewLease(stationId shared.StationId, now time.Time, leaseDurati
 	return nil
 }
 
+// VerifyHeldBy reports whether stationId currently holds an ACTIVE claim on
+// this task at `now`: a lease exists, belongs to stationId, and has not
+// expired (expiry is inclusive, the same boundary as Complete/RenewLease).
+// Every failure — no lease, another station's lease, or an expired lease —
+// returns ErrNotOwner: an expired lease no longer authorises its former
+// holder, which is the 409 task-not-owner contract SealPackage documents.
+// It is read-only: unlike Complete/RenewLease it never frees the task, so a
+// caller that only needs an ownership guard (SealPackage) does not have to
+// persist the task.
+func (t *Task) VerifyHeldBy(stationId shared.StationId, now time.Time) error {
+	if t.lease == nil || t.lease.StationId != stationId || t.lease.expired(now) {
+		return ErrNotOwner
+	}
+	return nil
+}
+
 // Complete finishes the task. Only the owning station may complete it, the
 // claim must still be active, and a completed task cannot be completed
 // again (no double-complete).

@@ -269,7 +269,7 @@ sequenceDiagram
     UC->>R: FindById
     alt not a PACK task
         UC-->>H: ErrWrongTaskType - 422
-    else lease missing or held by another station
+    else lease missing, expired, or held by another station
         UC-->>H: ErrNotOwner - 409
     end
     UC->>PK: pack.New with fragile and giftWrap from the task
@@ -292,8 +292,11 @@ sequenceDiagram
 Source: `internal/application/usecases/seal_package.go`,
 `internal/domain/package/package.go`, `segregation.go`,
 `internal/adapters/outbound/productclassification/`. Omits the retry and
-circuit breaker around the classification client. The ownership check
-compares the lease's station id only; it does not re-check lease expiry.
+circuit breaker around the classification client. The ownership check is
+`Task.VerifyHeldBy(stationId, now)`: it requires a lease held by the caller
+that has not expired at the `Clock`'s `now` (expiry is inclusive, as in
+`Complete`), and it does not free the task, so an expired lease is rejected
+with `ErrNotOwner` even when no sweep has run yet.
 
 ## 7. Run SLAM
 

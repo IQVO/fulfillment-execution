@@ -99,7 +99,7 @@ The unit of physical work. Its invariants are the reason this context exists.
 | T2 | **A claim requires matching capabilities.** The claiming station's capability set must contain every required capability. | `Task.Claim` → `CapabilitySet.HasAll` | `task.ErrCapabilityMismatch` | `422` |
 | T3 | **An expired lease frees the task.** A lapsed claim returns the task to `Pending` before any further decision is made. | `Task.ExpireLeaseIfDue`, called from `Claim`, and checked in `RenewLease` / `Complete` | `task.ErrNotClaimed` on renew/complete | `409` |
 | T4 | **No double-complete.** A completed task rejects every further operation. | `Task.Claim` / `RenewLease` / `Complete` | `task.ErrAlreadyCompleted` | `409` |
-| T5 | **Only the claim owner may renew or complete.** | `Task.RenewLease`, `Task.Complete` | `task.ErrNotOwner` | `409` |
+| T5 | **Only the claim owner may renew or complete.** `SealPackage` applies the same ownership test, with the lease expiry check, through `Task.VerifyHeldBy`. | `Task.RenewLease`, `Task.Complete`, `Task.VerifyHeldBy` | `task.ErrNotOwner` | `409` |
 | T6 | **Renew/complete require an active claim.** Acting on a `Pending` task is rejected. | `Task.RenewLease`, `Task.Complete` | `task.ErrNotClaimed` | `409` |
 
 ### The ordering inside `Claim` is itself an invariant
@@ -209,8 +209,9 @@ the Rebin wall. Execution-scoped only — it does not model the order itself.
 Each aggregate is one transaction. A use case never mutates two aggregates
 inside one consistency boundary:
 
-- `SealPackage` **reads** a `Task` (to validate the caller owns the claim and
-  that it is a `PACK` task) but only **writes** the new `Package`.
+- `SealPackage` **reads** a `Task` (to validate the caller holds an unexpired
+  claim, via `Task.VerifyHeldBy`, and that it is a `PACK` task) but only
+  **writes** the new `Package`.
 - `RunSlam` touches only the `Package`.
 - `CompleteTask` touches only the `Task`.
 - `ArriveAtRebin` writes the `OrderConsolidation` and, on the completing
