@@ -108,9 +108,8 @@ go test ./...
 go test -race ./...
 gofmt -l .            # must print nothing
 
-# Postgres integration tests (build-tagged, skipped without a database)
-docker compose up -d postgres
-export DATABASE_URL="postgres://fulfillment:fulfillment@localhost:5432/fulfillment_execution?sslmode=disable"
+# Postgres integration tests (build-tagged): each test boots its own Postgres
+# via testcontainers, so they need Docker but no DATABASE_URL / compose service
 go test -tags integration ./internal/adapters/outbound/postgres/...
 
 # Gherkin acceptance specs, executed by godog
