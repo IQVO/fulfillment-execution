@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -59,7 +60,11 @@ func scanPackage(row rowScanner) (*pack.Package, error) {
 	if err := row.Scan(&packageId, &orderRef, &taskId, &status, &scannedContents, &fragileHandling, &scannedHazardClasses, &giftWrapRequested); err != nil {
 		return nil, err
 	}
-	return pack.Rehydrate(shared.PackageId(packageId), shared.OrderRef(orderRef), shared.TaskId(deref(taskId)), pack.Status(status), scannedContents, fragileHandling, scannedHazardClasses, giftWrapRequested), nil
+	parsedStatus, err := pack.ParseStatus(status)
+	if err != nil {
+		return nil, fmt.Errorf("rehydrate package %q: %w", packageId, err)
+	}
+	return pack.Rehydrate(shared.PackageId(packageId), shared.OrderRef(orderRef), shared.TaskId(deref(taskId)), parsedStatus, scannedContents, fragileHandling, scannedHazardClasses, giftWrapRequested), nil
 }
 
 // Package read queries, built only from constants.
