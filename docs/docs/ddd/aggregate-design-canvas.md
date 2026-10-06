@@ -207,8 +207,9 @@ memory and saves the package already `SEALED`.
 | P6 | Incompatible DOT hazard classes may not share a package | `Package.ScanItemWithClass` → `pack.ErrPackageSegregationViolation` (`pack.IsSegregationIncompatible`) |
 
 Plus application-level rules in `SealPackage`: the task must be a `PACK`
-task (`usecases.ErrWrongTaskType`) and the caller must be the station named
-on its lease (`task.ErrNotOwner`); one package per task
+task (`usecases.ErrWrongTaskType`) and the caller must hold an unexpired
+lease on it (`Task.VerifyHeldBy` → `task.ErrNotOwner` for a missing, expired
+or other-station lease); one package per task
 (`PackageRepo.FindByTaskId` short-circuit, unique index
 `idx_packages_task_id`).
 

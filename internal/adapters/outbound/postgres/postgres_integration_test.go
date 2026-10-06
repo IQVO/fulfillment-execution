@@ -18,9 +18,9 @@ import (
 	"github.com/claudioed/fulfillment-execution/internal/domain/task"
 )
 
-// newPool returns a pool over a throwaway, fully migrated Postgres. It
-// delegates to outboxDB (testcontainers — the test owns its own database
-// end to end), never an external DATABASE_URL, never t.Skip.
+// newPool returns a pool over the package's shared, fully migrated
+// Postgres with every table emptied. It delegates to outboxDB
+// (testcontainers — never an external DATABASE_URL, never t.Skip).
 func newPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	return outboxDB(t)

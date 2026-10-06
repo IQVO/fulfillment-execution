@@ -29,6 +29,35 @@ const (
 	Completed Status = "COMPLETED"
 )
 
+// ErrUnknownType is returned by ParseType for a string that is not one of
+// the declared task types.
+var ErrUnknownType = errors.New("task: unknown type")
+
+// ErrUnknownStatus is returned by ParseStatus for a string that is not one
+// of the declared task statuses.
+var ErrUnknownStatus = errors.New("task: unknown status")
+
+// ParseType validates the persisted string form of a Type. Matching is
+// exact (case-sensitive): every writer persists the canonical constant.
+func ParseType(value string) (Type, error) {
+	switch Type(value) {
+	case Pick, Pack, Slam, Rebin:
+		return Type(value), nil
+	default:
+		return "", ErrUnknownType
+	}
+}
+
+// ParseStatus validates the persisted string form of a Status.
+func ParseStatus(value string) (Status, error) {
+	switch Status(value) {
+	case Pending, Claimed, Completed:
+		return Status(value), nil
+	default:
+		return "", ErrUnknownStatus
+	}
+}
+
 var (
 	// ErrCapabilityMismatch is returned when a station lacks the
 	// capabilities required by the task it is trying to claim.
@@ -223,6 +252,22 @@ func (t *Task) RenewLease(stationId shared.StationId, now time.Time, leaseDurati
 		return ErrNotOwner
 	}
 	t.lease.Expiry = now.Add(leaseDuration)
+	return nil
+}
+
+// VerifyHeldBy reports whether stationId currently holds an ACTIVE claim on
+// this task at `now`: a lease exists, belongs to stationId, and has not
+// expired (expiry is inclusive, the same boundary as Complete/RenewLease).
+// Every failure — no lease, another station's lease, or an expired lease —
+// returns ErrNotOwner: an expired lease no longer authorises its former
+// holder, which is the 409 task-not-owner contract SealPackage documents.
+// It is read-only: unlike Complete/RenewLease it never frees the task, so a
+// caller that only needs an ownership guard (SealPackage) does not have to
+// persist the task.
+func (t *Task) VerifyHeldBy(stationId shared.StationId, now time.Time) error {
+	if t.lease == nil || t.lease.StationId != stationId || t.lease.expired(now) {
+		return ErrNotOwner
+	}
 	return nil
 }
 
