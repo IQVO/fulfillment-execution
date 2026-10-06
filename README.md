@@ -241,7 +241,7 @@ make check         # FAST pre-commit loop: fmt-check, vet, build, lint, test
 make check-all     # pre-push gate: check + coverage (90% gate), arch-test, bdd
 make vuln          # govulncheck ./... — known CVEs in deps and the Go stdlib
 make mutation-fast # blocking mutation subset (./internal/domain/task)
-make integration   # needs DATABASE_URL and a running Postgres
+make integration   # needs Docker: Postgres/Kafka tests boot their own containers (testcontainers)
 ```
 
 Git hooks are managed by [lefthook](https://github.com/evilmartians/lefthook)
@@ -262,9 +262,8 @@ go test ./...
 go test -race ./...
 gofmt -l .            # must print nothing
 
-# Postgres integration test (needs a running database)
-docker compose up -d postgres
-export DATABASE_URL="postgres://fulfillment:fulfillment@localhost:5432/fulfillment_execution?sslmode=disable"
+# Postgres integration tests: each test boots its own Postgres via
+# testcontainers, so they need Docker but no DATABASE_URL / compose service
 go test -tags integration ./internal/adapters/outbound/postgres/...
 ```
 
