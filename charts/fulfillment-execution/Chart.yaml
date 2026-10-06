@@ -4,7 +4,7 @@ description: Fulfillment Execution — Pick/Pack/SLAM task lifecycle with pull-b
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
-home: https://github.com/claudioed/fulfillment-execution
+home: https://github.com/IQVO/fulfillment-execution
 keywords:
   - ddd
   - hexagonal-architecture

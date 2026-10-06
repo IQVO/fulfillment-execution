@@ -23,7 +23,7 @@ help: ## Show the available targets
 	@echo "  lint          golangci-lint run ./... (pinned $(GOLANGCI_LINT_VERSION) in CI)"
 	@echo "  test          go test ./... -race (unit + httptest + bdd; no DB needed)"
 	@echo "  coverage      Coverage run + $(COVERAGE_THRESHOLD)% gate (same command as CI)"
-	@echo "  integration   Postgres integration tests — needs DATABASE_URL / a running Postgres"
+	@echo "  integration   Postgres/Kafka integration tests — needs Docker (testcontainers; no DATABASE_URL)"
 	@echo "  bdd           godog/Gherkin acceptance tests"
 	@echo "  contract      scripts/contract-test.sh — Schemathesis vs apis/openapi.yaml"
 	@echo "                (boots the service in-memory; needs st: pip install"
@@ -77,12 +77,9 @@ coverage: ## Coverage run plus the CI coverage gate
 		exit 1; \
 	fi
 
-integration: ## Postgres integration tests — requires DATABASE_URL and a reachable Postgres
-	@if [ -z "$$DATABASE_URL" ]; then \
-		echo "DATABASE_URL is not set; the integration tests will skip."; \
-		echo "start Postgres with 'docker compose up -d' and export e.g."; \
-		echo "  DATABASE_URL=postgres://fulfillment:fulfillment@localhost:5432/fulfillment_execution?sslmode=disable"; \
-	fi
+# Needs Docker only: every integration test boots its own Postgres/Kafka via
+# testcontainers (no external DATABASE_URL, no `docker compose up`).
+integration: ## Postgres/Kafka integration tests — needs Docker (testcontainers)
 	go test -tags=integration ./... -race -count=1
 
 bdd: ## godog/Gherkin acceptance tests
@@ -129,3 +126,17 @@ check: fmt-check vet build lint test ## Fast pre-commit bundle
 
 check-all: check coverage arch-test bdd ## Fuller pre-push gate (no DB, no mutation)
 	@echo "check-all: OK"
+
+# --- agent harness (harness-template v3) -----------------------------------
+.PHONY: check-fast guide-lint harness-test
+# Fast local gate used by the agent Stop hook: format, vet, fitness tests, and the tests of
+# the packages changed vs HEAD. The full gate stays `make check` / `make check-all`.
+check-fast: fmt-check vet arch-test
+	@pkgs="$$(python3 scripts/harness/hook.py changed-pkgs)"; \
+	if [ -n "$$pkgs" ]; then go test $$pkgs; else echo "check-fast: no changed Go packages"; fi
+
+guide-lint: ## lint agent guides: skills load, references resolve, context budget
+	python3 scripts/harness/guide_lint.py
+
+harness-test: ## unit-test the agent hooks (pre/post/stop)
+	python3 scripts/harness/test_hook.py

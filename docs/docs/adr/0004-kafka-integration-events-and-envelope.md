@@ -97,6 +97,13 @@ says which context owns the fact and which aggregate raised it.
 
 ### Anti-Corruption Layer on the inbound edge
 
+> **Historical for the `path_id` mapping — superseded by
+> [ADR-0017](./0017-process-path-catalogue-as-configuration.md).** The text
+> below describes the original prefix-convention guess. Today `path_id` is
+> resolved through the process-path catalogue (`ports.PathCatalogue`, file or
+> Kafka source) and an unknown id is a hard error; capabilities come from the
+> catalogue entry, not from the type.
+
 The consumer decodes the envelope and extracts three scalars, mapping each into
 this context's own vocabulary — `path_id` → `task.Type` (by prefix
 convention), `work_unit_id` → `shared.OrderRef`, `cpt` → `shared.CPT`, with
@@ -167,7 +174,10 @@ convention rather than a local improvisation.
 - **Enrichment adds a read on the publish path.** Every `TaskCompleted`
   publish does a `TaskRepo.FindById`. Cheap, but it means publishing is no
   longer a pure function of the event.
-- **The `path_id` prefix convention is fragile.** `pick-*`/`pack-*`/`slam-*`
+- **The `path_id` prefix convention is fragile.** *(Historical — resolved by
+  [ADR-0017](./0017-process-path-catalogue-as-configuration.md): `path_id` is
+  now resolved through the process-path catalogue and an unrecognised id is a
+  hard error, not a silent Pick.)* `pick-*`/`pack-*`/`slam-*`
   with a `PICK` default means an unrecognised `path_id` silently produces a
   Pick task. Documented as a known simplification in `INTEGRATION.md`, the
   README, and the [Integration contracts](../ecosystem/integration-contracts.md)

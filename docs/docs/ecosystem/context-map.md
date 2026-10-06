@@ -3,100 +3,118 @@ id: context-map
 title: Context map
 sidebar_label: Context map
 sidebar_position: 1
-description: Where Fulfillment Execution sits among the warehouse-systems services and WCS — what is actually wired over Kafka and HTTP today versus what is only strategically related.
+description: The ddd-crew Context Mapping view of Fulfillment Execution — every upstream/downstream edge with its context-mapping patterns and technology, the code that proves it, and which edges are live, opt-in, or deliberately absent.
 ---
 
 # Context map
 
 `warehouse-systems` is a fleet of Go services, one bounded context each, plus
-an external WCS tier that is not built. This page shows this service's own
-edges only. This page is honest about the difference
-between **wired** (a real topic, a real adapter, running code) and
-**strategic** (a real relationship in the domain, with no wire yet).
+an external WCS tier that is not built. This page is this service's slice of
+the fleet context map, drawn with the
+[ddd-crew Context Mapping](https://github.com/ddd-crew/context-mapping)
+vocabulary. It is honest about the difference between **live** (a real
+topic or route, a real adapter, running code, on by default), **opt-in**
+(the adapter exists but an env var switches it on), and **deliberately
+absent** (a real relationship in the domain with no wire, by decision).
 
-## What is actually wired today
+## Pattern legend
+
+| Abbreviation | Pattern | Sits on |
+| --- | --- | --- |
+| **U / D** | Upstream / Downstream — who can change the contract and who must follow | each end of an edge |
+| **OHS** | Open Host Service — a general-purpose protocol published for many clients | upstream end |
+| **PL** | Published Language — a documented interchange format (here: CloudEvents types + `apis/asyncapi.yaml`, `apis/openapi.yaml`) | upstream end |
+| **CF** | Conformist — downstream adopts the upstream model without translation | downstream end |
+| **ACL** | Anti-Corruption Layer — downstream translates at its boundary | downstream end |
+| **C/S** | Customer/Supplier — downstream's needs are a real input to upstream's planning | the edge |
+| **P** | Partnership | the edge (none here) |
+| **SK** | Shared Kernel | the edge (none here — no shared Go types or tables) |
+| **Separate Ways** | No integration, by decision | — |
+
+## The map
+
+Every arrow points from **upstream to downstream** (the direction the model
+flows), whatever the transport direction of the call.
 
 ```mermaid
 flowchart LR
+    subgraph WES["WES tier"]
+        WP["wes-work-planning<br/>Core"]
+        FE["fulfillment-execution<br/>Core, THIS CONTEXT"]
+        PPM["process-path-management"]
+        LP["labor-performance<br/>Supporting"]
+        WFM["workforce-management<br/>Supporting"]
+        OA["warehouse-ops-agent"]
+    end
     subgraph WMS["WMS tier"]
-        IS["inventory-storage<br/><i>Core</i><br/>stock ledger, chaotic stow,<br/>revocable reservations"]
-        OM["order-management<br/><i>Core</i><br/>orders, promise, re-promise"]
+        OM["order-management<br/>Generic/Supporting"]
+        IS["inventory-storage<br/>Core"]
+        FL["facility-layout<br/>Generic"]
+    end
+    subgraph WCSTIER["WCS tier, not built"]
+        WCS["WCS / equipment<br/>Generic"]
     end
 
-    subgraph WESTIER["WES tier"]
-        WP["wes-work-planning<br/><i>Core — the conductor</i><br/>waveless release, flow balancing"]
-        FE["fulfillment-execution<br/><i>Core — THIS SERVICE</i><br/>Pick / Pack / SLAM / Rebin task lifecycle<br/>pull dispatch + leases"]
-    end
-
-    subgraph SUPPORT["Supporting / Generic"]
-        WFM["workforce-management<br/><i>Supporting</i><br/>heads per path, shift plans"]
-        LP["labor-performance<br/><i>Supporting</i><br/>associate productivity"]
-        FL["facility-layout<br/><i>Generic</i><br/>Site→Zone→Aisle→LocationSlot"]
-    end
-
-    subgraph WCSTIER["WCS tier — external, not built"]
-        WCS["WCS / equipment<br/><i>Generic — buy, don't build</i><br/>conveyors, print-and-apply, checkweighers"]
-    end
-
-    WP ==>|"warehouse.work-planning.events<br/><b>WorkReleased</b>"| FE
-    FE ==>|"warehouse.fulfillment.events<br/><b>TaskCompleted</b> (+ work_unit_id)"| WP
-    FE ==>|"warehouse.fulfillment.events<br/><b>TaskCompleted</b>"| LP
-    FE ==>|"warehouse.fulfillment.events<br/><b>TaskCPTMissed · PackageManifested</b>"| OM
-    WFM -->|"HTTP GET /capacity/{capability}"| FE
-    FE -->|"HTTP GET /products/{sku}/classification<br/>(PRODUCT_CLASSIFICATION_MODE=http)"| IS
-    FE -->|"HTTP GET /locations/{code}<br/>(LOCATION_ROLE_MODE=http)"| FL
-    FE -.->|"device commands<br/>NOT WIRED"| WCS
+    WP ==>|"U: PL / D: ACL - C/S<br/>Kafka com.warehouse.wes.work-planning.workunit.WorkReleased"| FE
+    FE ==>|"U: OHS+PL / D: CF - C/S feedback<br/>Kafka com.warehouse.wes.fulfillment-execution.task.TaskCompleted"| WP
+    FE ==>|"U: OHS+PL / D: CF<br/>Kafka ...fulfillment-execution.task.TaskCompleted"| LP
+    FE ==>|"U: OHS+PL / D: CF<br/>Kafka ...task.TaskCPTMissed and ...package.PackageManifested"| OM
+    FE -->|"U: OHS / D: CF<br/>REST GET /capacity/capability"| WFM
+    FE -->|"U: OHS / D: CF<br/>MCP tools and REST GET /tasks?orderRef="| OA
+    PPM -.->|"opt-in - U: PL / D: CF<br/>Kafka ...process-path-management.processpath.ProcessPath*"| FE
+    IS -.->|"opt-in - U: OHS / D: ACL<br/>REST GET /products/sku/classification"| FE
+    FL -.->|"opt-in - U: OHS / D: ACL<br/>REST GET /locations/locationCode"| FE
+    FE -.-x|"deliberately absent - U / D: ACL seam<br/>ports.EquipmentCommandPort, no adapter"| WCS
 
     classDef this fill:#2b6cb0,stroke:#1a365d,stroke-width:3px,color:#fff
-    classDef notwired stroke-dasharray: 6 4
+    classDef absent stroke-dasharray: 6 4
     class FE this
-    class WCS notwired
+    class WCS absent
 ```
 
-**Bold double arrows** are Kafka edges, live whenever
-`EVENT_PUBLISHER=kafka`. **Single arrows** are synchronous HTTP calls; the
-two outbound ones are opt-in and permissive by default (with the mode unset,
-the lookup is skipped and the request is accepted unchecked). **Dashed
-arrows** are relationships that exist in the domain but have no code behind
-them. Upstream edges between *other* services (e.g. inventory-storage →
-work-planning) are omitted — see each service's own context map.
+Source: `internal/adapters/inbound/kafka/consumer.go`,
+`internal/adapters/outbound/kafka/publisher.go`,
+`internal/adapters/outbound/kafkacatalog/consumer.go`,
+`internal/adapters/outbound/productclassification/client.go`,
+`internal/adapters/outbound/facilitylayout/client.go`,
+`internal/adapters/inbound/http/router.go`, `cmd/mcp/router.go`,
+`internal/application/ports/equipment.go`, `apis/asyncapi.yaml`.
+Thick arrows are Kafka (live when `EVENT_PUBLISHER=kafka`); thin solid
+arrows are synchronous calls into this service; dotted arrows are opt-in or
+absent. Omitted: edges between *other* contexts (see each service's own
+map), this service's internal analytics topic
+(`warehouse.fulfillment.analytics`, produced and consumed only by this
+context), and browser clients (`warehouse-console` / the `web/` MFE), which
+are not bounded contexts. Path parameters are written without braces in the
+diagram labels.
+
+## Relationships with evidence
+
+| # | Upstream → Downstream | Patterns | Technology | Status | Evidence (this repo) |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `wes-work-planning` → **this** | C/S; U: PL; D: **ACL** | Kafka `warehouse.work-planning.events`, `com.warehouse.wes.work-planning.workunit.WorkReleased`; group `WORK_RELEASED_CONSUMER_GROUP` (default `fulfillment-execution`) | **Live** (consumer always starts) | `internal/adapters/inbound/kafka/consumer.go` (`TypeWorkReleased`, `WorkReleasedData`, `handleClaimedEvent` → `CreateTask`) |
+| 2 | **this** → `wes-work-planning` | C/S (feedback edge); U: OHS + PL; D: CF | Kafka `warehouse.fulfillment.events`, `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` | **Live** with `EVENT_PUBLISHER=kafka` | `internal/adapters/outbound/kafka/publisher.go` (`encodeTaskCompleted`, `work_unit_id` enrichment) |
+| 3 | **this** → `labor-performance` | U: OHS + PL; D: CF | Kafka `warehouse.fulfillment.events`, `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` (`associate_id`, `duration_seconds`, `task_type`) | **Live** with `EVENT_PUBLISHER=kafka` | same publisher; [ADR-0014](../adr/0014-labor-performance-integration-hooks.md), [ADR-0023](../adr/0023-task-type-on-wire.md) |
+| 4 | **this** → `order-management` | U: OHS + PL; D: CF | Kafka `warehouse.fulfillment.events`, `com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed`, `com.warehouse.wes.fulfillment-execution.package.PackageManifested` | **Live** with `EVENT_PUBLISHER=kafka` | `publisher.go` (`encodeTaskCPTMissed`, `encodePackageManifested`); [ADR-0025](../adr/0025-cpt-missed-sweep-and-package-manifested.md) |
+| 5 | **this** → `workforce-management` | U: OHS; D: CF | REST `GET /capacity/{capability}` (called by workforce-management) | **Live** | `internal/adapters/inbound/http/router.go`, `usecases.GetInstalledCapacity`; [ADR-0018](../adr/0018-installed-capacity-read-endpoint.md) |
+| 6 | **this** → `warehouse-ops-agent` | U: OHS; D: CF | MCP Streamable HTTP (`cmd/mcp`, tools `get_queue_status`, `find_claimable_work`, `diagnose_stuck_tasks`, `complete_task`, plus `get_fulfillment_throughput_report` / `get_on_time_to_cpt` when `REPORTS_BASE_URL` is set); REST `GET /tasks?orderRef=` from the console BFF | **Live** | `cmd/mcp/router.go`, `internal/adapters/inbound/mcp/tools.go`; [ADR-0008](../adr/0008-mcp-inbound-adapter.md), [ADR-0013](../adr/0013-fulfillment-mfe-console-adoption.md) |
+| 7 | `process-path-management` → **this** | U: PL; D: CF | Kafka `warehouse.process-path-management.events`, `com.warehouse.wes.process-path-management.processpath.ProcessPathCreated` / `ProcessPathUpdated` / `ProcessPathDeactivated`; per-process group | **Opt-in** (`PATH_CATALOGUE_SOURCE=kafka`; default `file` reads the same shape from YAML) | `internal/adapters/outbound/kafkacatalog/consumer.go`; [ADR-0017](../adr/0017-process-path-catalogue-as-configuration.md) |
+| 8 | `inventory-storage` → **this** | U: OHS; D: **ACL** (`ports.ClassificationInfo`) | REST `GET /products/{sku}/classification`, called per scanned SKU at seal time, behind retry + circuit breaker | **Opt-in** (`PRODUCT_CLASSIFICATION_MODE=http` + `INVENTORY_STORAGE_BASE_URL`; default permissive no-op) | `internal/adapters/outbound/productclassification/`; [ADR-0010](../adr/0010-package-segregation-and-sort-lane.md), [ADR-0029](../adr/0029-resilience-circuit-breakers-retry-dlq-shutdown.md) |
+| 9 | `facility-layout` → **this** | U: OHS; D: **ACL** (`ports.LocationRoleInfo`), conforming to the `LocationRole` vocabulary | REST `GET /locations/{locationCode}`, called once per `RegisterStation` with a `locationCode`, behind retry + circuit breaker | **Opt-in** (`LOCATION_ROLE_MODE=http` + `FACILITY_LAYOUT_BASE_URL`; default permissive no-op) | `internal/adapters/outbound/facilitylayout/`; [ADR-0024](../adr/0024-station-location-code-and-workcenter-role-check.md) |
+| 10 | **this** → WCS / equipment | Strategically U: this; D: WCS; ACL seam on this side | none | **Deliberately absent** — the port declares no methods and has no adapter | `internal/application/ports/equipment.go`; [ADR-0015](../adr/0015-wcs-equipment-anti-corruption-seam.md) |
+| 11 | `inventory-storage`, `facility-layout`, `order-management` events → **this** | Separate Ways | none | **Deliberately absent** — stock, layout and order facts reach this context only through what `wes-work-planning` releases (plus the two opt-in lookups above) | no consumer for those topics in `internal/adapters/inbound/kafka/` |
+
+All REST and MCP surfaces are unauthenticated
+([ADR-0022](../adr/0022-remove-rest-mcp-auth.md)). No Shared Kernel and no
+Partnership exist: no Go type, table or library is shared with another
+context — even the DOT segregation matrix is a deliberate, documented
+duplicate of inventory-storage's (`internal/domain/package/segregation.go`).
 
 ## The control loop with Work Planning
 
-### 1. Inbound — `WorkReleased` from `wes-work-planning`
-
-- **Topic:** `warehouse.work-planning.events`
-- **Adapter:** `internal/adapters/inbound/kafka/consumer.go`, consumer group
-  `WORK_RELEASED_CONSUMER_GROUP` (default `fulfillment-execution`)
-- **Envelope:** CloudEvents 1.0 ([ADR-0032](../adr/0032-cloudevents-mandatory-envelope.md))
-- **Filter:** full `type == "com.warehouse.wes.work-planning.workunit.WorkReleased"`;
-  every other type is ignored, and a message that is not a valid CloudEvent is
-  dead-lettered
-- **Effect:** calls the existing `CreateTask` use case — a released work unit
-  becomes a `Task` in this service's pool
-- **Idempotency:** `ProcessedEvents.MarkProcessed(id)` (the CloudEvents `id`) before creating,
-  so a redelivery produces no duplicate task
-
-### 2. Outbound — `TaskCompleted` to `wes-work-planning`
-
-- **Topic:** `warehouse.fulfillment.events`
-- **Adapter:** `internal/adapters/outbound/kafka/publisher.go`, active when
-  `EVENT_PUBLISHER=kafka`
-- **Envelope:** CloudEvents 1.0, `type`
-  `com.warehouse.wes.fulfillment-execution.task.TaskCompleted`
-- **Payload:** `task_id`, `station_id`, and `work_unit_id` — the last
-  backfilled via a `TaskRepo` lookup of the task's `OrderRef()` — plus
-  `associate_id`, `duration_seconds`, `task_type`
-- **Downstream:** `wes-work-planning` consumes it and calls its own
-  `RecordCompletion(workUnitId)`; `labor-performance` also consumes it for
-  per-associate attribution (the event carries the claiming associate,
-  ADR-0014)
-
-Together these two edges form a closed loop: Work Planning releases, this
-service executes, Work Planning learns that it landed. The repo's integration
-notes call it the **drum-buffer-rope feedback edge: Execution →
-Orchestration**. Without the return edge the conductor would be releasing into
-a void.
+Edges 1 and 2 form a closed loop: Work Planning releases, this service
+executes, Work Planning learns that it landed — the **drum-buffer-rope
+feedback edge: Execution → Orchestration**.
 
 ```mermaid
 sequenceDiagram
@@ -107,105 +125,23 @@ sequenceDiagram
     participant ST as Station (Pick)
     participant K2 as warehouse.fulfillment.events
 
-    WP->>K1: WorkReleased {path_id, work_unit_id, cpt, ref}
-    K1->>FE: consume (CloudEvent, filter on full type)
-    FE->>FE: MarkProcessed(id) — skip if seen
-    FE->>FE: CreateTask(PICK, cpt, orderRef=work_unit_id, {pick})
-    ST->>FE: POST /stations/station-03/claim-next {"taskType":"PICK"}
-    FE-->>ST: 200 — earliest-CPT matching task, leased 5 min
-    ST->>FE: POST /tasks/{id}/complete {"stationId":"station-03"}
-    FE->>K2: TaskCompleted {task_id, station_id, work_unit_id}
+    WP->>K1: evt: WorkReleased (path_id, work_unit_id, cpt, ref)
+    K1->>FE: consume, filter on the full CloudEvents type
+    FE->>FE: MarkProcessed(id), skip if already seen
+    FE->>FE: CreateTask(PICK, cpt, orderRef = work_unit_id)
+    ST->>FE: cmd: POST /stations/station-03/claim-next
+    FE-->>ST: 200 earliest-CPT matching task, leased 5 min
+    ST->>FE: cmd: POST /tasks/task-1/complete
+    FE->>K2: evt: TaskCompleted (task_id, station_id, work_unit_id)
     K2->>WP: consume
     WP->>WP: RecordCompletion(work_unit_id)
 ```
 
-## The other live edges
-
-### Outbound — `TaskCPTMissed` / `PackageManifested` to `order-management`
-
-Same topic, same publisher. `TaskCPTMissed` is raised by the Clock-driven
-`POST /tasks/sweep-cpt-misses` sweep for every still-open task past its CPT;
-`PackageManifested` is raised when SLAM labels a package. Order
-Management's `RepromiseOrder` consumer uses them to close its promise
-feedback loop — see [ADR-0025](../adr/0025-cpt-missed-sweep-and-package-manifested.md).
-
-### Inbound HTTP — `workforce-management` reads installed capacity
-
-`workforce-management` calls `GET /capacity/{capability}` to learn how many
-registered stations can serve a capability, so shift planning is bounded by
-physical station count ([ADR-0018](../adr/0018-installed-capacity-read-endpoint.md)).
-It is a read of this service's `Station` pool, not a shared model: there is
-still no roster here — `Station` holds capabilities and an opaque
-`OccupantId`, and Workforce Management still stops at the process-path
-boundary. The two contexts change at different cadences (shifts versus
-seconds) and share only the published language of capability names.
-
-### Outbound HTTP — `inventory-storage` hazard classification (opt-in)
-
-With `PRODUCT_CLASSIFICATION_MODE=http` and `INVENTORY_STORAGE_BASE_URL`
-set, `SealPackage` looks up each SKU's DOT hazard class via
-`GET /products/{sku}/classification` to enforce package segregation
-([ADR-0010](../adr/0010-package-segregation-and-sort-lane.md)).
-Everything else about stock still reaches this service only transitively,
-through what Work Planning chooses to release.
-
-### Outbound HTTP — `facility-layout` WorkCenter role check (opt-in)
-
-With `LOCATION_ROLE_MODE=http` and `FACILITY_LAYOUT_BASE_URL` set,
-`RegisterStation` resolves an optional station `locationCode` via
-`GET /locations/{locationCode}` and rejects a known non-WorkCenter role
-([ADR-0024](../adr/0024-station-location-code-and-workcenter-role-check.md)).
-A `Task` still carries no location — it says *what* work and *by when*,
-never *where*.
-
-## What is deliberately not wired
-
-### `warehouse-console` — a browser client, not a bounded-context edge
-
-This service also exposes a `GET /tasks?orderRef=` read endpoint, a `web/`
-Module Federation remote (`fulfillment-mfe`), and CORS middleware, all as
-this repo's local adoption of the fleet-wide micro-frontend console
-architecture (canonical decision in `warehouse-ops-agent`'s own ADR-0002;
-this repo's adoption side is [ADR-0013](../adr/0013-fulfillment-mfe-console-adoption.md)).
-`warehouse-console` is not drawn as a bounded context in the diagram above —
-it is a browser SPA that composes this service's remote alongside the other
-services' remotes, plus a BFF hosted in `warehouse-ops-agent`. It calls this
-service's REST API over HTTP like any other client and has no domain model
-of its own.
-
-### WCS / equipment — strategic, not built
-
-Strategically this service is upstream of WCS: it decides a carton should be
-sealed and labelled; WCS drives the conveyor, the print-and-apply head and the
-check-weigher. `apis/openapi.yaml` states plainly that this service "does not
-drive physical WCS/equipment directly over this API (that's a separate command
-channel)."
-
-There is no adapter, no topic, and no command channel in this repository. The
-edge is drawn dashed because it is the real shape of the system, not because
-anything implements it.
-
-As of [ADR-0015](../adr/0015-wcs-equipment-anti-corruption-seam.md), the
-boundary is no longer prose-only: `internal/application/ports.EquipmentCommandPort`
-is a real, but deliberately unimplemented, outbound port. No adapter
-satisfies it and no use case calls it — it exists so that if a WCS
-integration is ever scoped, its vocabulary is translated at that one seam
-and never leaks into `Task`, `Package`, or `Station`.
-
-## Strategic relationships in one table
-
-Full reasoning on [Context relationships](../ddd/context-relationships.md).
-
-| Edge | Context-mapping pattern | Wired? |
-| --- | --- | --- |
-| `wes-work-planning` → this | Customer/Supplier, with an ACL on this side | **Yes** (Kafka) |
-| this → `wes-work-planning` | Customer/Supplier (feedback edge) | **Yes** (Kafka) |
-| this → `labor-performance` | Published Language (`TaskCompleted`) | **Yes** (Kafka) |
-| this → `order-management` | Published Language (`TaskCPTMissed`, `PackageManifested`) | **Yes** (Kafka) |
-| `workforce-management` → this | Open Host Service (`GET /capacity/{capability}`) | **Yes** (HTTP) |
-| this → `inventory-storage` | Customer/Supplier, ACL on this side | Opt-in (HTTP) |
-| this → `facility-layout` | Customer/Supplier, ACL on this side | Opt-in (HTTP) |
-| this → WCS | Customer/Supplier + Conformist behind an ACL | No |
+Source: `internal/adapters/inbound/kafka/consumer.go`,
+`internal/application/usecases/claim_next.go`,
+`internal/application/usecases/complete_task.go`,
+`internal/adapters/outbound/kafka/publisher.go`. Omits the outbox relay hop
+and the analytics fan-out (see [Domain message flow](../ddd/domain-message-flow.md)).
 
 ## Why the WES tier is two services, not one
 
@@ -213,14 +149,19 @@ The reference model describes Work Orchestration and Task & Labor Management
 as a **Partnership** — "they evolve together; sequencing and assignment are
 two halves of one optimization loop."
 
-This platform splits them anyway, and it is worth saying why. Work Planning
-answers *how much* work should be on the floor and when to release it —
-changing when flow-balancing policy changes. Fulfillment Execution answers
-*how a released unit safely reaches completion* — changing when dispatch or
-claim semantics change. Those are different reasons to change, on different
-cadences.
+This platform splits them anyway. Work Planning answers *how much* work
+should be on the floor and when to release it — changing when flow-balancing
+policy changes. Fulfillment Execution answers *how a released unit safely
+reaches completion* — changing when dispatch or claim semantics change.
+Those are different reasons to change, on different cadences. So the edge
+is Customer/Supplier over a Published Language, not a Partnership.
 
 The cost of the split is real: the two must agree on `work_unit_id` as a
 correlation key and on the CPT semantics that drive priority. That agreement
 is the published language on both topics, and it is exactly what the
 `apis/asyncapi.yaml` catalogue documents.
+
+The *strategic* reasoning behind each pattern is on
+[Context relationships](../ddd/context-relationships.md); the operational
+detail (envelopes, mappings, idempotency, configuration) is on
+[Integration contracts](./integration-contracts.md).

@@ -1,3 +1,9 @@
+---
+paths:
+  - "internal/domain/**"
+  - "internal/application/**"
+---
+
 # Ubiquitous Language, Aggregates, Domain Events, Use Cases
 
 Full glossary and domain-layer contract for Fulfillment Execution. Read before

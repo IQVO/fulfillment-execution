@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/riandyrn/otelchi"
+	otelchimetric "github.com/riandyrn/otelchi/metric"
 
 	"github.com/claudioed/fulfillment-execution/internal/analytics/report"
 	"github.com/claudioed/fulfillment-execution/internal/observability"
@@ -160,12 +161,13 @@ func NewReportsRouter(h *ReportsHandlers, logger *slog.Logger, opts ...RouterOpt
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
+	serviceName := observability.ServiceName()
 	r.Use(otelchi.Middleware(
-		observability.ServiceName(),
+		serviceName,
 		otelchi.WithChiRoutes(r),
 		otelchi.WithRequestMethodInSpanName(true),
 	))
-	r.Use(observability.HTTPServerMetrics())
+	r.Use(otelchimetric.NewServerRequestDuration(otelchimetric.NewBaseConfig(serviceName)))
 	r.Use(RequestLogger(logger))
 	r.Use(middleware.Recoverer)
 

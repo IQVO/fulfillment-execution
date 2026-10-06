@@ -15,14 +15,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	kafkago "github.com/segmentio/kafka-go"
 
 	inboundhttp "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/http"
 	inboundkafka "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/kafka"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/bootretry"
-	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/events"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/facilitylayout"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/filecatalog"
 	outboundkafka "github.com/claudioed/fulfillment-execution/internal/adapters/outbound/kafka"
@@ -32,6 +30,7 @@ import (
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/productclassification"
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
+	"github.com/claudioed/fulfillment-execution/internal/composition"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
 	"github.com/claudioed/fulfillment-execution/internal/observability"
 	"github.com/claudioed/fulfillment-execution/internal/resilience"
@@ -531,53 +530,18 @@ func waitForShutdown(logger *slog.Logger, srv *http.Server, readiness *inboundht
 	return err
 }
 
-// buildEventPublisher wires the outbound event publisher, returning it,
-// the outbox relay to run alongside the HTTP server (nil when there is
-// none), and a close function.
-//
-// The default is the log publisher, so a local dev run with no Kafka is
-// still fully functional. With EVENT_PUBLISHER=kafka every domain event
-// is fanned to BOTH the integration topic (TaskCompleted, TaskCPTMissed,
-// PackageManifested) and the dedicated analytics topic (ADR-0012), always
-// as CloudEvents 1.0 structured-mode messages (ADR-0032 — there is no
-// envelope toggle). The CloudEvents id is a UUID v4 (uuid.NewString):
-//
-//   - with Postgres configured (pool != nil) the use cases publish into
-//     the transactional outbox (ADR 0020): both publishers act only as
-//     Encoders inside the use case's transaction, and the relay forwards
-//     the stored rows to Kafka. The store and the topics can no longer
-//     diverge.
-//   - with in-memory adapters (pool == nil) events go straight to the
-//     broker through MultiPublisher as before — there is no transaction to
-//     bind them to.
+// buildEventPublisher resolves the publisher env config (EVENT_PUBLISHER,
+// OUTBOX_RELAY_INTERVAL) and delegates to the wiring shared with cmd/mcp
+// (composition.BuildEventPublisher), so both deployables publish through
+// the SAME transactional outbox (ADR-0008, ADR-0020). This is the one
+// process that also runs the outbox relay (RunRelay).
 func buildEventPublisher(pool *pgxpool.Pool, brokers []string, tasks ports.TaskRepo, stations ports.StationRepo, logger *slog.Logger) (ports.EventPublisher, *postgres.OutboxRelay, func()) {
-	if getenv("EVENT_PUBLISHER", "log") != "kafka" {
-		logger.Info("event publisher configured", "publisher", "log")
-		return events.NewLogPublisher(logger), nil, func() {}
-	}
-
-	if pool == nil {
-		kafkaPublisher := outboundkafka.NewPublisher(brokers, tasks, stations, uuid.NewString)
-		analyticsPub := outboundkafka.NewAnalyticsPublisher(brokers, tasks, uuid.NewString)
-		logger.Info("event publisher configured", "publisher", "kafka", "mode", "direct",
-			"topic", outboundkafka.Topic, "analytics_topic", outboundkafka.AnalyticsTopic, "brokers", brokers)
-		return events.NewMultiPublisher(kafkaPublisher, analyticsPub), nil, func() {
-			_ = kafkaPublisher.Close()
-			_ = analyticsPub.Close()
-		}
-	}
-
-	// Encoders only: no writer is ever opened for them, the relay's
-	// topic-less sink is the single Kafka connection this process holds
-	// for publishing.
-	integration := outboundkafka.NewPublisherWithWriter(nil, tasks, stations, uuid.NewString)
-	analytics := outboundkafka.NewAnalyticsPublisherWithWriter(nil, tasks, uuid.NewString)
-	sink := outboundkafka.NewRelaySink(brokers)
-	relay := postgres.NewOutboxRelay(pool, sink, logger,
-		postgres.WithInterval(durationEnv("OUTBOX_RELAY_INTERVAL", time.Second)))
-	logger.Info("event publisher configured", "publisher", "kafka", "mode", "outbox",
-		"topic", outboundkafka.Topic, "analytics_topic", outboundkafka.AnalyticsTopic, "brokers", brokers)
-	return postgres.NewOutboxPublisher(pool, integration, analytics), relay, func() { _ = sink.Close() }
+	return composition.BuildEventPublisher(composition.PublisherConfig{
+		Kind:          getenv("EVENT_PUBLISHER", "log"),
+		Brokers:       brokers,
+		RunRelay:      true,
+		RelayInterval: durationEnv("OUTBOX_RELAY_INTERVAL", time.Second),
+	}, pool, tasks, stations, logger)
 }
 
 // durationEnv parses key as a time.Duration, falling back on absence or a
@@ -692,20 +656,9 @@ func uuidLike() string {
 	return time.Now().UTC().Format("20060102T150405.000000000")
 }
 
-// dlqBatchTimeout flushes a dead-letter write almost immediately. A DLQ
-// write is one synchronous message; with kafka-go's 1s default BatchTimeout
-// every write waits a full second for a batch that never fills, capping
-// dead-lettering at ~1 msg/s. Observed live: ~3,200 legacy non-CloudEvents
-// messages ahead of today's WorkReleased events took ~1h to drain, so no
-// PICK task was created all day. Same fix as the other fleet DLQ writers.
-const dlqBatchTimeout = 10 * time.Millisecond
-
-// newDeadLetterWriter builds the WorkReleased consumer's DLQ writer.
+// newDeadLetterWriter builds the WorkReleased consumer's DLQ writer through
+// the shared outbound-kafka constructor, so it carries the same Hash balancer,
+// RequireAll acks and 10ms BatchTimeout as every other writer.
 func newDeadLetterWriter(brokers []string) *kafkago.Writer {
-	return &kafkago.Writer{
-		Addr:                   kafkago.TCP(brokers...),
-		Balancer:               &kafkago.LeastBytes{},
-		AllowAutoTopicCreation: true,
-		BatchTimeout:           dlqBatchTimeout,
-	}
+	return outboundkafka.NewDeadLetterWriter(brokers)
 }

@@ -344,6 +344,49 @@ func assertPackageManifestedOnTime(t *testing.T, cpt, manifestedAt time.Time, wa
 	}
 }
 
+// TestAnalyticsPublisher_PackageManifested_RetriedSlamPicksWorkedTask pins the
+// ADR-0026 tie-break: an order with TWO SLAM tasks (the first abandoned — lease
+// expired, back to Pending — and a retry that is being worked) is measured
+// against the retry's CPT and station, whatever order the repo returns them in.
+func TestAnalyticsPublisher_PackageManifested_RetriedSlamPicksWorkedTask(t *testing.T) {
+	retryCPT := time.Date(2026, 3, 1, 18, 0, 0, 0, time.UTC)
+	staleCPT := retryCPT.Add(-2 * time.Hour)
+	manifestedAt := retryCPT.Add(-time.Minute) // on time for the retry, late for the stale task
+
+	stale := task.New("slam-0", task.Slam, shared.NewCPT(staleCPT), "order-9", shared.NewCapabilitySet(), false, false)
+	claimedAt := staleCPT.Add(-time.Hour)
+	if err := stale.Claim("station-old", shared.NewCapabilitySet(), claimedAt, time.Minute); err != nil {
+		t.Fatalf("claim stale: %v", err)
+	}
+	if !stale.ExpireLeaseIfDue(claimedAt.Add(time.Hour)) {
+		t.Fatal("setup: the first SLAM task's lease should have expired")
+	}
+	retry := task.New("slam-1", task.Slam, shared.NewCPT(retryCPT), "order-9", shared.NewCapabilitySet(), false, false)
+	if err := retry.Claim("station-9", shared.NewCapabilitySet(), retryCPT.Add(-time.Hour), time.Hour); err != nil {
+		t.Fatalf("claim retry: %v", err)
+	}
+
+	for name, order := range map[string][]*task.Task{
+		"stale first": {stale, retry},
+		"retry first": {retry, stale},
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := &fakeAnalyticsWriter{}
+			repo := fakeTaskRepo{byOrderRef: map[shared.OrderRef][]*task.Task{"order-9": order}}
+			p := outboundkafka.NewAnalyticsPublisher(nil, repo, func() string { return "evt" })
+			p.Writer = w
+
+			if err := p.Publish(context.Background(), shared.NewPackageManifested("pkg-1", "order-9", manifestedAt)); err != nil {
+				t.Fatalf("Publish: %v", err)
+			}
+			_, data := decodeCE[map[string]any](t, w.msgs[0].Value)
+			if data["resolved"] != true || data["station_id"] != "station-9" || data["on_time"] != true {
+				t.Fatalf("want the worked retry (station-9, on time), got %v", data)
+			}
+		})
+	}
+}
+
 // TestAnalyticsPublisher_PackageManifested_UnresolvedWhenNoSLAMTask asserts
 // the fail-soft convention (ADR-0026): when no SLAM task can be found for
 // the package's OrderRef (an edge case that should not happen in practice —

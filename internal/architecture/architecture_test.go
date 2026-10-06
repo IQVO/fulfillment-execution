@@ -102,6 +102,66 @@ func TestHexagonalDependencyRules(t *testing.T) {
 	})
 }
 
+// TestAnalyticsIsolationRules enforces ADR-0012's isolation of the analytics
+// data product: internal/analytics/** is a self-contained read-model
+// (it imports nothing else from this module, so it can be lifted out or
+// run as its own deployable), and the OLTP core (domain, application) never
+// reaches into it. Adapters and cmd may depend on analytics — they are the
+// wiring.
+func TestAnalyticsIsolationRules(t *testing.T) {
+	moduleInfo := configuration.Load(modulePath)
+
+	t.Run("analytics imports nothing internal except analytics", func(t *testing.T) {
+		result := archgo.CheckArchitecture(moduleInfo, configuration.Config{
+			DependenciesRules: []*configuration.DependenciesRule{
+				{
+					Package: "**.internal.analytics.**",
+					ShouldOnlyDependsOn: &configuration.Dependencies{
+						Internal: []string{"**.internal.analytics.**"},
+					},
+				},
+			},
+		})
+
+		assertPasses(t, result)
+		assertRuleMatchedPackages(t, result)
+	})
+
+	t.Run("domain and application do not import analytics", func(t *testing.T) {
+		for _, layer := range []string{"**.domain.**", "**.application.**"} {
+			result := archgo.CheckArchitecture(moduleInfo, configuration.Config{
+				DependenciesRules: []*configuration.DependenciesRule{
+					{
+						Package: layer,
+						ShouldNotDependsOn: &configuration.Dependencies{
+							Internal: []string{"**.internal.analytics.**"},
+						},
+					},
+				},
+			})
+
+			assertPasses(t, result)
+			assertRuleMatchedPackages(t, result)
+		}
+	})
+}
+
+// assertRuleMatchedPackages guards against a vacuous pass: an arch-go glob
+// that matches no package passes trivially, which would silently disable the
+// rule if the package layout were ever renamed.
+func assertRuleMatchedPackages(t *testing.T, result *archgo.Result) {
+	t.Helper()
+
+	if result.DependenciesRuleResult == nil || len(result.DependenciesRuleResult.Results) == 0 {
+		t.Fatal("dependency rule produced no result")
+	}
+	for _, r := range result.DependenciesRuleResult.Results {
+		if len(r.Verifications) == 0 {
+			t.Fatalf("rule %q matched no packages: it would pass vacuously", r.Description)
+		}
+	}
+}
+
 // TestRepositoryPortImplementersFollowRepoNamingConvention is a bonus
 // layer-convention check: every struct in this module that implements the
 // TaskRepo port (defined in internal/application/ports) must have a simple
@@ -129,7 +189,7 @@ func assertPasses(t *testing.T, result *archgo.Result) {
 	t.Helper()
 
 	if !result.Pass {
-		t.Fatalf("architecture rule violated:\n%s", describeViolations(result))
+		t.Fatalf("%s", archViolation("dependency", "architecture", describeViolations(result)))
 	}
 }
 

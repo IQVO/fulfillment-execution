@@ -6,7 +6,7 @@ sidebar_position: 15
 description: An unimplemented EquipmentCommandPort outbound port, so the documented refusal to drive WCS/equipment directly is enforced by the compiler, not only by prose in openapi.yaml and the context map.
 ---
 
-# 12. Structural anti-corruption-layer seam for the (unbuilt) WCS tier
+# 15. Structural anti-corruption-layer seam for the (unbuilt) WCS tier
 
 ## Status
 

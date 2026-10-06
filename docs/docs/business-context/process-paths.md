@@ -29,7 +29,7 @@ In this service: a `PICK` task, typically requiring the `pick` capability.
 The domain event `ItemPicked` exists in the catalogue for the retrieval fact
 itself.
 
-:::note Honest status
+:::note[Honest status]
 `ItemPicked` is defined in `internal/domain/shared/events.go` and covered by
 the event tests, but no use case raises it today — the current Pick path is
 modelled at task granularity (claim → complete), not at item granularity. It
@@ -144,9 +144,13 @@ reasoning about Pick.
 
 The `WorkReleased` consumer derives the task type from
 `WorkReleased.data.path_id` via a real lookup against the fleet's declared
-process-path catalogue (`warehouse-infra`'s
-`config/process-paths/sortable-fc.yaml`, loaded once at startup into
-`internal/domain/pathcatalog.Catalogue`). An unrecognized `path_id` is a
+process-path catalogue, held in memory as
+`internal/domain/pathcatalog.Catalogue`. By default
+(`PATH_CATALOGUE_SOURCE=file`) it is loaded once at startup from
+`warehouse-infra`'s `config/process-paths/sortable-fc.yaml`; with
+`PATH_CATALOGUE_SOURCE=kafka` it is rebuilt by replaying
+`process-path-management`'s `ProcessPath*` events and kept current from
+them. An unrecognized `path_id` is a
 hard error — the message handling fails outright rather than silently
 defaulting to any particular task type. See
 [ADR-0017](../adr/0017-process-path-catalogue-as-configuration.md) for the
@@ -156,7 +160,6 @@ bug.
 
 Required capabilities are read directly from the catalogue entry for the
 matched path — the same capability vocabulary `workforce-management` uses
-when it plans headcount per path, because both services read the identical
-YAML file. That shared file is a **published language**, not a shared
-Go type: neither service imports the other's code, both simply agree on
-the same schema.
+when it plans headcount per path. That shared catalogue is a **published
+language**, not a shared Go type: neither service imports the other's code,
+both simply agree on the same schema.

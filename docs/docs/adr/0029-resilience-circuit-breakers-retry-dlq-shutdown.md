@@ -189,6 +189,13 @@ earlier in `main` run, guaranteed by defer's LIFO order to fire after
 every consumer/relay goroutine has already stopped touching those
 resources.
 
+The Helm chart wires it accordingly (2026-10 audit fix): the OLTP
+Deployment's `readinessProbe` points at `/readyz`, while `startupProbe` and
+`livenessProbe` stay on `/healthz`. The projector, reports and MCP processes
+serve only `/healthz` (they have no shutdown readiness gate), so their probes
+correctly remain on `/healthz`; giving them a `/readyz` is a separate change.
+`charts/fulfillment-execution/tests/test_probes_and_mcp_env.py` pins this.
+
 ## Consequences
 
 **Easier:**

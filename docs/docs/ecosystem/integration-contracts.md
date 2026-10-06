@@ -83,7 +83,7 @@ case was introduced for the Kafka path — creating a task from released work
 *is* what `CreateTask` is for, and giving the Kafka path its own parallel use
 case would have meant two code paths that must stay in agreement.
 
-:::info `path_id` resolves through the process-path catalogue
+:::info[path_id resolves through the process-path catalogue]
 Since [ADR-0017](../adr/0017-process-path-catalogue-as-configuration.md) the consumer calls `PathCatalogue.Lookup(path_id)`:
 the **longest** declared `matchPrefix` that prefixes the id (case-insensitive)
 wins, and the matched definition supplies both the task type (its `id`, e.g.
@@ -124,14 +124,17 @@ A unit test feeds the same `id` twice and asserts exactly one task exists.
 
 ### Failure handling
 
-A message that fails handling after the in-process retries (ADR-0029) is
-published to `warehouse.work-planning.events.dlq` with `x-dlq-*` failure
-headers, and the loop continues. A message that is not a valid CloudEvents
-1.0 event — including the retired flat `event_id`/`event_type` envelope — is
-a deterministic poison message: it is dead-lettered immediately, never
-retried and never parsed any other way. Because `MarkProcessed` runs
-*before* `CreateTask`, replaying a dead-lettered event requires clearing its
-`processed_events` row first.
+A message that fails handling after the in-process retries (ADR-0029: 3
+attempts with jittered backoff) is published to
+`warehouse.work-planning.events.dlq` with `x-dlq-*` failure headers, and the
+loop continues. A message that is not a valid CloudEvents 1.0 event —
+including the retired flat `event_id`/`event_type` envelope — is a
+deterministic poison message: it is dead-lettered immediately, never retried
+and never parsed any other way. The DLQ writer is wired only when
+`EVENT_PUBLISHER=kafka`; otherwise the failure is only logged. Because
+`MarkProcessed` runs *before* (and outside the transaction of) `CreateTask`,
+replaying a dead-lettered event requires clearing its `processed_events` row
+first.
 
 Consumer group: `WORK_RELEASED_CONSUMER_GROUP`, default `fulfillment-execution`.
 
@@ -211,8 +214,11 @@ integration contract.
 
 | Env var | Default | Effect |
 | --- | --- | --- |
-| `KAFKA_BROKERS` | `localhost:9092` | Comma-separated broker list for **both** the consumer and the publisher |
-| `EVENT_PUBLISHER` | `log` | `kafka` swaps in the Kafka publisher for `ports.EventPublisher` |
+| `KAFKA_BROKERS` | `localhost:9092` | Comma-separated broker list for the consumers, the publishers and the outbox relay |
+| `EVENT_PUBLISHER` | `log` | `kafka` swaps in the Kafka encoders (via the outbox when Postgres is set) for `ports.EventPublisher`, and wires the `WorkReleased` DLQ writer |
+| `WORK_RELEASED_CONSUMER_GROUP` | `fulfillment-execution` | Consumer group of the `WorkReleased` consumer |
+| `OUTBOX_RELAY_INTERVAL` | `1s` | Idle poll interval of the outbox relay |
+| `PATH_CATALOGUE_SOURCE` | `file` | `kafka` makes this service a consumer of `warehouse.process-path-management.events` |
 | `DATABASE_URL` | *(unset)* | Unset selects in-memory repositories **including** `ProcessedEvents` — idempotency then holds only for the lifetime of the process |
 
 That last row matters operationally: running with `EVENT_PUBLISHER=kafka` but

@@ -103,16 +103,18 @@ Per ADR-0008, the current posture for these internal, non-user-facing servers:
    OAuth 2.1 upgrade is a drop-in with no change to tool handlers.
 5. Servers **MUST** remain reachable only in-cluster; ingress **MUST** enforce
    HTTPS. A server **MUST NOT** be exposed to public/end-user traffic until the
-   OAuth 2.1 resource-server seam is taken (a future ADR-0009).
+   OAuth 2.1 resource-server seam is taken (a future ADR; ADR-0009 in this
+   repo is the unrelated fragile/hazmat flags record).
 6. When a tool must call another service, the server **MUST** authenticate as
    its own client for that hop and **MUST NOT** pass a client token through
    (confused-deputy prevention) — applies the day any upstream hop exists.
 
-:::warning This service does not currently conform to §7.1–§7.4
+:::warning[This service does not currently conform to §7.1–§7.4 or §8.2]
 [ADR-0022](../adr/0022-remove-rest-mcp-auth.md) removed the static-bearer
 auth layer from both this service's REST API and its MCP server (and
-supersedes ADR-0021). Today `cmd/mcp` accepts unauthenticated requests and
-has no read/read-write key classes. The rules above remain the estate
+supersedes ADR-0021). Today `cmd/mcp` accepts unauthenticated requests, has no
+read/read-write key classes, and has no server-side write-tool rate limit
+(§8.2). The rules above remain the estate
 standard; §7.5 (in-cluster only, never public) is what currently bounds the
 exposure here.
 :::

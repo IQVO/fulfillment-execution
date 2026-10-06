@@ -61,10 +61,12 @@ Concretely:
 - `internal/domain/` — `task`, `station`, `package`, `shared`. Pure Go. Its
   only imports are the standard library. Aggregates expose behaviour, keep
   their fields unexported, and return typed errors.
-- `internal/application/ports/` — the six outbound interfaces the application
-  needs: `TaskRepo`, `StationRepo`, `PackageRepo`, `EventPublisher`, `Clock`,
-  `ProcessedEvents`. Declared here, on the *consumer* side, not next to their
-  implementations.
+- `internal/application/ports/` — the twelve outbound interfaces the
+  application needs (six when this ADR was written): `TaskRepo`, `StationRepo`,
+  `PackageRepo`, `EventPublisher`, `Clock`, `ProcessedEvents`, and, added
+  since, `OrderConsolidationRepo`, `PathCatalogue`, `UnitOfWork`, `Metrics`,
+  `ProductClassificationLookup`, `LocationRoleLookup`. Declared here, on the
+  *consumer* side, not next to their implementations.
 - `internal/application/usecases/` — one struct per use case, dependencies as
   plain fields, depending only on the domain and on `ports`.
 - `internal/adapters/inbound/` — chi HTTP handlers, Kafka consumer. They
