@@ -141,7 +141,8 @@ components:
       description: Raised when the station holding the active claim completes the task. Published on `warehouse.fulfillment.events`,
         keyed (and `subject`-ed) by task id, enriched at publish time with `work_unit_id` (the task's
         order reference, so Work Planning can call RecordCompletion), and `associate_id`, `duration_seconds`,
-        `task_type` for labor-performance (ADR-0014, ADR-0023). Consumed by wes-work-planning and labor-performance.
+        `task_type` for labor-performance (ADR-0014, ADR-0023), and the optional `order_ref` (the order
+        key inventory-storage uses to confirm picks, ADR-0040). Consumed by wes-work-planning and labor-performance.
       contentType: application/cloudevents+json
       tags:
       - name: task
@@ -202,6 +203,12 @@ components:
                   - ARRIVAL
                   description: The completed task's own type; omitted only when the task can no longer
                     be found.
+                order_ref:
+                  type: string
+                  description: The order the completed task belongs to; the key inventory-storage uses to
+                    confirm picks. Optional and additive (the event stays v1) and omitted when the task
+                    has no order reference. Distinct from work_unit_id, which for order work is the per-line
+                    work unit id.
       examples:
       - name: taskCompleted
         headers:
@@ -223,6 +230,7 @@ components:
             associate_id: worker-42
             duration_seconds: 245
             task_type: PICK
+            order_ref: order-8a1f
     TaskCPTMissed:
       name: TaskCPTMissed
       title: TaskCPTMissed
@@ -623,6 +631,11 @@ components:
                 station_id:
                   type: string
                   description: Station id.
+                order_ref:
+                  type: string
+                  description: The order the completed task belongs to; the key inventory-storage uses to
+                    confirm picks. Optional and additive (the event stays v1) and omitted when the task
+                    has no order reference or cannot be found.
       examples:
       - name: analyticsTaskCompleted
         headers:
@@ -641,6 +654,7 @@ components:
             task_id: t1
             task_type: PICK
             station_id: s1
+            order_ref: order-1
     AnalyticsItemPicked:
       name: AnalyticsItemPicked
       title: ItemPicked
@@ -1079,7 +1093,8 @@ components:
                   format: date-time
                 ref:
                   type: string
-                  description: Release reference.
+                  description: Release reference. For order-originated work this is the order id; it is kept
+                    on the Task and published as TaskCompleted.order_ref (ADR-0040). For transfer work it is the demand id.
                 fragile:
                   type: boolean
                   description: Optional fragile packing hint (default false).

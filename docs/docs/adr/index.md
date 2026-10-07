@@ -131,3 +131,4 @@ gets a "Supersedes ADR-NNNN" line in its Context, the old one gets
 | [0037](./0037-sweeps-scheduled-by-cronjob-default-on.md) | The two sweeps are scheduled by Helm CronJobs, on by default (expire-leases every minute, sweep-cpt-misses every 5 minutes) | Accepted |
 | [0038](./0038-seal-package-expired-lease-is-not-claimed.md) | SealPackage with a missing or expired lease returns `task-not-claimed` (like Complete/RenewLease); another station's active lease stays `task-not-owner` | Accepted |
 | [0039](./0039-product-classification-local-copy.md) | Product classification from a local copy of product-master's `ProductClassified` events; `PRODUCT_CLASSIFICATION_MODE=kafka\|permissive`, `http` rejected at boot | Accepted |
+| [0040](./0040-task-completed-carries-order-ref.md) | `TaskCompleted` v1 (both topics) carries an optional `order_ref` so inventory-storage confirms picks per order; short picks not modelled | Accepted |

@@ -231,7 +231,7 @@ sequenceDiagram
     end
     UC->>R: Save - BEGIN UnitOfWork
     UC->>ENC: Publish TaskCompleted
-    ENC->>R: FindById for work_unit_id, task_type, claimedAt
+    ENC->>R: FindById for work_unit_id, order_ref, task_type, claimedAt
     ENC->>OB: INSERT integration row and analytics row - COMMIT
     IN-->>S: 204
     loop relay poll
