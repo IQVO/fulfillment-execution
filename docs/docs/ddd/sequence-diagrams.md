@@ -296,8 +296,8 @@ sequenceDiagram
 
 Source: `internal/application/usecases/seal_package.go`,
 `internal/domain/package/package.go`, `segregation.go`,
-`internal/adapters/outbound/productclassification/`. Omits the retry and
-circuit breaker around the classification client. The ownership check is
+`internal/adapters/outbound/productclassificationcopy/` (local copy of
+product-master's classifications, ADR-0039). The ownership check is
 `Task.VerifyHeldBy(stationId, now)`: it requires a lease held by the caller
 that has not expired at the `Clock`'s `now` (expiry is inclusive, as in
 `Complete`), and it does not free the task, so an expired lease is rejected

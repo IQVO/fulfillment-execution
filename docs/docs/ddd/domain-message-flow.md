@@ -81,7 +81,7 @@ sequenceDiagram
 
 Source: `internal/application/usecases/arrive_at_rebin.go`, `seal_package.go`,
 `run_slam.go`, `get_package.go`,
-`internal/adapters/outbound/productclassification/client.go`,
+`internal/adapters/outbound/productclassificationcopy/`,
 `internal/adapters/outbound/kafka/publisher.go`. Omits the divert branch
 (outside tolerance the package becomes `DIVERTED`, raising
 `WeightDiscrepancyDetected` and `PackageDiverted` on the analytics topic

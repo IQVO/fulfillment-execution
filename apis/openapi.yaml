@@ -755,8 +755,10 @@ paths:
             (`package-segregation-violation`, see
             [ADR-0010](/docs/adr/0010-package-segregation-and-sort-lane)).
             The segregation check only runs when the deployment has
-            `PRODUCT_CLASSIFICATION_MODE=http` configured; the default
-            permissive mode never rejects on this basis.
+            `PRODUCT_CLASSIFICATION_MODE=kafka` configured (a local copy of
+            product-master's classifications,
+            [ADR-0039](/docs/adr/0039-product-classification-local-copy));
+            the default permissive mode never rejects on this basis.
           content:
             application/problem+json:
               schema:

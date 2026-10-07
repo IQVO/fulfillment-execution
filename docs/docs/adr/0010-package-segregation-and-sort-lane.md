@@ -10,7 +10,12 @@ description: SealPackage performs a live, synchronous per-scanned-SKU classifica
 
 ## Status
 
-**Accepted.**
+**Accepted.** The live, synchronous lookup to inventory-storage (the
+`productclassification` HTTP client, `PRODUCT_CLASSIFICATION_MODE=http`) is
+**superseded by [ADR-0039](./0039-product-classification-local-copy.md)**:
+the same port now reads a local copy of product-master's ProductClassified
+events. The segregation matrix, `SortLane` and the fail-open semantics below
+still hold.
 
 ## Context
 
