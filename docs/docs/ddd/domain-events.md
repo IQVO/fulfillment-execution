@@ -70,6 +70,9 @@ errored — that is how the two Rebin events stay in-process.
 | `PackageDiverted` | `com.warehouse.wes.fulfillment-execution.package.PackageDiverted` | `RunSlam` (outside tolerance) | `PackageId` | — | `package_id` |
 | `LabelApplied` | `com.warehouse.wes.fulfillment-execution.package.LabelApplied` | `RunSlam` (within tolerance) | `PackageId` | — | `package_id` |
 | `PackageManifested` | `com.warehouse.wes.fulfillment-execution.package.PackageManifested` | `RunSlam` (within tolerance, alongside `LabelApplied`) | `PackageId`, `OrderRef` | `package_id`, `order_ref` | `package_id`, `order_ref`, `task_type`, `station_id`, `on_time`, `resolved` |
+| `TransferPicked` | `com.warehouse.wes.fulfillment-execution.transfer.TransferPicked` | `CompleteTask` (task with a TRANSFER_PICK correlation block) | `TaskId`, correlation block | `transfer_ref`, `demand_id`?, `work_unit_id`, `task_id`, `work_kind`, `site_id`?, `sku`?, `quantity`? | `task_id` |
+| `TransferDispatched` | `com.warehouse.wes.fulfillment-execution.transfer.TransferDispatched` | `CompleteTask` (TRANSFER_DISPATCH) | `TaskId`, correlation block | same shape as `TransferPicked` | `task_id` |
+| `TransferArrived` | `com.warehouse.wes.fulfillment-execution.transfer.TransferArrived` | `CompleteTask` (TRANSFER_ARRIVAL) | `TaskId`, correlation block | same shape as `TransferPicked` | `task_id` |
 | `ItemArrivedAtRebin` | *(none — never encoded)* | `ArriveAtRebin` | `OrderRef`, `LineId` | — | — |
 | `OrderConsolidated` | *(none — never encoded)* | `ArriveAtRebin` (completing arrival) | `OrderRef` | — | — |
 
@@ -105,6 +108,7 @@ because it is part of the intended model.
 | `warehouse.fulfillment.events` | `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` | `wes-work-planning` | `RecordCompletion(work_unit_id)` — the drum-buffer-rope feedback edge |
 | `warehouse.fulfillment.events` | `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` | `labor-performance` | Per-associate / per-task-type attribution ([ADR-0014](../adr/0014-labor-performance-integration-hooks.md), [ADR-0023](../adr/0023-task-type-on-wire.md)) |
 | `warehouse.fulfillment.events` | `com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed`, `com.warehouse.wes.fulfillment-execution.package.PackageManifested` | `order-management` | `RepromiseOrder` promise feedback loop ([ADR-0025](../adr/0025-cpt-missed-sweep-and-package-manifested.md)) |
+| `warehouse.fulfillment.events` | `...transfer.TransferPicked`, `...transfer.TransferDispatched`, `...transfer.TransferArrived` | `network-inventory-planning` (transfer saga), destination receipt/stow | Transfer custody facts, one per completed transfer task, selected by `work_kind` ([ADR-0036](../adr/0036-transfer-task-types-and-facts.md)) |
 | `warehouse.fulfillment.analytics` | `...task.TaskClaimed`, `...task.TaskCompleted`, `...task.LeaseExpired`, `...package.WeightDiscrepancyDetected`, `...package.PackageManifested` | this service's `cmd/fulfillment-projector`, group `fulfillment-analytics` | Projects the throughput rollup ([Throughput report](../analytics/throughput-report.md)); every other analytics type is acknowledged without projecting |
 
 The downstream consumers are the ones listed in `apis/asyncapi.yaml`; their

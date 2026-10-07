@@ -1,14 +1,19 @@
 {{- /*
-Scheduler for the two REST-triggered sweeps (ADR-0003, ADR-0025): nothing in
-this service calls POST /tasks/expire-leases or POST /tasks/sweep-cpt-misses
-on a timer, by design -- a Kubernetes CronJob is the external scheduler
-ADR-0003 names. Off by default (sweeps.enabled=false), which keeps today's
-behaviour of "an external caller invokes the endpoints". No in-process ticker
-is added (ADR-0025 rejected one).
+Scheduler for the two REST-triggered sweeps (ADR-0003, ADR-0025, ADR-0037):
+nothing in this service calls POST /tasks/expire-leases or
+POST /tasks/sweep-cpt-misses on a timer, by design -- a Kubernetes CronJob is
+the external scheduler ADR-0003 names. ON by default (sweeps.enabled=true,
+ADR-0037); set it false when an external caller drives the endpoints. No
+in-process ticker is added (ADR-0025 rejected one).
 
 The Job reuses the service's own alpine image and busybox `wget` (no extra
-image to pull) and POSTs to the in-cluster Service. busybox wget exits
-non-zero on an HTTP error status, so a failing sweep fails the Job.
+image to pull) and POSTs to the in-cluster Service. `--post-data=` makes
+busybox send a POST with `Content-Length: 0`; the two handlers read no body
+and require no Content-Type (PostExpireLeases / PostSweepCPTMisses in
+internal/adapters/inbound/http/handlers.go), and neither route sits behind the
+Idempotency-Key middleware (ADR-0028 covers POST /tasks only), so the empty
+POST is accepted. busybox wget exits non-zero on an HTTP error status, so a
+failing sweep fails the Job.
 */ -}}
 {{- if .Values.sweeps.enabled }}
 {{- $root := . }}
@@ -30,8 +35,8 @@ spec:
   # sweep-cpt-misses, re-publish TaskCPTMissed for the same tasks).
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: {{ $root.Values.sweeps.startingDeadlineSeconds }}
-  successfulJobsHistoryLimit: 1
-  failedJobsHistoryLimit: 3
+  successfulJobsHistoryLimit: {{ $root.Values.sweeps.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ $root.Values.sweeps.failedJobsHistoryLimit }}
   jobTemplate:
     spec:
       backoffLimit: 0

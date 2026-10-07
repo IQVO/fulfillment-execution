@@ -15,6 +15,7 @@ import (
 	"github.com/claudioed/fulfillment-execution/internal/adapters/kafka/cloudevents"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/events"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
+	"github.com/claudioed/fulfillment-execution/internal/application/ports"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
 	"github.com/claudioed/fulfillment-execution/internal/domain/pathcatalog"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
@@ -39,25 +40,37 @@ func testCatalogue() *pathcatalog.Catalogue {
 		{Id: "PACK", MatchPrefix: "pack", Direct: true, RequiredCapabilities: []string{"pack"}},
 		{Id: "REBIN", MatchPrefix: "rebin", Direct: true, RequiredCapabilities: []string{"rebin"}},
 		{Id: "SLAM", MatchPrefix: "slam", Direct: true, RequiredCapabilities: []string{"slam"}},
+		{Id: "DISPATCH", MatchPrefix: "dispatch", Direct: true, RequiredCapabilities: []string{"dispatch"}},
+		{Id: "ARRIVAL", MatchPrefix: "arrival", Direct: true, RequiredCapabilities: []string{"arrival"}},
 	})
 }
 
 func newConsumer(t *testing.T) (*kafka.Consumer, *memory.TaskRepo) {
 	t.Helper()
 	tasks := memory.NewTaskRepo()
+	apply := newApplyWorkReleased(tasks, memory.NewProcessedEventsRepo(), testCatalogue())
+	c := &kafka.Consumer{
+		Apply:  apply,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	return c, tasks
+}
+
+// newApplyWorkReleased builds the production use-case shape the consumer
+// now drives: CreateTask + processed-events claim + catalogue lookup
+// inside one (here nil — in-memory) UnitOfWork.
+func newApplyWorkReleased(tasks *memory.TaskRepo, processed ports.ProcessedEvents, catalogue ports.PathCatalogue) *usecases.ApplyWorkReleased {
 	createTask := &usecases.CreateTask{
 		Tasks:     tasks,
 		Publisher: events.NewBufferedPublisher(),
 		Clock:     memory.NewFixedClock(epoch),
 		NewId:     idSeq("t"),
 	}
-	c := &kafka.Consumer{
+	return &usecases.ApplyWorkReleased{
 		CreateTask: createTask,
-		Processed:  memory.NewProcessedEventsRepo(),
-		Catalogue:  testCatalogue(),
-		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Processed:  processed,
+		Catalogue:  catalogue,
 	}
-	return c, tasks
 }
 
 // fakeDeadLetterSink records every message written to it, so a dead-letter
@@ -203,7 +216,7 @@ func legacyFlatWorkReleasedJSON(eventId, pathId, workUnitId string) []byte {
 }
 
 func TestNewConsumerWithGroup_UsesSuppliedConsumerGroup(t *testing.T) {
-	c := kafka.NewConsumerWithGroup([]string{"broker:9092"}, "work-released", "e2s-fulfillment", nil, nil, nil, nil)
+	c := kafka.NewConsumerWithGroup([]string{"broker:9092"}, "work-released", "e2s-fulfillment", nil, nil)
 	defer c.Close()
 
 	config := c.Reader.Config()

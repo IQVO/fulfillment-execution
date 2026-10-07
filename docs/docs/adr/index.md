@@ -127,3 +127,6 @@ gets a "Supersedes ADR-NNNN" line in its Context, the old one gets
 | [0033](./0033-package-read-model.md) | Package read model — `GET /packages/{id}` and `GET /packages?orderRef=`; SLAM stays `204` | Accepted |
 | [0034](./0034-concurrency-control-for-consolidation-and-claim.md) | Optimistic/pessimistic concurrency for consolidation and claim CAS | Accepted |
 | [0035](./0035-kafka-hash-partition-key.md) | Kafka hash partition key — every message keyed by its aggregate id; shared synchronous-writer settings | Accepted |
+| [0036](./0036-transfer-task-types-and-facts.md) | Transfer task types (DISPATCH/ARRIVAL), atomic WorkReleased consumption, and per-work_kind transfer completion facts | Accepted |
+| [0037](./0037-sweeps-scheduled-by-cronjob-default-on.md) | The two sweeps are scheduled by Helm CronJobs, on by default (expire-leases every minute, sweep-cpt-misses every 5 minutes) | Accepted |
+| [0038](./0038-seal-package-expired-lease-is-not-claimed.md) | SealPackage with a missing or expired lease returns `task-not-claimed` (like Complete/RenewLease); another station's active lease stays `task-not-owner` | Accepted |

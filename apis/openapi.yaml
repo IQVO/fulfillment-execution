@@ -192,7 +192,7 @@ paths:
                     type: https://errors.fulfillment-execution.warehouse-systems.dev/invalid-request
                     title: The request is malformed or missing a required field
                     status: 400
-                    detail: type must be one of PICK, PACK, SLAM, REBIN
+                    detail: type must be one of PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL, DISPATCH, ARRIVAL
         "422":
           description: >
             The `Idempotency-Key` was already used with a request that had
@@ -743,9 +743,12 @@ paths:
                 instance: /tasks/20260101T120100.000000000/seal-package
         "409":
           description: >
-            Either `stationId` does not hold the active claim on this task
-            (it was never claimed by this station, or the claim/lease is no
-            longer active — `task-not-owner`), or a scanned item's live DOT
+            One of: `stationId` has no active claim on this task — it was
+            never claimed, or the lease has expired, whichever station held it
+            (`task-not-claimed`, the same type `complete` and `renew-lease`
+            return for that condition; [ADR-0038](/docs/adr/0038-seal-package-expired-lease-is-not-claimed));
+            an ACTIVE lease on the task is held by a different station
+            (`task-not-owner`); or a scanned item's live DOT
             hazard classification lookup found it incompatible — per the
             class-level 49 CFR §177.848-derived segregation matrix — with an
             item already scanned into this same package
@@ -1290,7 +1293,7 @@ components:
         via the WorkReleased Kafka event's rebin path (see the process-path
         catalogue) — but they exist in the task store and therefore appear
         in read-model responses alongside PICK/PACK/SLAM.
-      enum: [PICK, PACK, SLAM, REBIN]
+      enum: [PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL]
       example: PICK
 
     TaskStatus:
@@ -1803,7 +1806,7 @@ components:
             type: https://errors.fulfillment-execution.warehouse-systems.dev/invalid-request
             title: The request is malformed or missing a required field
             status: 400
-            detail: type must be one of PICK, PACK, SLAM, REBIN
+            detail: type must be one of PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL
 
     InternalError:
       description: An unexpected server-side failure (e.g. a repository or event-publisher error).

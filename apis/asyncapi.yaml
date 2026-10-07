@@ -63,6 +63,9 @@ channels:
         - $ref: '#/components/messages/TaskCompleted'
         - $ref: '#/components/messages/TaskCPTMissed'
         - $ref: '#/components/messages/PackageManifested'
+        - $ref: '#/components/messages/TransferPicked'
+        - $ref: '#/components/messages/TransferDispatched'
+        - $ref: '#/components/messages/TransferArrived'
   warehouse.fulfillment.analytics:
     description: Internal analytics stream (ADR-0012), keyed by aggregate id; read by this service's own
       analytics projector.
@@ -177,6 +180,8 @@ components:
                   - PACK
                   - SLAM
                   - REBIN
+                  - DISPATCH
+                  - ARRIVAL
                   description: The completed task's own type; omitted only when the task can no longer
                     be found.
       examples:
@@ -253,6 +258,8 @@ components:
                   - PACK
                   - SLAM
                   - REBIN
+                  - DISPATCH
+                  - ARRIVAL
                   description: The overdue task's own type; omitted when unknown.
                 cpt:
                   type: string
@@ -1061,6 +1068,29 @@ components:
                 gift_wrap:
                   type: boolean
                   description: Optional gift-wrap request (default false).
+                transfer_ref:
+                  type: string
+                  description: Present only for inter-warehouse-transfer work (the transfer saga's
+                    correlation id). Its presence turns the created Task into transfer work whose
+                    completion publishes exactly one transfer fact.
+                work_kind:
+                  type: string
+                  enum:
+                  - TRANSFER_PICK
+                  - TRANSFER_DISPATCH
+                  - TRANSFER_ARRIVAL
+                  description: Kind of transfer work; selects the completion fact. Required whenever
+                    transfer_ref is present, unknown values are rejected.
+                site_id:
+                  type: string
+                  description: Site the transfer fact is about (origin for pick/dispatch, destination
+                    for arrival).
+                sku:
+                  type: string
+                  description: SKU the transfer moves.
+                quantity:
+                  type: integer
+                  description: Units of sku the transfer moves.
       examples:
       - name: workReleased
         headers:
@@ -1080,6 +1110,176 @@ components:
             work_unit_id: wu-8a1f
             cpt: '2026-09-30T18:00:00Z'
             ref: release-1
+    TransferPicked:
+      name: TransferPicked
+      title: TransferPicked
+      summary: A TRANSFER_PICK task completed — transfer stock was picked at the origin site.
+      description: Published on `warehouse.fulfillment.events` when a task carrying an inter-warehouse-transfer
+        correlation block with work_kind TRANSFER_PICK completes. Exactly one transfer fact is selected
+        by work_kind at completion (see the transfer-task-facts ADR); non-transfer tasks never publish
+        one. Keyed (and `subject`-ed) by task id, `time` is the completion time. Consumed by the
+        transfer saga (network-inventory-planning) and destination receipt correlation.
+      contentType: application/cloudevents+json
+      tags:
+      - name: transfer
+      headers:
+        $ref: '#/components/schemas/KafkaHeaders'
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          required:
+          - type
+          - source
+          - dataschema
+          - data
+          properties:
+            type:
+              type: string
+              const: com.warehouse.wes.fulfillment-execution.transfer.TransferPicked
+            source:
+              type: string
+              const: /warehouse/fulfillment-execution
+            dataschema:
+              type: string
+              const: urn:warehouse:fulfillment-execution:events:TransferPicked:v1
+            data:
+              $ref: '#/components/schemas/TransferFactData'
+      examples:
+      - name: transferPicked
+        headers:
+          content-type: application/cloudevents+json; charset=UTF-8
+          traceparent: 00-8812c36621d214139a08949823716b93-14ddf02dbd8913ba-01
+        payload:
+          specversion: "1.0"
+          id: 6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b
+          source: /warehouse/fulfillment-execution
+          type: com.warehouse.wes.fulfillment-execution.transfer.TransferPicked
+          subject: task-tr-8a1f
+          time: '2026-10-06T15:04:05Z'
+          datacontenttype: application/json
+          dataschema: urn:warehouse:fulfillment-execution:events:TransferPicked:v1
+          data:
+            transfer_ref: tr-9f2a
+            demand_id: demand-77
+            work_unit_id: wu-tr-8a1f
+            task_id: task-tr-8a1f
+            work_kind: TRANSFER_PICK
+            site_id: site-north
+            sku: SKU-0042
+            quantity: 12
+    TransferDispatched:
+      name: TransferDispatched
+      title: TransferDispatched
+      summary: A TRANSFER_DISPATCH task completed — the transfer left the origin site.
+      description: Published on `warehouse.fulfillment.events` when a task carrying an inter-warehouse-transfer
+        correlation block with work_kind TRANSFER_DISPATCH completes. Same envelope and selection
+        rules as TransferPicked.
+      contentType: application/cloudevents+json
+      tags:
+      - name: transfer
+      headers:
+        $ref: '#/components/schemas/KafkaHeaders'
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          required:
+          - type
+          - source
+          - dataschema
+          - data
+          properties:
+            type:
+              type: string
+              const: com.warehouse.wes.fulfillment-execution.transfer.TransferDispatched
+            source:
+              type: string
+              const: /warehouse/fulfillment-execution
+            dataschema:
+              type: string
+              const: urn:warehouse:fulfillment-execution:events:TransferDispatched:v1
+            data:
+              $ref: '#/components/schemas/TransferFactData'
+      examples:
+      - name: transferDispatched
+        headers:
+          content-type: application/cloudevents+json; charset=UTF-8
+          traceparent: 00-8812c36621d214139a08949823716b93-14ddf02dbd8913ba-01
+        payload:
+          specversion: "1.0"
+          id: 6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b
+          source: /warehouse/fulfillment-execution
+          type: com.warehouse.wes.fulfillment-execution.transfer.TransferDispatched
+          subject: task-tr-8a1f
+          time: '2026-10-06T15:04:05Z'
+          datacontenttype: application/json
+          dataschema: urn:warehouse:fulfillment-execution:events:TransferDispatched:v1
+          data:
+            transfer_ref: tr-9f2a
+            demand_id: demand-77
+            work_unit_id: wu-tr-8a1f
+            task_id: task-tr-8a1f
+            work_kind: TRANSFER_DISPATCH
+            site_id: site-north
+            sku: SKU-0042
+            quantity: 12
+    TransferArrived:
+      name: TransferArrived
+      title: TransferArrived
+      summary: A TRANSFER_ARRIVAL task completed — the transfer reached the destination site.
+      description: Published on `warehouse.fulfillment.events` when a task carrying an inter-warehouse-transfer
+        correlation block with work_kind TRANSFER_ARRIVAL completes. Same envelope and selection
+        rules as TransferPicked; destination receipt/stow correlates on transfer_ref.
+      contentType: application/cloudevents+json
+      tags:
+      - name: transfer
+      headers:
+        $ref: '#/components/schemas/KafkaHeaders'
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          required:
+          - type
+          - source
+          - dataschema
+          - data
+          properties:
+            type:
+              type: string
+              const: com.warehouse.wes.fulfillment-execution.transfer.TransferArrived
+            source:
+              type: string
+              const: /warehouse/fulfillment-execution
+            dataschema:
+              type: string
+              const: urn:warehouse:fulfillment-execution:events:TransferArrived:v1
+            data:
+              $ref: '#/components/schemas/TransferFactData'
+      examples:
+      - name: transferArrived
+        headers:
+          content-type: application/cloudevents+json; charset=UTF-8
+          traceparent: 00-8812c36621d214139a08949823716b93-14ddf02dbd8913ba-01
+        payload:
+          specversion: "1.0"
+          id: 6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b
+          source: /warehouse/fulfillment-execution
+          type: com.warehouse.wes.fulfillment-execution.transfer.TransferArrived
+          subject: task-tr-8a1f
+          time: '2026-10-06T15:04:05Z'
+          datacontenttype: application/json
+          dataschema: urn:warehouse:fulfillment-execution:events:TransferArrived:v1
+          data:
+            transfer_ref: tr-9f2a
+            demand_id: demand-77
+            work_unit_id: wu-tr-8a1f
+            task_id: task-tr-8a1f
+            work_kind: TRANSFER_ARRIVAL
+            site_id: site-south
+            sku: SKU-0042
+            quantity: 12
     ProcessPathCreated:
       name: ProcessPathCreated
       title: ProcessPathCreated
@@ -1297,6 +1497,44 @@ components:
           data:
             path_id: PICK
   schemas:
+    TransferFactData:
+      type: object
+      required:
+      - transfer_ref
+      - work_unit_id
+      - task_id
+      - work_kind
+      description: The payload every transfer fact (TransferPicked / TransferDispatched /
+        TransferArrived) carries — the transfer correlation block the completed Task carried,
+        stamped at release time.
+      properties:
+        transfer_ref:
+          type: string
+          description: The transfer saga's correlation id.
+        demand_id:
+          type: string
+          description: The work-demand reference the release carried; omitted when absent.
+        work_unit_id:
+          type: string
+          description: The completed task's work unit id (its order reference).
+        task_id:
+          type: string
+          description: The completing task id — also the Kafka key and CloudEvents subject.
+        work_kind:
+          type: string
+          enum:
+          - TRANSFER_PICK
+          - TRANSFER_DISPATCH
+          - TRANSFER_ARRIVAL
+        site_id:
+          type: string
+          description: Site the fact is about; omitted when the release carried none.
+        sku:
+          type: string
+          description: SKU the transfer moves; omitted when the release carried none.
+        quantity:
+          type: integer
+          description: Units of sku; omitted when the release carried none.
     KafkaHeaders:
       type: object
       description: Kafka message headers carried by every message.

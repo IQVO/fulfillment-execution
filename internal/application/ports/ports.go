@@ -160,6 +160,20 @@ type ProcessedEvents interface {
 	MarkProcessed(ctx context.Context, eventId string) (bool, error)
 }
 
+// ProcessedEventReleaser is an OPTIONAL capability of a ProcessedEvents
+// repo that has no transactional backing (the in-memory adapter). When
+// the WorkReleased consumer runs without a UnitOfWork, its
+// processed-event claim cannot roll back with a failed task creation, so
+// the consumer calls ReleaseProcessed to undo the claim instead; the next
+// retry of the same event then re-applies it rather than skipping it as
+// a redelivery. A transactional repo (Postgres) never needs it: the claim
+// is written inside the UnitOfWork's transaction and rolls back on its
+// own. Port of wes-work-planning's ports.ProcessedEventReleaser (its
+// ADR-0028), used the same way.
+type ProcessedEventReleaser interface {
+	ReleaseProcessed(ctx context.Context, eventId string) error
+}
+
 // ClassificationInfo is the placement/segregation-relevant subset of a
 // SKU's classification, as seen from this bounded context — the result of
 // the live, synchronous cross-context lookup SealPackage uses per scanned

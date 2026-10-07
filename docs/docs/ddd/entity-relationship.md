@@ -26,13 +26,13 @@ draw no relationship lines. The logical links are explained below the
 diagrams — each one crosses an aggregate boundary, which is exactly why it
 is held by id and not by a constraint.
 
-## OLTP schema (final, after 0013)
+## OLTP schema (final, after 0014)
 
 ```mermaid
 erDiagram
     tasks {
         text id PK
-        text task_type "PICK, PACK, SLAM, REBIN"
+        text task_type "PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL"
         text status "PENDING, CLAIMED, COMPLETED"
         timestamptz cpt
         text order_ref "indexed"
@@ -42,6 +42,12 @@ erDiagram
         boolean fragile "0003"
         boolean gift_wrap "0005"
         timestamptz claimed_at "0007, nullable"
+        text transfer_ref "0014, nullable - present means transfer work"
+        text demand_id "0014, nullable"
+        text work_kind "0014, nullable - TRANSFER_PICK|TRANSFER_DISPATCH|TRANSFER_ARRIVAL"
+        text site_id "0014, nullable"
+        text sku "0014, nullable"
+        integer quantity "0014, nullable"
     }
     stations {
         text id PK
@@ -172,7 +178,7 @@ Source: `migrations/analytics/0001_report.up.sql`,
 | `outbox_events` | transactional outbox, drained by the relay in `cmd/execution` ([ADR-0020](../adr/0020-transactional-outbox.md)) | infrastructure |
 | `processed_events` | inbox dedupe for the `WorkReleased` consumer (`ports.ProcessedEvents`) | infrastructure |
 | `idempotency_keys` | `Idempotency-Key` replay store for `POST /tasks` ([ADR-0028](../adr/0028-idempotency-key-middleware.md)) | infrastructure |
-| `domain_events` | created by `0001_init`, **not read or written by any code today** | legacy infrastructure |
+| `domain_events` | created by `0001_init`; **Decided 2026-10-06: KEEP — legacy, unused; retained (additive migrations only).** Not read or written by any code; dropping is destructive and needs explicit approval, dead schema is harmless | legacy infrastructure |
 | `schema_migrations` | golang-migrate version table (one per database) | infrastructure |
 | `throughput_rollup` | throughput and on-time-to-CPT projection ([ADR-0026](../adr/0026-on-time-to-cpt-kpi.md)) | analytics projection |
 | `analytics_pending_claims` | claim times waiting for a completion | analytics projection state |

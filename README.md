@@ -219,7 +219,7 @@ still starts and serves at full speed — telemetry is simply dropped.
 | Signal | What |
 |--------|------|
 | Traces | One server span per HTTP request (via `otelchi`), named after the **route pattern** (`POST /tasks/{id}/complete`) rather than the raw path; a child span per Postgres query/batch/copy/acquire (via `otelpgx`), carrying the parameterised SQL — query values are never recorded; `kafka.publish <topic>` / `kafka.consume <topic>` spans around the Kafka boundary |
-| Metrics | `http.server.request.duration` (histogram, seconds, by route + method + status); `fulfillment.tasks.claimed` and `fulfillment.tasks.completed` counters attributed by `task.type` (PICK \| PACK \| SLAM \| REBIN); pgxpool connection gauges; Go runtime metrics (goroutines, GC, memory) |
+| Metrics | `http.server.request.duration` (histogram, seconds, by route + method + status); `fulfillment.tasks.claimed` and `fulfillment.tasks.completed` counters attributed by `task.type` (PICK \| PACK \| SLAM \| REBIN \| DISPATCH \| ARRIVAL); pgxpool connection gauges; Go runtime metrics (goroutines, GC, memory) |
 | Logs | Structured JSON on stdout. Any log emitted while a span is active also carries `trace_id` and `span_id`, so a log line links straight to its trace |
 
 The two task counters are incremented inside the `ClaimNext` and
@@ -464,10 +464,13 @@ curl -sX POST localhost:8080/tasks/expire-leases
 ```
 
 Nothing in the service calls this (or `POST /tasks/sweep-cpt-misses`) on a
-timer. In Kubernetes, set `sweeps.enabled=true` on the Helm chart to run both
-as `CronJob`s (default off; schedules via `sweeps.expireLeases.schedule` /
-`sweeps.cptMisses.schedule`). `sweep-cpt-misses` re-publishes `TaskCPTMissed`
-for every overdue task on every pass, so keep its schedule coarse.
+timer. In Kubernetes the Helm chart runs both as `CronJob`s, **on by default**
+(`sweeps.enabled: true`; `expire-leases` every minute, `sweep-cpt-misses` every
+5 minutes; override via `sweeps.expireLeases.schedule` /
+`sweeps.cptMisses.schedule`; `concurrencyPolicy: Forbid`; ADR-0037). Set
+`sweeps.enabled=false` if an external caller drives the endpoints instead.
+`sweep-cpt-misses` re-publishes `TaskCPTMissed` for every overdue task on every
+pass, so `TaskCPTMissed` volume scales with that cadence — keep it coarse.
 
 ### Health check
 
@@ -750,5 +753,6 @@ python3 charts/fulfillment-execution/tests/test_sweeps_cronjob.py
 ```
 
 which proves every Service selects exactly one Deployment — the OLTP Service
-must never select the frontend, analytics or MCP pods — and that the opt-in
-sweep CronJobs render only when `sweeps.enabled=true`.
+must never select the frontend, analytics or MCP pods — and that the sweep
+CronJobs render by default (every minute / every 5 minutes) and are dropped by
+`sweeps.enabled=false`.

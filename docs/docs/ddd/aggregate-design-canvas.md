@@ -208,8 +208,9 @@ memory and saves the package already `SEALED`.
 
 Plus application-level rules in `SealPackage`: the task must be a `PACK`
 task (`usecases.ErrWrongTaskType`) and the caller must hold an unexpired
-lease on it (`Task.VerifyHeldBy` → `task.ErrNotOwner` for a missing, expired
-or other-station lease); one package per task
+lease on it (`Task.VerifyHeldBy` → `task.ErrNotClaimed` for a missing or
+expired lease, `task.ErrNotOwner` for an active lease of another station;
+[ADR-0038](../adr/0038-seal-package-expired-lease-is-not-claimed.md)); one package per task
 (`PackageRepo.FindByTaskId` short-circuit, unique index
 `idx_packages_task_id`).
 

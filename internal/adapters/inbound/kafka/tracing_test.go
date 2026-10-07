@@ -2,6 +2,8 @@ package kafka_test
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"testing"
 
 	kafkago "github.com/segmentio/kafka-go"
@@ -63,9 +65,9 @@ func workReleasedMessage(t *testing.T, eventId string) kafkago.Message {
 func TestHandle_JoinsTheProducersTrace(t *testing.T) {
 	recorder := installRecorder(t)
 
-	c, _ := newConsumer(t)
 	captured := &ctxCapturingProcessedEvents{inner: memory.NewProcessedEventsRepo()}
-	c.Processed = captured
+	apply := newApplyWorkReleased(memory.NewTaskRepo(), captured, testCatalogue())
+	c := &kafka.Consumer{Apply: apply, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 
 	// Stand in for wes-work-planning's producer span.
 	producerCtx, producerSpan := otel.Tracer("producer").Start(context.Background(), "kafka.publish warehouse.work-planning.events")

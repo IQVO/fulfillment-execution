@@ -53,7 +53,9 @@ While claimed:
 
 - No other station can claim it. `Task.Claim` returns `ErrAlreadyClaimed`.
 - Only the owning station may renew or complete it — anyone else gets
-  `ErrNotOwner`, mapped to HTTP `409`.
+  `ErrNotOwner`, mapped to HTTP `409`. A lease that has lapsed (or never
+  existed) is `ErrNotClaimed` on renew, complete **and** seal-package, whoever
+  asks ([ADR-0038](../adr/0038-seal-package-expired-lease-is-not-claimed.md)).
 - The owner may extend the lease indefinitely via
   `POST /tasks/{id}/renew-lease` — the right move for legitimately long work
   (a deep-aisle pick, an awkward carton) rather than picking one lease
@@ -113,11 +115,15 @@ is a new occurrence with a new CloudEvents `id`, so consumers must be
 idempotent on their own business key
 ([ADR-0025](../adr/0025-cpt-missed-sweep-and-package-manifested.md)). Nothing
 in the service runs either sweep on a timer; both are Clock-driven but
-externally triggered over HTTP. The Helm chart can deploy that external
-scheduler as Kubernetes `CronJob`s (`sweeps.enabled`, **off by default**, so
-nothing changes unless a deployment opts in — see
-[ADR-0003](../adr/0003-lease-based-at-most-once-claiming.md)); without it, some
-other caller has to POST the endpoints.
+externally triggered over HTTP. The Helm chart deploys that external scheduler
+as Kubernetes `CronJob`s, **on by default** (`sweeps.enabled: true`):
+`expire-leases` every minute, `sweep-cpt-misses` every 5 minutes, both
+configurable per environment and run with `concurrencyPolicy: Forbid` — see
+[ADR-0037](../adr/0037-sweeps-scheduled-by-cronjob-default-on.md) and
+[ADR-0003](../adr/0003-lease-based-at-most-once-claiming.md). Set
+`sweeps.enabled=false` only when some other caller POSTs the endpoints. Since an
+overdue task re-fires on every CPT pass, `TaskCPTMissed` volume scales with the
+CPT sweep cadence.
 
 ## The Pack path continues into Package
 
