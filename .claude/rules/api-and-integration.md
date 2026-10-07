@@ -145,6 +145,7 @@ found for `task_type`). `task_type` is read directly off the same `Task`
 | Source context | Topic | Full CloudEvents `type` | Effect here |
 | --- | --- | --- | --- |
 | `wes-work-planning` | `warehouse.work-planning.events` | `com.warehouse.wes.work-planning.workunit.WorkReleased` | Creates a `Task` via `CreateTask` |
+| `product-master` | `warehouse.product-master.events` | `com.warehouse.wms.product-master.product.ProductClassified` (every other type ignored) | Only when `PRODUCT_CLASSIFICATION_MODE=kafka`: version-guarded upsert of `product_classification_copy`, read by `SealPackage` (ADR-0039). Group `PRODUCT_CLASSIFICATION_CONSUMER_GROUP` (boot error when unset in kafka mode); FetchMessage, claim + upsert in one `UnitOfWork`, then CommitMessages |
 | `process-path-management` | `warehouse.process-path-management.events` | `com.warehouse.wes.process-path-management.processpath.ProcessPath{Created,Updated,Deactivated}` | Only when `PATH_CATALOGUE_SOURCE=kafka` (default `file`): replays into the in-memory process-path catalogue (`outbound/kafkacatalog`) |
 | this service | `warehouse.fulfillment.analytics` | the five projecting analytics types | analytics projector (`inbound/kafka/analytics_consumer.go`) |
 
@@ -153,7 +154,8 @@ Consumers decode with `cloudevents.Decode`, dispatch on the FULL `type`
 `time`/`subject` from attributes and the payload via `DataAs`. A message that
 fails CloudEvents validation (incl. the retired flat envelope) wraps
 `cloudevents.ErrNotCloudEvent`: the `WorkReleased` consumer dead-letters it
-to `<topic>.dlq`; the catalogue consumer and projector WARN-log and skip it.
+to `<topic>.dlq`; the catalogue consumer, the projector and the
+`ProductClassified` consumer WARN-log and skip it.
 
 The `WorkReleased` Anti-Corruption Layer maps `data.path_id` -> `task.Type`
 via the process-path catalogue (ADR-0017: `pick*`->PICK, `pack*`->PACK,
@@ -164,12 +166,17 @@ a hard handling error — there is no default-to-PICK. Idempotent via
 primary-key-backed dedup; in-memory adapter uses a mutex map). Consumer
 group: `WORK_RELEASED_CONSUMER_GROUP`, default `fulfillment-execution`.
 
-## Outbound synchronous calls (both permissive by default)
+## Outbound synchronous calls (permissive by default)
 
 | Target | Endpoint | Enabled by | Used by |
 | --- | --- | --- | --- |
-| `inventory-storage` | `GET /products/{sku}/classification` | `PRODUCT_CLASSIFICATION_MODE=http` + `INVENTORY_STORAGE_BASE_URL` | `SealPackage` per-SKU DOT hazard lookup (ADR-0010) |
 | `facility-layout` | `GET /locations/{locationCode}` | `LOCATION_ROLE_MODE=http` + `FACILITY_LAYOUT_BASE_URL` | `RegisterStation` WorkCenter role check (ADR-0024) |
+
+Product classification is NOT a synchronous call any more: `SealPackage`'s
+`ProductClassificationLookup` reads the local copy fed by product-master's
+events (`PRODUCT_CLASSIFICATION_MODE=kafka|permissive`, ADR-0039). The old
+inventory-storage REST lookup and `INVENTORY_STORAGE_BASE_URL` are removed;
+`PRODUCT_CLASSIFICATION_MODE=http` fails the boot.
 
 Inbound synchronous callers: `workforce-management` calls
 `GET /capacity/{capability}` (ADR-0018); the console BFF calls

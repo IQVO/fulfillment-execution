@@ -101,7 +101,7 @@ gets a "Supersedes ADR-NNNN" line in its Context, the old one gets
 | [0007](./0007-godog-bdd-acceptance-tests.md) | godog (Gherkin) acceptance tests for the invariants | Accepted |
 | [0008](./0008-mcp-inbound-adapter.md) | Model Context Protocol as an inbound adapter, not a new service | Accepted (auth section superseded by [ADR-0022](./0022-remove-rest-mcp-auth.md)) |
 | [0009](./0009-fragile-and-hazmat-handling-flags.md) | Fragile and hazmat handling flags carried on Task and Package | Accepted |
-| [0010](./0010-package-segregation-and-sort-lane.md) | Live per-item DOT hazard classification, same-package segregation, and SortLane | Accepted |
+| [0010](./0010-package-segregation-and-sort-lane.md) | Live per-item DOT hazard classification, same-package segregation, and SortLane | Accepted (live lookup superseded by [ADR-0039](./0039-product-classification-local-copy.md)) |
 | [0011](./0011-gift-wrap-handling-flag.md) | Gift wrap handling flag carried on Task and Package | Accepted |
 | [0012](./0012-analytical-data-product.md) | Per-service analytical data product (report) via a separate analytics topic | Accepted |
 | [0013](./0013-fulfillment-mfe-console-adoption.md) | Adopt the fleet's micro-frontend console architecture — `fulfillment-mfe`, `GET /tasks?orderRef=`, and CORS | Accepted |
@@ -130,3 +130,4 @@ gets a "Supersedes ADR-NNNN" line in its Context, the old one gets
 | [0036](./0036-transfer-task-types-and-facts.md) | Transfer task types (DISPATCH/ARRIVAL), atomic WorkReleased consumption, and per-work_kind transfer completion facts | Accepted |
 | [0037](./0037-sweeps-scheduled-by-cronjob-default-on.md) | The two sweeps are scheduled by Helm CronJobs, on by default (expire-leases every minute, sweep-cpt-misses every 5 minutes) | Accepted |
 | [0038](./0038-seal-package-expired-lease-is-not-claimed.md) | SealPackage with a missing or expired lease returns `task-not-claimed` (like Complete/RenewLease); another station's active lease stays `task-not-owner` | Accepted |
+| [0039](./0039-product-classification-local-copy.md) | Product classification from a local copy of product-master's `ProductClassified` events; `PRODUCT_CLASSIFICATION_MODE=kafka\|permissive`, `http` rejected at boot | Accepted |

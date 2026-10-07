@@ -181,7 +181,8 @@ application layer depends on these interfaces; adapters implement them.
 | `EventPublisher` | `Publish(ctx, events...)` | `events` (log / buffered / multi), `kafka` (integration + analytics), `postgres.OutboxPublisher` |
 | `Clock` | `Now()` | `memory.SystemClock`, fixed clocks in tests |
 | `ProcessedEvents` | `MarkProcessed(ctx, eventId) (bool, error)` | `memory`, `postgres` |
-| `ProductClassificationLookup` | `GetClassification(ctx, sku) (ClassificationInfo, error)` | `productclassification` (http client, permissive no-op) |
+| `ProductClassificationLookup` | `GetClassification(ctx, sku) (ClassificationInfo, error)` | `productclassificationcopy` (Postgres / in-memory local copy, permissive no-op; ADR-0039) |
+| `ProductClassificationCopy` | `UpsertIfNewer(ctx, rec) (bool, error)` | `productclassificationcopy` (written by `ApplyProductClassified`) |
 | `LocationRoleLookup` | `GetRole(ctx, locationCode) (LocationRoleInfo, error)` | `facilitylayout` (http client, permissive no-op) |
 | `PathCatalogue` | `Lookup(pathId)` | `pathcatalog.Catalogue`, loaded by `filecatalog` or `kafkacatalog` |
 | `UnitOfWork` | `Execute(ctx, fn)` | `postgres` (transaction + outbox); nil in memory mode |

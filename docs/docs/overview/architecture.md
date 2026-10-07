@@ -42,7 +42,8 @@ flowchart TB
         MEM["memory<br/>thread-safe repos, SystemClock"]
         EV["events<br/>log / buffered / multi publisher"]
         KOUT["kafka<br/>integration + analytics publishers"]
-        HTTPOUT["productclassification · facilitylayout<br/>HTTP lookups (permissive by default)"]
+        HTTPOUT["facilitylayout<br/>HTTP lookup (permissive by default)"]
+        PCC["productclassificationcopy<br/>local copy of product-master classifications"]
         CAT["filecatalog · kafkacatalog<br/>process-path catalogue sources"]
     end
 
@@ -63,6 +64,7 @@ flowchart TB
     EV -.implements.-> P
     KOUT -.implements.-> P
     HTTPOUT -.implements.-> P
+    PCC -.implements.-> P
     CAT -.loads.-> PC
 ```
 
@@ -97,7 +99,7 @@ internal/
     usecases/                  one struct per use case (17 of them)
   adapters/
     inbound/http/              chi router, handlers, DTOs, RFC 7807 error mapping
-    inbound/kafka/             WorkReleased consumer + analytics projector consumer
+    inbound/kafka/             WorkReleased + ProductClassified consumers, analytics projector consumer
     inbound/mcp/               MCP tools (curated, governance-tested)
     outbound/postgres/         pgxpool repos + migrations + transactional outbox
     outbound/memory/           in-memory repos for tests and local runs
@@ -106,7 +108,7 @@ internal/
     outbound/analyticsstore/   analytical DB writer + read-only reader
     outbound/filecatalog/      process-path catalogue file loader
     outbound/kafkacatalog/     process-path catalogue Kafka replay
-    outbound/productclassification/  inventory-storage hazard lookup (opt-in)
+    outbound/productclassificationcopy/  local copy of product-master classifications (ADR-0039)
     outbound/facilitylayout/   facility-layout location-role lookup (opt-in)
   observability/               OpenTelemetry traces, metrics, slog
   architecture/                arch-go fitness tests (test-only package)

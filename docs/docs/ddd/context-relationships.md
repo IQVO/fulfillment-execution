@@ -130,18 +130,26 @@ They also share a **published language** for capability names — `pick`,
 `pack`, `slam`, `rebin` — declared once in the process-path catalogue. That is
 a shared *vocabulary*, not a shared type.
 
-### `fulfillment-execution` → `inventory-storage` — **Customer/Supplier + ACL (one opt-in lookup)**
+### `fulfillment-execution` → `inventory-storage` — **Separate Ways**
 
 `inventory-storage` is the WMS-tier authority on stock reality. This service
 does **not** consume its events: stock reality reaches it transitively, via
 what `wes-work-planning` chooses to release. A `Task` carries an `orderRef`,
 never a bin.
 
-The one direct edge is a synchronous read of product classification: with
-`PRODUCT_CLASSIFICATION_MODE=http`, `SealPackage` asks
-`GET /products/{sku}/classification` for each scanned SKU's DOT hazard class
-to enforce package segregation
-([ADR-0010](../adr/0010-package-segregation-and-sort-lane.md)). The response is
+The former direct edge, a synchronous `GET /products/{sku}/classification`
+per scanned SKU (`PRODUCT_CLASSIFICATION_MODE=http`, ADR-0010), was removed:
+classification moved to product-master (below).
+
+### `product-master` → `fulfillment-execution` — **Published Language + ACL over a local copy (opt-in)**
+
+With `PRODUCT_CLASSIFICATION_MODE=kafka`, a consumer of
+`warehouse.product-master.events` keeps `product_classification_copy` current
+from `ProductClassified` events (version-guarded, deduped on the CloudEvents
+`id`), and `SealPackage` reads each scanned SKU's DOT hazard class from it to
+enforce package segregation
+([ADR-0039](../adr/0039-product-classification-local-copy.md),
+[ADR-0010](../adr/0010-package-segregation-and-sort-lane.md)). The row is
 translated into a local `ClassificationInfo` at the port; the default
 permissive adapter skips the lookup entirely.
 

@@ -53,7 +53,8 @@ migrate -path migrations -database "$DATABASE_URL" up
 | `WORK_RELEASED_CONSUMER_GROUP` | `fulfillment-execution` | Consumer group of the `WorkReleased` consumer |
 | `PATH_CATALOGUE_SOURCE` | `file` | `file` loads `PATH_CATALOGUE_FILE`; `kafka` replays the catalogue from `warehouse.process-path-management.events` ([ADR-0017](../adr/0017-process-path-catalogue-as-configuration.md)) |
 | `PATH_CATALOGUE_FILE` | `/etc/fulfillment-execution/process-paths.yaml` | Process-path catalogue YAML. **Required for `go run`**: a missing file is a fatal boot error. Point it at `warehouse-infra`'s `config/process-paths/sortable-fc.yaml` |
-| `PRODUCT_CLASSIFICATION_MODE` | `permissive` | `http` enables the inventory-storage hazard lookup (needs `INVENTORY_STORAGE_BASE_URL`) |
+| `PRODUCT_CLASSIFICATION_MODE` | `permissive` | `kafka` makes SealPackage's hazard lookup read a local copy of product-master's `ProductClassified` events (needs `PRODUCT_CLASSIFICATION_CONSUMER_GROUP`, [ADR-0039](../adr/0039-product-classification-local-copy.md)); `http` was removed and fails the boot |
+| `PRODUCT_CLASSIFICATION_CONSUMER_GROUP` | (unset) | Consumer group of the `ProductClassified` consumer on `warehouse.product-master.events`; required with `PRODUCT_CLASSIFICATION_MODE=kafka` |
 | `LOCATION_ROLE_MODE` | `permissive` | `http` enables the facility-layout WorkCenter role check (needs `FACILITY_LAYOUT_BASE_URL`) |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:5173,http://localhost:5184` | Browser origins allowed by the CORS middleware |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |

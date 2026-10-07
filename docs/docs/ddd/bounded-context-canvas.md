@@ -85,7 +85,7 @@ completions and missed CPTs back to planning, labour and order management.
 | `order-management` | `TaskCPTMissed` | Event | Kafka `warehouse.fulfillment.events`, `com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed` | Published Language |
 | `order-management` | `PackageManifested` | Event | Kafka `warehouse.fulfillment.events`, `com.warehouse.wes.fulfillment-execution.package.PackageManifested` | Published Language |
 | own analytics read side | 10 analytics events (`TaskCreated`, `TaskClaimed`, `LeaseExpired`, `TaskCompleted`, `ItemPicked`, `PackageSealed`, `WeightDiscrepancyDetected`, `PackageDiverted`, `LabelApplied`, `PackageManifested`) | Event | Kafka `warehouse.fulfillment.analytics`, `com.warehouse.wes.fulfillment-execution.<task or package>.<Event>` | internal (same context) |
-| `inventory-storage` (opt-in) | Product classification lookup | Query | REST `GET /products/{sku}/classification` (`PRODUCT_CLASSIFICATION_MODE=http`) | Customer/Supplier, ACL on this side |
+| `product-master` (opt-in) | `ProductClassified` into a local classification copy | Event | Kafka `warehouse.product-master.events`, `com.warehouse.wms.product-master.product.ProductClassified` (`PRODUCT_CLASSIFICATION_MODE=kafka`, ADR-0039) | Published Language, ACL on this side |
 | `facility-layout` (opt-in) | Location role lookup | Query | REST `GET /locations/{locationCode}` (`LOCATION_ROLE_MODE=http`) | Conformist behind ACL |
 | `wes-work-planning` (operators) | Poison or failed `WorkReleased` | Event | Kafka `warehouse.work-planning.events.dlq` (`EVENT_PUBLISHER=kafka`) | — |
 | WCS / equipment | none | — | none — `ports.EquipmentCommandPort` has no methods | strategic only |

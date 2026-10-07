@@ -27,7 +27,6 @@ import (
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/kafkacatalog"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/postgres"
-	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/productclassification"
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
 	"github.com/claudioed/fulfillment-execution/internal/composition"
@@ -50,6 +49,10 @@ func main() {
 func run() error {
 	logger := newLogger(getenv("LOG_LEVEL", "info"))
 	slog.SetDefault(logger)
+	classificationCfg, err := classificationConfigFromEnv()
+	if err != nil {
+		return err
+	}
 
 	rootCtx := context.Background()
 	httpAddr := getenv("HTTP_ADDR", ":8080")
@@ -127,7 +130,12 @@ func run() error {
 	// the drain window that follows.
 	readiness := &inboundhttp.Readiness{}
 
-	lookups := buildOutboundLookups(logger)
+	classification, err := buildClassification(classificationCfg, storage, kafkaBrokers, logger)
+	if err != nil {
+		return err
+	}
+	defer classification.close() // after its loop stopped (LIFO), before the pool
+	lookups := buildOutboundLookups(classification.lookup, logger)
 
 	createTask := &usecases.CreateTask{Tasks: storage.taskRepo, Publisher: publisher, Clock: clock, NewId: newTaskId, UnitOfWork: storage.uow}
 	srv := newHTTPServer(storage, publisher, clock, metrics, lookups, createTask, readiness, logger, httpAddr)
@@ -138,59 +146,76 @@ func run() error {
 	// has the full story). CreateTask.UnitOfWork is the SAME instance, so
 	// its nested Execute joins the outer scope instead of opening a
 	// second transaction.
-	applyWorkReleased := &usecases.ApplyWorkReleased{
+	consumer, closeConsumer := wireWorkReleasedConsumer(kafkaBrokers, &usecases.ApplyWorkReleased{
 		CreateTask: createTask,
 		Processed:  storage.processedEvents,
 		Catalogue:  catalogue,
 		UnitOfWork: storage.uow,
-	}
-	consumer, closeConsumer := wireWorkReleasedConsumer(kafkaBrokers, applyWorkReleased, logger)
+	}, logger)
 	defer closeConsumer()
-	if kafkaCatalogue != nil {
-		defer func() { _ = kafkaCatalogue.Close() }()
-	}
+	defer closeCatalogue(kafkaCatalogue)
 
 	go serveHTTP(srv, logger, httpAddr)
-	consumerDone := startWorkReleasedConsumer(consumer, consumerCtx, logger, kafkaBrokers)
+	consumerDone := joinDone(
+		startWorkReleasedConsumer(consumer, consumerCtx, logger, kafkaBrokers),
+		startProductClassifiedConsumer(classification.consumer, consumerCtx, logger),
+	)
 
 	// The outbox relay (ADR 0020) runs alongside the HTTP server in the
 	// same process, draining outbox_events onto both Kafka topics. It is
 	// only wired when both Postgres and the kafka publisher are configured.
+	stopRelay, relayDone := startRelay(relay, logger)
+	defer stopRelay()
+
+	return waitForShutdown(logger, srv, readiness, stopRelay, relayDone, cancelConsumer, consumerDone)
+}
+
+// closeCatalogue closes the Kafka process-path catalogue when one is wired.
+func closeCatalogue(c *kafkacatalog.Consumer) {
+	if c != nil {
+		_ = c.Close()
+	}
+}
+
+// startRelay runs the outbox relay in the background when one is wired and
+// returns its stop func plus a channel closed once it has returned
+// (closed immediately when there is no relay).
+func startRelay(relay *postgres.OutboxRelay, logger *slog.Logger) (context.CancelFunc, <-chan struct{}) {
 	relayDone := make(chan struct{})
 	relayCtx, stopRelay := context.WithCancel(context.Background())
-	defer stopRelay()
 	if relay != nil {
 		go runRelay(relayCtx, relayDone, relay, logger)
 	} else {
 		close(relayDone)
 	}
-
-	return waitForShutdown(logger, srv, readiness, stopRelay, relayDone, cancelConsumer, consumerDone)
+	return stopRelay, relayDone
 }
 
-// outboundLookups bundles the two cross-context ACL lookups: product
-// classification (inventory-storage) and station location role
-// (facility-layout), each behind the shared circuit-breaker recorder.
+// outboundLookups bundles the two ACL lookups the HTTP use cases read:
+// product classification (local copy of product-master events, ADR-0039)
+// and station location role (facility-layout over HTTP, behind the shared
+// circuit-breaker recorder).
 type outboundLookups struct {
 	classification ports.ProductClassificationLookup
 	locationRole   ports.LocationRoleLookup
 }
 
-// buildOutboundLookups wires both outbound lookups plus their shared
-// circuit-breaker gauge. circuitBreakerMetrics wires both outbound
-// breakers' OnStateChange into the circuit_breaker.state gauge
-// (ADR-0029), reusing the SAME OTel MeterProvider observability.Setup
-// already installed rather than standing up a second Prometheus registry.
-// Errors here mirror NewMetrics' contract (invalid instrument name only,
-// a programming error) -- non-fatal: a nil recorder just means this
-// process runs without the gauge, never without the breaker itself.
-func buildOutboundLookups(logger *slog.Logger) outboundLookups {
+// buildOutboundLookups wires the location-role lookup plus its
+// circuit-breaker gauge next to the already-built classification lookup.
+// circuitBreakerMetrics wires the facility-layout breaker's OnStateChange
+// into the circuit_breaker.state gauge (ADR-0029), reusing the SAME OTel
+// MeterProvider observability.Setup already installed rather than standing
+// up a second Prometheus registry. Errors here mirror NewMetrics' contract
+// (invalid instrument name only, a programming error) -- non-fatal: a nil
+// recorder just means this process runs without the gauge, never without
+// the breaker itself.
+func buildOutboundLookups(classification ports.ProductClassificationLookup, logger *slog.Logger) outboundLookups {
 	circuitBreakerMetrics, cbmErr := observability.NewCircuitBreakerMetrics()
 	if cbmErr != nil {
 		logger.Warn("circuit breaker metrics unavailable; breakers will run without the circuit_breaker.state gauge", "error", cbmErr)
 	}
 	return outboundLookups{
-		classification: buildClassificationLookup(getenv("PRODUCT_CLASSIFICATION_MODE", "permissive"), os.Getenv("INVENTORY_STORAGE_BASE_URL"), circuitBreakerMetrics, logger),
+		classification: classification,
 		locationRole:   buildLocationRoleLookup(getenv("LOCATION_ROLE_MODE", "permissive"), os.Getenv("FACILITY_LAYOUT_BASE_URL"), circuitBreakerMetrics, logger),
 	}
 }
@@ -611,34 +636,11 @@ func getenv(key, fallback string) string {
 	return fallback
 }
 
-// buildClassificationLookup selects the outbound
-// ports.ProductClassificationLookup adapter via PRODUCT_CLASSIFICATION_MODE
-// (http|permissive), defaulting to "permissive" so existing tests, CI and
-// deployments that do not set the env var are unaffected — mirrors
-// inventory-storage's own LOCATION_LOOKUP_MODE=http|permissive pattern for
-// its facilitylayout adapter (see ADR-0010). "http" requires
-// INVENTORY_STORAGE_BASE_URL.
-//
-// In http mode the real Client is wrapped in retry (jittered, max 3
-// attempts -- GetClassification is a pure read, safe to retry) plus a
-// per-dependency circuit breaker (ADR-0029): on a trip, calls fall back
-// to the SAME fail-open behaviour this client already had. recorder
-// feeds the breaker's state transitions into the circuit_breaker.state
-// gauge; nil is fine (see resilience.RecordStateChange's doc comment).
-func buildClassificationLookup(mode, inventoryStorageBaseURL string, recorder resilience.StateRecorder, logger *slog.Logger) ports.ProductClassificationLookup {
-	if !strings.EqualFold(mode, "http") {
-		return productclassification.NewPermissiveLookup()
-	}
-	logger.Info("product classification lookup configured", "mode", "http", "inventory_storage_base_url", inventoryStorageBaseURL, "circuit_breaker", "enabled", "retry", "enabled")
-	return productclassification.NewBreakerClient(productclassification.NewClient(inventoryStorageBaseURL, nil), recorder)
-}
-
 // buildLocationRoleLookup selects the outbound ports.LocationRoleLookup
 // adapter via LOCATION_ROLE_MODE (http|permissive), defaulting to
 // "permissive" so existing tests, CI and deployments that do not set the
-// env var are unaffected — mirrors buildClassificationLookup's own
-// PRODUCT_CLASSIFICATION_MODE pattern exactly (see ADR-0024). "http"
-// requires FACILITY_LAYOUT_BASE_URL.
+// env var are unaffected (see ADR-0024). "http" requires
+// FACILITY_LAYOUT_BASE_URL.
 //
 // In http mode the real Client is wrapped in retry (jittered, max 3
 // attempts -- GetRole is a pure read, safe to retry) plus a

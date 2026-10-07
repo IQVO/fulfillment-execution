@@ -114,6 +114,24 @@ channels:
         - $ref: '#/components/messages/ProcessPathCreated'
         - $ref: '#/components/messages/ProcessPathUpdated'
         - $ref: '#/components/messages/ProcessPathDeactivated'
+  warehouse.product-master.events:
+    description: product-master's integration topic (key and `subject` = SKU). This service consumes only
+      ProductClassified from it, into its local classification copy (ADR-0039), under the consumer group
+      from `PRODUCT_CLASSIFICATION_CONSUMER_GROUP`, only when `PRODUCT_CLASSIFICATION_MODE=kafka`. Every other
+      type on the topic (ProductRegistered, ProductDescriptionChanged, ProductDimensionsDeclared, ProductMeasured)
+      is ignored.
+    publish:
+      operationId: receiveProductClassified
+      summary: Receive ProductClassified from product-master.
+      description: product-master publishes the full classification of a SKU here. The CloudEvents `id` claim
+        and the version-guarded upsert of `product_classification_copy` commit in one transaction; the offset
+        is committed afterwards. A message is applied only when its `version` is greater than the stored one.
+        A message that is not a valid CloudEvent, or whose payload breaks the contract, is logged at WARN
+        and skipped. SealPackage reads the copy for its DOT hazard segregation check.
+      tags:
+      - name: consumed
+      message:
+        $ref: '#/components/messages/ProductClassified'
 components:
   messages:
     TaskCompleted:
@@ -1496,6 +1514,108 @@ components:
           dataschema: urn:warehouse:process-path-management:events:ProcessPathDeactivated:v1
           data:
             path_id: PICK
+    ProductClassified:
+      name: ProductClassified
+      title: ProductClassified
+      summary: product-master set or replaced a SKU's handling classification (consumed).
+      description: Published by product-master on `warehouse.product-master.events` (its AsyncAPI is the
+        source of truth); consumed here into the local classification copy (ADR-0039). Full-state replacement
+        of the classification; optional fields are omitted when unset. Applied only when `version` is greater
+        than the stored version; dedupe on the CloudEvents `id`.
+      contentType: application/cloudevents+json
+      tags:
+      - name: consumed
+      headers:
+        $ref: '#/components/schemas/KafkaHeaders'
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          required:
+          - type
+          - source
+          - dataschema
+          - data
+          properties:
+            type:
+              type: string
+              const: com.warehouse.wms.product-master.product.ProductClassified
+            source:
+              type: string
+              const: /warehouse/product-master
+            dataschema:
+              type: string
+              const: urn:warehouse:product-master:events:ProductClassified:v1
+            data:
+              type: object
+              required:
+              - sku
+              - handling_tags
+              - classification_source
+              - version
+              properties:
+                sku:
+                  type: string
+                  description: The SKU (also the Kafka key and the CloudEvents `subject`).
+                handling_tags:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: string
+                    enum:
+                    - Hazmat
+                    - Fragile
+                    - TemperatureSensitive
+                    - Oversized
+                    - HighValue
+                  description: Handling tags in stable order. Hazmat and Fragile feed ClassificationInfo; the
+                    others are stored but unused here.
+                temperature_class:
+                  type: string
+                  enum:
+                  - Ambient
+                  - Chilled
+                  - Frozen
+                  description: Omitted when unset.
+                dot_hazard_class:
+                  type: integer
+                  minimum: 1
+                  maximum: 9
+                  description: DOT hazard class; omitted when unset. Drives SealPackage's same-package segregation
+                    (ADR-0010).
+                classification_source:
+                  type: string
+                  enum:
+                  - native
+                  - legacy-import
+                  description: Migration artefact of product-master (its ADR 0003); not used here.
+                version:
+                  type: integer
+                  minimum: 1
+                  format: int64
+                  description: Product aggregate version after the change; the local copy's guard.
+      examples:
+      - name: productClassified
+        headers:
+          content-type: application/cloudevents+json; charset=UTF-8
+        payload:
+          specversion: "1.0"
+          id: 0f6d8a2b-3c4e-4d5f-8a9b-7c6d5e4f3a2b
+          source: /warehouse/product-master
+          type: com.warehouse.wms.product-master.product.ProductClassified
+          subject: SKU-1
+          time: '2026-10-06T21:02:00Z'
+          datacontenttype: application/json
+          dataschema: urn:warehouse:product-master:events:ProductClassified:v1
+          data:
+            sku: SKU-1
+            handling_tags:
+            - Hazmat
+            - TemperatureSensitive
+            temperature_class: Frozen
+            dot_hazard_class: 3
+            classification_source: native
+            version: 3
   schemas:
     TransferFactData:
       type: object

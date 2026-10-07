@@ -70,7 +70,7 @@ internal/
     outbound/events/         log/buffered/multi publisher
     outbound/filecatalog/    process-path catalogue YAML loader
     outbound/kafkacatalog/   process-path catalogue Kafka replay (PATH_CATALOGUE_SOURCE=kafka)
-    outbound/productclassification/  inventory-storage hazard lookup (opt-in)
+    outbound/productclassificationcopy/  local copy of product-master classifications (ADR-0039)
     outbound/facilitylayout/ facility-layout location-role lookup (opt-in)
 migrations/                  golang-migrate SQL files
 migrations/analytics/        analytical schema migrations
@@ -190,8 +190,8 @@ Terraform, and warehouse-ops-agent's `FULFILLMENT_MCP_ENDPOINT` points at
 | `MCP_ADDR` | `:8090` | `cmd/mcp` listen address — MCP Streamable HTTP at `/` and `/mcp`, unauthenticated `GET /healthz` |
 | `REPORTS_BASE_URL` | (unset) | `cmd/mcp` only: base URL of `cmd/fulfillment-reports`; when set, registers the `get_fulfillment_throughput_report` and `get_on_time_to_cpt` tools |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:5173,http://localhost:5184` | Comma-separated browser origins allowed by the CORS middleware on the OLTP API ([ADR-0013](docs/docs/adr/0013-fulfillment-mfe-console-adoption.md)) |
-| `PRODUCT_CLASSIFICATION_MODE` | `permissive` | `permissive` (default, no-op, every scanned SKU treated as unclassified) or `http` — live per-scanned-SKU DOT hazard classification lookup from inventory-storage at seal time (ADR-0010) |
-| `INVENTORY_STORAGE_BASE_URL` | (unset) | Base URL for inventory-storage's REST API; required when `PRODUCT_CLASSIFICATION_MODE=http` |
+| `PRODUCT_CLASSIFICATION_MODE` | `permissive` | `permissive` (default, no-op, every scanned SKU treated as unclassified) or `kafka` — SealPackage's per-scanned-SKU DOT hazard lookup reads a local copy of product-master's `ProductClassified` events (ADR-0039). `http` was removed and fails the boot |
+| `PRODUCT_CLASSIFICATION_CONSUMER_GROUP` | (unset) | Consumer group of the `ProductClassified` consumer on `warehouse.product-master.events`; required (boot error when unset) with `PRODUCT_CLASSIFICATION_MODE=kafka` |
 | `LOCATION_ROLE_MODE` | `permissive` | `permissive` (default, no-op, a supplied `locationCode` is recorded unchecked) or `http` — live registration-time lookup of a station's `locationCode` role from facility-layout, rejecting a KNOWN non-WorkCenter role (ADR-0024) |
 | `FACILITY_LAYOUT_BASE_URL` | (unset) | Base URL for facility-layout's REST API; required when `LOCATION_ROLE_MODE=http` |
 | `LOG_LEVEL`    | `info`  | `debug` \| `info` \| `warn` \| `error`, case-insensitive |
@@ -520,6 +520,9 @@ Execution -> Orchestration).
 - **Consumed topic**: `warehouse.work-planning.events` (consumer group `WORK_RELEASED_CONSUMER_GROUP`, default `fulfillment-execution`)
 - **Published topic**: `warehouse.fulfillment.events` (`TaskCompleted`, `TaskCPTMissed`, `PackageManifested`) plus the internal analytics topic `warehouse.fulfillment.analytics`
 - **Optionally consumed**: `warehouse.process-path-management.events` when `PATH_CATALOGUE_SOURCE=kafka`
+- **Optionally consumed**: `warehouse.product-master.events` (`ProductClassified` only, into the local
+  `product_classification_copy` table SealPackage reads) when `PRODUCT_CLASSIFICATION_MODE=kafka`, consumer
+  group `PRODUCT_CLASSIFICATION_CONSUMER_GROUP` ([ADR-0039](docs/docs/adr/0039-product-classification-local-copy.md))
 - **Broker**: `KAFKA_BROKERS` env var, default `localhost:9092`. This connects
   to the fleet's shared broker in the `warehouse-infra` kind cluster (host
   listener `localhost:9092`);

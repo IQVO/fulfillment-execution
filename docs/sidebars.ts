@@ -132,6 +132,7 @@ const sidebars: SidebarsConfig = {
         'adr/0033-package-read-model',
         'adr/0034-concurrency-control-for-consolidation-and-claim',
         'adr/0035-kafka-hash-partition-key',
+        'adr/0039-product-classification-local-copy',
       ],
     },
   ],
