@@ -204,6 +204,21 @@ func (p *AnalyticsPublisher) orderRef(ctx context.Context, id shared.TaskId) str
 	return t.SourceOrderId()
 }
 
+// lineNo looks up the order line (Task.SourceLineNo) of the task with id,
+// returning 0 when the task cannot be found or its line is unknown
+// (best-effort, like orderRef: the optional line_no is then omitted).
+// Per-line confirm-pick, decision 18, ADR 0041.
+func (p *AnalyticsPublisher) lineNo(ctx context.Context, id shared.TaskId) int {
+	if p.Tasks == nil {
+		return 0
+	}
+	t, err := p.Tasks.FindById(ctx, id)
+	if err != nil || t == nil {
+		return 0
+	}
+	return t.SourceLineNo()
+}
+
 // onTimeToCPTFields resolves a PackageManifested event's on-time-to-CPT
 // enrichment: the originating SLAM task's process path/station and whether
 // manifestedAt was on time against that task's CPT. It correlates via
@@ -320,6 +335,11 @@ func (p *AnalyticsPublisher) marshalData(ctx context.Context, e shared.DomainEve
 		// decision 17), so existing payloads stay byte-identical.
 		if orderRef := p.orderRef(ctx, ev.TaskId); orderRef != "" {
 			data["order_ref"] = orderRef
+		}
+		// line_no is optional too: omitted (never 0) when the task's line
+		// is unknown (decision 18, ADR 0041).
+		if lineNo := p.lineNo(ctx, ev.TaskId); lineNo > 0 {
+			data["line_no"] = lineNo
 		}
 		return entityTask, "TaskCompleted", string(ev.TaskId), mustMarshal(data), true
 	case shared.ItemPicked:

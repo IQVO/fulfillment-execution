@@ -130,7 +130,7 @@ func TestOutbox_CompleteTask_CommitsAggregateAndBothTopicsTogether(t *testing.T)
 		t.Fatalf("save station: %v", err)
 	}
 	create := &usecases.CreateTask{Tasks: s.tasks, Publisher: s.pub, Clock: s.clock, NewId: taskIds("t"), UnitOfWork: s.uow}
-	created, err := create.ExecuteRelease(ctx, task.Pick, shared.NewCPT(s.clock.t.Add(time.Hour)), "wu-1", shared.NewCapabilitySet("pick"), false, false, "ord-1", nil)
+	created, err := create.ExecuteRelease(ctx, task.Pick, shared.NewCPT(s.clock.t.Add(time.Hour)), "wu-1", shared.NewCapabilitySet("pick"), false, false, "ord-1", 2, nil)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -184,6 +184,14 @@ func TestOutbox_CompleteTask_CommitsAggregateAndBothTopicsTogether(t *testing.T)
 	}
 	if !bytes.Contains(analyticsValue, []byte(`"order_ref":"ord-1"`)) {
 		t.Fatalf("analytics TaskCompleted payload lacks order_ref: %s", analyticsValue)
+	}
+	// line_no (decision 18, ADR 0041) lands on the wire of BOTH topics too:
+	// persisted in tasks.source_line_no and read back inside the transaction.
+	if !bytes.Contains(value, []byte(`"line_no":2`)) {
+		t.Fatalf("integration TaskCompleted payload lacks line_no: %s", value)
+	}
+	if !bytes.Contains(analyticsValue, []byte(`"line_no":2`)) {
+		t.Fatalf("analytics TaskCompleted payload lacks line_no: %s", analyticsValue)
 	}
 	// Every row of every topic is unpublished: the broker was never touched.
 	if total := countOutbox(t, s.pool, "published_at IS NOT NULL"); total != 0 {
