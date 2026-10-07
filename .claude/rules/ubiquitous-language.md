@@ -45,10 +45,10 @@ touching `internal/domain/` or `internal/application/usecases/`.
   pre-existing generic capability-matching mechanism — no structural change
   needed (ADR-0009).
 - **Package segregation & SortLane (ADR-0010)** — `SealPackage` performs a
-  LIVE, synchronous per-scanned-SKU classification lookup (outbound port
-  `ports.ProductClassificationLookup`, permissive-by-default HTTP adapter
-  mirroring inventory-storage's own `facilitylayout` pattern:
-  `PRODUCT_CLASSIFICATION_MODE=http|permissive`) — NOT a value stamped onto
+  per-scanned-SKU classification lookup (outbound port
+  `ports.ProductClassificationLookup`; since ADR-0039 it reads a LOCAL COPY of
+  product-master's `ProductClassified` events,
+  `PRODUCT_CLASSIFICATION_MODE=kafka|permissive`) — NOT a value stamped onto
   the Task at release time, because a Pack task's contents (which SKUs get
   scanned into it) are only known live at the scan station, not at release.
   `Package.ScanItemWithClass` rejects a scan whose DOT hazard class is

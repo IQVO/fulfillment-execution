@@ -5,15 +5,15 @@
 // top-level internal package (a sibling of internal/observability), not
 // a domain/application/adapter layer itself, so the hexagonal fitness
 // tests place no restriction on who may import it — only the outbound
-// adapters (facilitylayout, productclassification, telemetry) do today.
+// adapters (facilitylayout, telemetry) do today.
 //
 // One gobreaker.CircuitBreaker instance is constructed PER downstream
 // dependency (never one global breaker) — see
-// internal/adapters/outbound/facilitylayout.NewBreakerClient and
-// internal/adapters/outbound/productclassification.NewBreakerClient, the
-// two call sites that build a breaker using this package's shared
-// tuning. A slow or failing dependency's breaker tripping can never
-// affect the other dependency's breaker or its own bulkheaded
+// internal/adapters/outbound/facilitylayout.NewBreakerClient, the call
+// site that builds a breaker using this package's shared tuning (the
+// product-classification breaker went away with its HTTP client,
+// ADR-0039). A slow or failing dependency's breaker tripping can never
+// affect another dependency's breaker or its own bulkheaded
 // *http.Client. This mirrors order-management's own internal/resilience
 // package exactly (its ADR-0025), the fleet reference for this phase.
 package resilience

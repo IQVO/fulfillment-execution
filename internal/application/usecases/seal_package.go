@@ -21,9 +21,9 @@ import (
 // idempotency key it requires no new client contract. See
 // ports.PackageRepo.FindByTaskId and migration 0011.
 //
-// ClassificationLookup is the live, synchronous, per-scanned-SKU outbound
-// read from inventory-storage's product-classification endpoint (see
-// ADR-0010). It is nil-safe: a SealPackage built without it (as every
+// ClassificationLookup is the per-scanned-SKU outbound classification read
+// (see ADR-0010; since ADR-0039 it is answered from a local copy of
+// product-master's events, not a REST call). It is nil-safe: a SealPackage built without it (as every
 // pre-existing test in this package does) behaves exactly as before this
 // feature — every scanned item is treated as unclassified, no segregation
 // check runs, ScanItem's plain path is used. This is the same

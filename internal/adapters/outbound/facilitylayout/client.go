@@ -1,8 +1,7 @@
 // Package facilitylayout provides outbound ports.LocationRoleLookup
 // implementations: an HTTP client that calls facility-layout's
 // GET /locations/{locationCode} endpoint, and a permissive no-op used by
-// default so existing tests, CI and deployments are unaffected. This
-// mirrors this repo's own productclassification package pattern exactly
+// default so existing tests, CI and deployments are unaffected
 // (permissive-by-default, env-var-selected) — see ADR-0024.
 package facilitylayout
 

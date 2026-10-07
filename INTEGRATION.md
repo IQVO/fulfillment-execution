@@ -79,6 +79,19 @@ Hazmat handling required **no change to this consumer or to `CreateTask`**:
 it is a `requiredCapabilities` value (`hazmat`) matched by the pre-existing
 generic `CapabilitySet` mechanism.
 
+## Addendum — product classification is a local copy (ADR-0039)
+
+`SealPackage`'s per-scanned-SKU DOT hazard lookup no longer calls
+inventory-storage's `GET /products/{sku}/classification`. With
+`PRODUCT_CLASSIFICATION_MODE=kafka` a second consumer reads
+`warehouse.product-master.events` (group
+`PRODUCT_CLASSIFICATION_CONSUMER_GROUP`), applies only
+`com.warehouse.wms.product-master.product.ProductClassified`, claims the
+CloudEvents `id` in `processed_events` and upserts
+`product_classification_copy` (only when `version` is newer) in one
+transaction, then commits the offset. `PRODUCT_CLASSIFICATION_MODE=http` and
+`INVENTORY_STORAGE_BASE_URL` are gone; `http` fails the boot.
+
 ## Definition of done for Task 7
 
 - New consumer adapter compiles and is unit-tested (feed it a CloudEvent,
