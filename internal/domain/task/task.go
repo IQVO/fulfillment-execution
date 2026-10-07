@@ -166,6 +166,14 @@ type Task struct {
 	// this task carries (see TransferDetails). Nil for every non-transfer
 	// task — including all tasks created before this field existed.
 	transfer *TransferDetails
+	// sourceOrderId is the upstream ORDER this task's work was released for
+	// (WorkReleased.ref on order-originated work). It is NOT orderRef: for
+	// order work orderRef is the per-line work unit id "<order>-line-<n>".
+	// Empty for transfer work (its ref is a demand id), for work released
+	// without a ref, for tasks created via REST/MCP, and for every task
+	// created before this field existed. Published as TaskCompleted.order_ref
+	// (audit decision 17, ADR 0040).
+	sourceOrderId string
 }
 
 // New creates a task in the Pending state, ready for the pool. fragile is a
@@ -271,6 +279,18 @@ func (t *Task) GiftWrap() bool { return t.giftWrap }
 // task carries, or nil when this is not transfer work. The returned
 // pointer is the task's own — callers must not mutate it.
 func (t *Task) Transfer() *TransferDetails { return t.transfer }
+
+// SourceOrderId returns the upstream order this task's work was released
+// for, or "" when unknown (see the sourceOrderId field).
+func (t *Task) SourceOrderId() string { return t.sourceOrderId }
+
+// WithSourceOrderId stamps the upstream order id and returns the task, for
+// use at creation time and when a repository rehydrates the column. An
+// empty id leaves the task without one.
+func (t *Task) WithSourceOrderId(orderId string) *Task {
+	t.sourceOrderId = orderId
+	return t
+}
 
 // IsAvailable reports whether the task can be claimed at `now`: it is
 // Pending, or Claimed with an expired lease (which frees it in the caller's

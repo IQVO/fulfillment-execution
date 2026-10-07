@@ -38,12 +38,23 @@ func (uc *CreateTask) Execute(ctx context.Context, taskType task.Type, cpt share
 // transfer fact. A nil transfer block would make this exactly Execute —
 // callers that know they have no transfer correlation should call Execute.
 func (uc *CreateTask) ExecuteTransfer(ctx context.Context, taskType task.Type, cpt shared.CPT, orderRef shared.OrderRef, required shared.CapabilitySet, fragile bool, giftWrap bool, transfer *task.TransferDetails) (*task.Task, error) {
+	return uc.ExecuteRelease(ctx, taskType, cpt, orderRef, required, fragile, giftWrap, "", transfer)
+}
+
+// ExecuteRelease is the general form of Execute/ExecuteTransfer used by the
+// WorkReleased consumer: sourceOrderId is the upstream order the release
+// was made for (WorkReleased.ref on order-originated work; "" when there is
+// none — always "" for transfer work, whose ref is a demand id). The task
+// keeps it apart from orderRef (the per-line work unit id) and publishes it
+// as TaskCompleted.order_ref (audit decision 17, ADR 0040). A nil transfer
+// block makes this a plain task.
+func (uc *CreateTask) ExecuteRelease(ctx context.Context, taskType task.Type, cpt shared.CPT, orderRef shared.OrderRef, required shared.CapabilitySet, fragile bool, giftWrap bool, sourceOrderId string, transfer *task.TransferDetails) (*task.Task, error) {
 	id := uc.NewId()
 	if transfer == nil {
-		t := task.New(id, taskType, cpt, orderRef, required, fragile, giftWrap)
+		t := task.New(id, taskType, cpt, orderRef, required, fragile, giftWrap).WithSourceOrderId(sourceOrderId)
 		return uc.save(ctx, t)
 	}
-	t := task.NewTransferTask(id, taskType, cpt, orderRef, required, fragile, giftWrap, *transfer)
+	t := task.NewTransferTask(id, taskType, cpt, orderRef, required, fragile, giftWrap, *transfer).WithSourceOrderId(sourceOrderId)
 	return uc.save(ctx, t)
 }
 

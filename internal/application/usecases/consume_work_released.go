@@ -83,11 +83,13 @@ func (uc *ApplyWorkReleased) Execute(ctx context.Context, req WorkReleasedReques
 
 		required := shared.NewCapabilitySet(capabilitiesOf(pathDef)...)
 		orderRef := shared.OrderRef(req.WorkUnitId)
+		// The release ref is the ORDER id only for order-originated work;
+		// for transfer work it is a demand id, so nothing is stamped.
+		sourceOrderId := req.Ref
 		if req.Transfer != nil {
-			_, err = uc.CreateTask.ExecuteTransfer(ctx, task.Type(pathDef.Id), shared.NewCPT(req.CPT), orderRef, required, req.Fragile, req.GiftWrap, req.Transfer)
-		} else {
-			_, err = uc.CreateTask.Execute(ctx, task.Type(pathDef.Id), shared.NewCPT(req.CPT), orderRef, required, req.Fragile, req.GiftWrap)
+			sourceOrderId = ""
 		}
+		_, err = uc.CreateTask.ExecuteRelease(ctx, task.Type(pathDef.Id), shared.NewCPT(req.CPT), orderRef, required, req.Fragile, req.GiftWrap, sourceOrderId, req.Transfer)
 		return err
 	})
 	if err == nil {

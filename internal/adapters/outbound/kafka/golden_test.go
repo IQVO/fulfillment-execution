@@ -43,7 +43,7 @@ func TestGolden_Integration_TaskCompleted(t *testing.T) {
 	tasks := memory.NewTaskRepo()
 	stations := memory.NewStationRepo()
 	claimedAt := goldenAt.Add(-245 * time.Second)
-	tk := task.New("task-8a1f", task.Pick, shared.NewCPT(goldenAt.Add(time.Hour)), "wu-8a1f", shared.NewCapabilitySet("pick"), false, false)
+	tk := task.New("task-8a1f", task.Pick, shared.NewCPT(goldenAt.Add(time.Hour)), "wu-8a1f", shared.NewCapabilitySet("pick"), false, false).WithSourceOrderId("order-8a1f")
 	if err := tk.Claim("station-03", shared.NewCapabilitySet("pick"), claimedAt, 10*time.Minute); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
@@ -59,6 +59,40 @@ func TestGolden_Integration_TaskCompleted(t *testing.T) {
 	}
 	if len(w.msgs) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(w.msgs))
+	}
+	assertGolden(t, w.msgs[0], "task-8a1f", `{
+		"specversion":"1.0",
+		"id":"`+goldenID+`",
+		"source":"/warehouse/fulfillment-execution",
+		"type":"com.warehouse.wes.fulfillment-execution.task.TaskCompleted",
+		"subject":"task-8a1f",
+		"time":"2026-09-30T15:00:00Z",
+		"datacontenttype":"application/json",
+		"dataschema":"urn:warehouse:fulfillment-execution:events:TaskCompleted:v1",
+		"data":{"task_id":"task-8a1f","station_id":"station-03","work_unit_id":"wu-8a1f","associate_id":"worker-42","duration_seconds":245,"task_type":"PICK","order_ref":"order-8a1f"}
+	}`)
+}
+
+// A task without a source order id publishes the exact pre-order_ref
+// payload (the original golden, unchanged): the optional field is omitted,
+// not "" — and the task's own orderRef (work_unit_id) does not leak into it.
+func TestGolden_Integration_TaskCompleted_NoOrderRef(t *testing.T) {
+	tasks := memory.NewTaskRepo()
+	stations := memory.NewStationRepo()
+	claimedAt := goldenAt.Add(-245 * time.Second)
+	tk := task.New("task-8a1f", task.Pick, shared.NewCPT(goldenAt.Add(time.Hour)), "wu-8a1f", shared.NewCapabilitySet("pick"), false, false)
+	if err := tk.Claim("station-03", shared.NewCapabilitySet("pick"), claimedAt, 10*time.Minute); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	_ = tasks.Save(context.Background(), tk)
+	st := station.New("station-03", shared.NewCapabilitySet("pick"))
+	_ = st.CheckIn("worker-42")
+	_ = stations.Save(context.Background(), st)
+
+	w := &fakeWriter{}
+	p := outboundkafka.NewPublisherWithWriter(w, tasks, stations, goldenID1)
+	if err := p.Publish(context.Background(), shared.NewTaskCompleted("task-8a1f", "station-03", goldenAt)); err != nil {
+		t.Fatalf("Publish: %v", err)
 	}
 	assertGolden(t, w.msgs[0], "task-8a1f", `{
 		"specversion":"1.0",
@@ -122,6 +156,28 @@ type goldenAnalyticsCase struct {
 	data   string
 }
 
+// A task with no order reference publishes the pre-order_ref analytics
+// payload byte-for-byte: order_ref is omitted, not "".
+func TestGolden_Analytics_TaskCompleted_NoOrderRef(t *testing.T) {
+	repo := fakeTaskRepo{taskType: task.Pick, found: true, noSourceOrder: true}
+	w := &fakeAnalyticsWriter{}
+	p := outboundkafka.NewAnalyticsPublisherWithWriter(w, repo, goldenID1)
+	if err := p.Publish(context.Background(), shared.NewTaskCompleted("t1", "s1", goldenAt)); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	assertGolden(t, w.msgs[0], "t1", `{
+		"specversion":"1.0",
+		"id":"`+goldenID+`",
+		"source":"/warehouse/fulfillment-execution",
+		"type":"com.warehouse.wes.fulfillment-execution.task.TaskCompleted",
+		"subject":"t1",
+		"time":"2026-09-30T15:00:00Z",
+		"datacontenttype":"application/json",
+		"dataschema":"urn:warehouse:fulfillment-execution:analytics:TaskCompleted:v1",
+		"data":{"task_id":"t1","task_type":"PICK","station_id":"s1"}
+	}`)
+}
+
 func TestGolden_Analytics_EveryType(t *testing.T) {
 	cpt := goldenAt.Add(time.Hour)
 	slam := task.New("slam-1", task.Slam, shared.NewCPT(cpt), "wu-8a1f", shared.NewCapabilitySet(), false, false)
@@ -134,7 +190,7 @@ func TestGolden_Analytics_EveryType(t *testing.T) {
 		{shared.NewTaskCreated("t1", goldenAt), "TaskCreated", "task", "t1", `{"task_id":"t1","task_type":"PICK"}`},
 		{shared.NewTaskClaimed("t1", "s1", goldenAt), "TaskClaimed", "task", "t1", `{"task_id":"t1","task_type":"PICK","station_id":"s1"}`},
 		{shared.NewLeaseExpired("t1", goldenAt), "LeaseExpired", "task", "t1", `{"task_id":"t1","task_type":"PICK"}`},
-		{shared.NewTaskCompleted("t1", "s1", goldenAt), "TaskCompleted", "task", "t1", `{"task_id":"t1","task_type":"PICK","station_id":"s1"}`},
+		{shared.NewTaskCompleted("t1", "s1", goldenAt), "TaskCompleted", "task", "t1", `{"task_id":"t1","task_type":"PICK","station_id":"s1","order_ref":"order-1"}`},
 		{shared.NewItemPicked("t1", goldenAt), "ItemPicked", "task", "t1", `{"task_id":"t1","task_type":"PICK"}`},
 		{shared.NewPackageSealed("p1", goldenAt), "PackageSealed", "package", "p1", `{"package_id":"p1"}`},
 		{shared.NewWeightDiscrepancyDetected("p1", 1000, 1200, goldenAt), "WeightDiscrepancyDetected", "package", "p1", `{"package_id":"p1","expected_g":1000,"actual_g":1200}`},
