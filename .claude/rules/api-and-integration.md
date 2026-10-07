@@ -20,7 +20,9 @@ paths:
 - POST /stations/{stationId}/check-out        -> CheckOutStation
 - POST /tasks/{id}/renew-lease                -> RenewLease
 - POST /tasks/{id}/complete                   -> CompleteTask
-- POST /tasks/{id}/seal-package                -> SealPackage
+- POST /tasks/{id}/seal-package                -> SealPackage. 409 `task-not-claimed` when the
+  lease is missing or EXPIRED (same error as complete/renew-lease), 409
+  `task-not-owner` when ANOTHER station holds an active lease (ADR-0038).
 - GET  /packages/{id}                         -> GetPackage (ADR-0033). 200 `PackageResponse`
   (same DTO/schema as seal-package's 201); 404 `package-not-found`. Read
   `status` here to learn the SLAM outcome (LABELED vs DIVERTED).
@@ -33,6 +35,10 @@ paths:
 - GET  /capacity/{capability}                 -> GetInstalledCapacity (ADR-0018)
 - POST /tasks/expire-leases                   -> ExpireLeases
 - POST /tasks/sweep-cpt-misses                 -> SweepCPTMisses (ADR-0025)
+  Both sweeps are driven by chart CronJobs, ON by default (`sweeps.enabled`,
+  ADR-0037): expire-leases every minute, CPT sweep every 5 minutes, both
+  configurable, `concurrencyPolicy: Forbid`. There is deliberately no in-process
+  ticker (ADR-0003/0025). `TaskCPTMissed` volume scales with the CPT cadence.
 - POST /rebin/arrivals                        -> ArriveAtRebin (ADR-0016; tag `Rebin`,
   operationId `arriveAtRebin`). The pick->pack handoff: 204 on success
   (idempotent per (orderRef, lineId); the first call fixes the order's
