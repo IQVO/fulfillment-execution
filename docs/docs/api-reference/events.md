@@ -74,10 +74,18 @@ mutating the old one.
     "work_unit_id": "wu-8a1f",
     "associate_id": "worker-42",
     "duration_seconds": 245,
-    "task_type": "PICK"
+    "task_type": "PICK",
+    "order_ref": "order-8a1f"
   }
 }
 ```
+
+`order_ref` is optional (omitted when empty) and additive — the event stays
+v1 ([ADR-0040](../adr/0040-task-completed-carries-order-ref.md)). It is the
+upstream **order** id (`WorkReleased.ref`, kept on the task), the key
+inventory-storage uses to confirm picks; it is not `work_unit_id`, which for
+order work is the per-line work unit id. The analytics-topic `TaskCompleted`
+carries the same optional field.
 
 ## Channels
 
@@ -95,7 +103,7 @@ per service via `KAFKA_BROKERS`.
 
 | `type` | `data` fields | Consumed by |
 | --- | --- | --- |
-| `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` | `task_id`, `station_id`, `work_unit_id`, `associate_id`, `duration_seconds`, `task_type` | wes-work-planning, labor-performance |
+| `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` | `task_id`, `station_id`, `work_unit_id`, `associate_id`, `duration_seconds`, `task_type`, `order_ref`? ([ADR-0040](../adr/0040-task-completed-carries-order-ref.md)) | wes-work-planning, labor-performance, inventory-storage (pick confirmation, planned) |
 | `com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed` | `task_id`, `order_ref`, `task_type`, `cpt` | order-management |
 | `com.warehouse.wes.fulfillment-execution.package.PackageManifested` | `package_id`, `order_ref` | order-management |
 

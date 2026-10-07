@@ -190,6 +190,20 @@ func (p *AnalyticsPublisher) taskType(ctx context.Context, id shared.TaskId) str
 	return string(t.Type())
 }
 
+// orderRef looks up the upstream ORDER id (Task.SourceOrderId) of the task
+// with id, returning "" when the task cannot be found or carries none
+// (best-effort, like taskType: the optional order_ref is then omitted).
+func (p *AnalyticsPublisher) orderRef(ctx context.Context, id shared.TaskId) string {
+	if p.Tasks == nil {
+		return ""
+	}
+	t, err := p.Tasks.FindById(ctx, id)
+	if err != nil || t == nil {
+		return ""
+	}
+	return t.SourceOrderId()
+}
+
 // onTimeToCPTFields resolves a PackageManifested event's on-time-to-CPT
 // enrichment: the originating SLAM task's process path/station and whether
 // manifestedAt was on time against that task's CPT. It correlates via
@@ -297,11 +311,17 @@ func (p *AnalyticsPublisher) marshalData(ctx context.Context, e shared.DomainEve
 			"task_type": p.taskType(ctx, ev.TaskId),
 		}), true
 	case shared.TaskCompleted:
-		return entityTask, "TaskCompleted", string(ev.TaskId), mustMarshal(map[string]any{
+		data := map[string]any{
 			"task_id":    string(ev.TaskId),
 			"task_type":  p.taskType(ctx, ev.TaskId),
 			"station_id": string(ev.StationId),
-		}), true
+		}
+		// order_ref is optional: omitted when the task has none (audit
+		// decision 17), so existing payloads stay byte-identical.
+		if orderRef := p.orderRef(ctx, ev.TaskId); orderRef != "" {
+			data["order_ref"] = orderRef
+		}
+		return entityTask, "TaskCompleted", string(ev.TaskId), mustMarshal(data), true
 	case shared.ItemPicked:
 		return entityTask, "ItemPicked", string(ev.TaskId), mustMarshal(map[string]any{
 			"task_id":   string(ev.TaskId),

@@ -130,7 +130,7 @@ func TestOutbox_CompleteTask_CommitsAggregateAndBothTopicsTogether(t *testing.T)
 		t.Fatalf("save station: %v", err)
 	}
 	create := &usecases.CreateTask{Tasks: s.tasks, Publisher: s.pub, Clock: s.clock, NewId: taskIds("t"), UnitOfWork: s.uow}
-	created, err := create.Execute(ctx, task.Pick, shared.NewCPT(s.clock.t.Add(time.Hour)), "wu-1", shared.NewCapabilitySet("pick"), false, false)
+	created, err := create.ExecuteRelease(ctx, task.Pick, shared.NewCPT(s.clock.t.Add(time.Hour)), "wu-1", shared.NewCapabilitySet("pick"), false, false, "ord-1", nil)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -170,6 +170,20 @@ func TestOutbox_CompleteTask_CommitsAggregateAndBothTopicsTogether(t *testing.T)
 	}
 	if !bytes.Contains(value, []byte(`"work_unit_id":"wu-1"`)) || !bytes.Contains(value, []byte(`"duration_seconds":45`)) {
 		t.Fatalf("integration payload not enriched from the transaction's own writes: %s", value)
+	}
+	// order_ref (audit decision 17) lands on the wire of BOTH topics: it is
+	// the ORDER id stamped on the task (persisted in tasks.source_order_id and
+	// read back inside the transaction), the key inventory-storage uses to
+	// confirm picks — not the work unit id "wu-1".
+	if !bytes.Contains(value, []byte(`"order_ref":"ord-1"`)) {
+		t.Fatalf("integration TaskCompleted payload lacks order_ref: %s", value)
+	}
+	var analyticsValue []byte
+	if err := s.pool.QueryRow(ctx, "SELECT value FROM outbox_events WHERE topic = $1 AND event_type = 'com.warehouse.wes.fulfillment-execution.task.TaskCompleted'", outboundkafka.AnalyticsTopic).Scan(&analyticsValue); err != nil {
+		t.Fatalf("read analytics row: %v", err)
+	}
+	if !bytes.Contains(analyticsValue, []byte(`"order_ref":"ord-1"`)) {
+		t.Fatalf("analytics TaskCompleted payload lacks order_ref: %s", analyticsValue)
 	}
 	// Every row of every topic is unpublished: the broker was never touched.
 	if total := countOutbox(t, s.pool, "published_at IS NOT NULL"); total != 0 {

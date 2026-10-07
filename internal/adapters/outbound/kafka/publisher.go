@@ -61,7 +61,11 @@ const (
 // DurationSeconds (elapsed time between the task's claim and its
 // completion), and TaskType (this service's own task.Type — PICK, PACK,
 // SLAM, or REBIN — read directly off the already-loaded Task, no new
-// lookup needed).
+// lookup needed). OrderRef (optional, omitted when empty) is the upstream
+// ORDER the task's work was released for (Task.SourceOrderId, from
+// WorkReleased.ref) — NOT work_unit_id, which for order work is the
+// per-line work unit id "<order>-line-<n>". inventory-storage confirms
+// picks by order_ref (audit decision 17, ADR 0040).
 type TaskCompletedData struct {
 	TaskId          string `json:"task_id"`
 	StationId       string `json:"station_id"`
@@ -69,6 +73,7 @@ type TaskCompletedData struct {
 	AssociateId     string `json:"associate_id,omitempty"`
 	DurationSeconds int64  `json:"duration_seconds,omitempty"`
 	TaskType        string `json:"task_type,omitempty"`
+	OrderRef        string `json:"order_ref,omitempty"`
 }
 
 // TaskCPTMissedData is the payload of a published TaskCPTMissed event: a
@@ -209,11 +214,14 @@ func (p *Publisher) encodeTaskCompleted(ctx context.Context, tc shared.TaskCompl
 	if err != nil {
 		return nil, fmt.Errorf("kafka: lookup task %s for enrichment: %w", tc.TaskId, err)
 	}
-	var workUnitId string
+	var workUnitId, orderRef string
 	var durationSeconds int64
 	var taskType string
 	if t != nil {
 		workUnitId = string(t.OrderRef())
+		// order_ref is the upstream ORDER id, not the work unit id above
+		// (audit decision 17): empty (omitted) when the task has none.
+		orderRef = t.SourceOrderId()
 		if claimedAt := t.ClaimedAt(); claimedAt != nil {
 			durationSeconds = int64(tc.OccurredAt().Sub(*claimedAt).Seconds())
 		}
@@ -232,6 +240,7 @@ func (p *Publisher) encodeTaskCompleted(ctx context.Context, tc shared.TaskCompl
 		AssociateId:     associateId,
 		DurationSeconds: durationSeconds,
 		TaskType:        taskType,
+		OrderRef:        orderRef,
 	}
 	enc, err := p.encodeIntegration(entityTask, "TaskCompleted", string(tc.TaskId), tc.OccurredAt(), data)
 	if err != nil {
