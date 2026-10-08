@@ -26,7 +26,9 @@ the code holds no such numbers.
 A unit of physical work (`PICK`, `PACK`, `REBIN`, `SLAM`) with a CPT
 deadline, an `orderRef` (the work unit id), an optional `sourceOrderId` (the
 upstream order id from `WorkReleased.ref`, published as
-`TaskCompleted.order_ref` — [ADR-0040](../adr/0040-task-completed-carries-order-ref.md)),
+`TaskCompleted.order_ref` — [ADR-0040](../adr/0040-task-completed-carries-order-ref.md)), an optional
+`sourceLineNo` (the order line from `WorkReleased.line_no`, order work only,
+published as `TaskCompleted.line_no` — [ADR-0041](../adr/0041-task-completed-carries-line-no.md)),
 required capabilities and two packing hints
 (`fragile`, `giftWrap`). It is the consistency boundary for "who holds this
 work right now": at most one active lease, owned by one station.
