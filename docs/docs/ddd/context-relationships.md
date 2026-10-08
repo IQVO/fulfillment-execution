@@ -141,7 +141,10 @@ never a bin.
 
 The former direct edge, a synchronous `GET /products/{sku}/classification`
 per scanned SKU (`PRODUCT_CLASSIFICATION_MODE=http`, ADR-0010), was removed:
-classification moved to product-master (below).
+classification moved to product-master (below). In the other direction,
+inventory-storage can consume this service's `TaskCompleted` (its additive
+`order_ref`, [ADR-0040](../adr/0040-task-completed-carries-order-ref.md)) to
+confirm an order's picks; that consumer is off by default on its side.
 
 ### `product-master` → `fulfillment-execution` — **Published Language + ACL over a local copy (opt-in)**
 
@@ -201,7 +204,8 @@ conforms to them.
 | `workforce-management` → this | Open Host Service | **Yes** — HTTP `GET /capacity/{capability}` |
 | `warehouse-ops-agent` → this | Open Host Service | **Yes** — MCP server and HTTP `GET /tasks?orderRef=` |
 | `process-path-management` → this | Published Language, Conformist on this side | Opt-in — Kafka `warehouse.process-path-management.events` (`PATH_CATALOGUE_SOURCE=kafka`) |
-| this → `inventory-storage` | Customer/Supplier, ACL on this side | Opt-in — HTTP classification lookup |
+| `product-master` → this | Published Language, ACL over a local copy on this side | **Yes** in the cluster — Kafka `warehouse.product-master.events` (`ProductClassified`, `PRODUCT_CLASSIFICATION_MODE=kafka`; binary default `permissive`) |
+| this → `inventory-storage` | Published Language (one event consumed there) | Wired there, off by default — inventory-storage can consume `TaskCompleted` (with `order_ref`, ADR-0040) to confirm picks. No call from this side: the former HTTP classification lookup was removed (ADR-0039) |
 | this → `facility-layout` | Conformist behind ACL | Opt-in — HTTP location-role lookup |
 | this → WCS / equipment | Customer/Supplier + Conformist behind ACL | No — strategic only |
 
