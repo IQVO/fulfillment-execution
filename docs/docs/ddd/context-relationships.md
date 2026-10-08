@@ -51,11 +51,13 @@ decodes the envelope and maps its fields into this context's own vocabulary:
 | `cpt` | `shared.CPT` | `shared.NewCPT` |
 | *(from the matched path)* | `shared.CapabilitySet` | the path definition's `requiredCapabilities` |
 | `fragile`, `gift_wrap` | `Task.Fragile`, `Task.GiftWrap` | direct, optional (default `false`) |
+| `ref` | `Task.SourceOrderId` | order work only (not transfer work, whose `ref` is a demand id); published as `TaskCompleted.order_ref` ([ADR-0040](../adr/0040-task-completed-carries-order-ref.md)) |
+| `line_no` | `Task.SourceLineNo` | optional, order work only, never parsed from the work unit id; published as `TaskCompleted.line_no` ([ADR-0041](../adr/0041-task-completed-carries-line-no.md)) |
 
-Note that `data.ref` is decoded but **not** used — the deliberate choice was
-`work_unit_id` as the correlation key, because that is what Work Planning's
-`RecordCompletion` expects back. No upstream struct crosses the boundary. This
-is precisely the discipline the reference model demands: *"WES's `Task` is
+`work_unit_id` stays the correlation key (Work Planning's `RecordCompletion`
+expects it back); `ref` and `line_no` are kept apart on the task so inventory-storage
+can confirm the picked line's reservation. No upstream struct crosses the boundary.
+This is precisely the discipline the reference model demands: *"WES's `Task` is
 built FROM WMS's released work, not shared with it."*
 
 ### `fulfillment-execution` → `wes-work-planning` — **Customer/Supplier (feedback edge)**

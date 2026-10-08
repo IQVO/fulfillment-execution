@@ -90,7 +90,7 @@ sequenceDiagram
             CO->>CO: skip
         else new
             CO->>CAT: Lookup path_id - longest matchPrefix
-            CO->>UC: Execute type from path, cpt, orderRef = work_unit_id, fragile, gift_wrap
+            CO->>UC: Execute type from path, cpt, orderRef = work_unit_id, sourceOrderId = ref and sourceLineNo = line_no (order work only), fragile, gift_wrap
             UC->>R: Save task
             UC->>P: Publish TaskCreated
         end
@@ -231,7 +231,7 @@ sequenceDiagram
     end
     UC->>R: Save - BEGIN UnitOfWork
     UC->>ENC: Publish TaskCompleted
-    ENC->>R: FindById for work_unit_id, order_ref, task_type, claimedAt
+    ENC->>R: FindById for work_unit_id, order_ref, line_no, task_type, claimedAt
     ENC->>OB: INSERT integration row and analytics row - COMMIT
     IN-->>S: 204
     loop relay poll

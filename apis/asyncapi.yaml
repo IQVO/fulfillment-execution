@@ -142,7 +142,8 @@ components:
         keyed (and `subject`-ed) by task id, enriched at publish time with `work_unit_id` (the task's
         order reference, so Work Planning can call RecordCompletion), and `associate_id`, `duration_seconds`,
         `task_type` for labor-performance (ADR-0014, ADR-0023), and the optional `order_ref` (the order
-        key inventory-storage uses to confirm picks, ADR-0040). Consumed by wes-work-planning and labor-performance.
+        key inventory-storage uses to confirm picks, ADR-0040) and `line_no` (the order line, so it can
+        confirm that line's reservation, ADR-0041). Consumed by wes-work-planning and labor-performance.
       contentType: application/cloudevents+json
       tags:
       - name: task
@@ -209,6 +210,14 @@ components:
                     confirm picks. Optional and additive (the event stays v1) and omitted when the task
                     has no order reference. Distinct from work_unit_id, which for order work is the per-line
                     work unit id.
+                line_no:
+                  type: integer
+                  minimum: 1
+                  description: The 1-based order line the completed task's work was released for (copied
+                    from WorkReleased.line_no, ADR-0041); with order_ref it lets inventory-storage confirm
+                    the pick of exactly that line's reservation. Optional and additive (the event stays
+                    v1) and omitted when unknown (transfer work, a release without line_no, or an older
+                    task). Never derived from the work_unit_id.
       examples:
       - name: taskCompleted
         headers:
@@ -231,6 +240,7 @@ components:
             duration_seconds: 245
             task_type: PICK
             order_ref: order-8a1f
+            line_no: 2
     TaskCPTMissed:
       name: TaskCPTMissed
       title: TaskCPTMissed
@@ -636,6 +646,12 @@ components:
                   description: The order the completed task belongs to; the key inventory-storage uses to
                     confirm picks. Optional and additive (the event stays v1) and omitted when the task
                     has no order reference or cannot be found.
+                line_no:
+                  type: integer
+                  minimum: 1
+                  description: The 1-based order line the completed task's work was released for (ADR-0041).
+                    Optional and additive (the event stays v1) and omitted when unknown or when the task
+                    cannot be found.
       examples:
       - name: analyticsTaskCompleted
         headers:
@@ -655,6 +671,7 @@ components:
             task_type: PICK
             station_id: s1
             order_ref: order-1
+            line_no: 2
     AnalyticsItemPicked:
       name: AnalyticsItemPicked
       title: ItemPicked
@@ -1095,6 +1112,14 @@ components:
                   type: string
                   description: Release reference. For order-originated work this is the order id; it is kept
                     on the Task and published as TaskCompleted.order_ref (ADR-0040). For transfer work it is the demand id.
+                line_no:
+                  type: integer
+                  minimum: 1
+                  description: Optional (additive; the event stays v1). The 1-based order line this work
+                    unit is for; wes-work-planning sets it for order-originated work (explicitly, not encoded
+                    in work_unit_id). It is kept on the Task as source_line_no and published as
+                    TaskCompleted.line_no (ADR-0041). Absent from producers that predate it, and never
+                    honoured for transfer work.
                 fragile:
                   type: boolean
                   description: Optional fragile packing hint (default false).
@@ -1143,6 +1168,7 @@ components:
             work_unit_id: wu-8a1f
             cpt: '2026-09-30T18:00:00Z'
             ref: release-1
+            line_no: 2
     TransferPicked:
       name: TransferPicked
       title: TransferPicked

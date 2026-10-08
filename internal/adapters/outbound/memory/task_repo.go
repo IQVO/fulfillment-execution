@@ -178,5 +178,5 @@ func cloneTask(t *task.Task) *task.Task {
 		cp := *tr
 		transfer = &cp
 	}
-	return task.RehydrateTransfer(t.Id(), t.Type(), t.Status(), t.CPT(), t.OrderRef(), t.RequiredCapabilities(), lease, t.Fragile(), t.GiftWrap(), claimedAt, transfer).WithSourceOrderId(t.SourceOrderId())
+	return task.RehydrateTransfer(t.Id(), t.Type(), t.Status(), t.CPT(), t.OrderRef(), t.RequiredCapabilities(), lease, t.Fragile(), t.GiftWrap(), claimedAt, transfer).WithSourceOrderId(t.SourceOrderId()).WithSourceLineNo(t.SourceLineNo())
 }

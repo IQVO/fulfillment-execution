@@ -174,6 +174,13 @@ type Task struct {
 	// created before this field existed. Published as TaskCompleted.order_ref
 	// (audit decision 17, ADR 0040).
 	sourceOrderId string
+	// sourceLineNo is the 1-based order line this task's work was released
+	// for (WorkReleased.line_no on order-originated work; per-line
+	// confirm-pick, decision 18, ADR 0041). 0 means unknown: transfer work,
+	// a release without line_no, REST/MCP-created tasks, and every task
+	// created before this field existed. Never parsed from the
+	// "<order>-line-<n>" work unit id. Published as TaskCompleted.line_no.
+	sourceLineNo int
 }
 
 // New creates a task in the Pending state, ready for the pool. fragile is a
@@ -289,6 +296,21 @@ func (t *Task) SourceOrderId() string { return t.sourceOrderId }
 // empty id leaves the task without one.
 func (t *Task) WithSourceOrderId(orderId string) *Task {
 	t.sourceOrderId = orderId
+	return t
+}
+
+// SourceLineNo returns the 1-based order line this task's work was released
+// for, or 0 when unknown (see the sourceLineNo field).
+func (t *Task) SourceLineNo() int { return t.sourceLineNo }
+
+// WithSourceLineNo stamps the order line number and returns the task, for
+// use at creation time and when a repository rehydrates the column. A
+// non-positive number leaves the line unknown (0).
+func (t *Task) WithSourceLineNo(lineNo int) *Task {
+	if lineNo < 1 {
+		lineNo = 0
+	}
+	t.sourceLineNo = lineNo
 	return t
 }
 
