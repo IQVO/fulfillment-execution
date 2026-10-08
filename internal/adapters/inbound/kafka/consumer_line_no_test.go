@@ -2,6 +2,7 @@ package kafka_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/claudioed/fulfillment-execution/internal/adapters/inbound/kafka"
@@ -76,5 +77,37 @@ func TestHandleMessage_TransferWorkIgnoresLineNo(t *testing.T) {
 	}
 	if got := pickTask(t, tasks).SourceLineNo(); got != 0 {
 		t.Fatalf("SourceLineNo = %d, want 0 for transfer work", got)
+	}
+}
+
+// line_no is a 32-bit order-line number (decision 18 follow-up): the highest
+// valid value is stamped; anything above it — including values that do not
+// even fit an int64 — is ignored (line unknown), the task is still created,
+// and the message neither errors nor reaches the dead-letter topic.
+func TestHandleMessage_LineNoBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		line json.Number
+		want int
+	}{
+		{"1 is stamped", "1", 1},
+		{"MaxInt32 is stamped", "2147483647", 2147483647},
+		{"MaxInt32+1 is unknown", "2147483648", 0},
+		{"MaxInt64 is unknown", "9223372036854775807", 0},
+		{"above int64 is unknown", "9223372036854775808", 0},
+		{"huge exponent form is unknown", "1e30", 0},
+		{"negative is unknown", "-5", 0},
+		{"zero is unknown", "0", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, tasks := newConsumer(t)
+			raw := workReleasedJSONWithLine("evt-bound", "PICK", "ORD-7-line-9", map[string]any{"line_no": tc.line})
+			if err := c.HandleMessage(context.Background(), raw); err != nil {
+				t.Fatalf("an out-of-range line_no must not fail the message: %v", err)
+			}
+			if got := pickTask(t, tasks).SourceLineNo(); got != tc.want {
+				t.Fatalf("SourceLineNo = %d, want %d", got, tc.want)
+			}
+		})
 	}
 }

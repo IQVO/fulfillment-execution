@@ -27,7 +27,8 @@ A unit of physical work (`PICK`, `PACK`, `REBIN`, `SLAM`) with a CPT
 deadline, an `orderRef` (the work unit id), an optional `sourceOrderId` (the
 upstream order id from `WorkReleased.ref`, published as
 `TaskCompleted.order_ref` — [ADR-0040](../adr/0040-task-completed-carries-order-ref.md)), an optional
-`sourceLineNo` (the order line from `WorkReleased.line_no`, order work only,
+`sourceLineNo` (the order line from `WorkReleased.line_no`, order work only, range 1..2147483647 with
+anything larger left unknown (0),
 published as `TaskCompleted.line_no` — [ADR-0041](../adr/0041-task-completed-carries-line-no.md)),
 required capabilities and two packing hints
 (`fragile`, `giftWrap`). It is the consistency boundary for "who holds this

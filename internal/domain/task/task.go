@@ -5,6 +5,7 @@ package task
 
 import (
 	"errors"
+	"math"
 	"time"
 
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
@@ -305,14 +306,21 @@ func (t *Task) SourceLineNo() int { return t.sourceLineNo }
 
 // WithSourceLineNo stamps the order line number and returns the task, for
 // use at creation time and when a repository rehydrates the column. A
-// non-positive number leaves the line unknown (0).
+// number outside 1..MaxSourceLineNo leaves the line unknown (0): the column
+// is a 32-bit INTEGER, so the domain never holds a value the insert would
+// reject.
 func (t *Task) WithSourceLineNo(lineNo int) *Task {
-	if lineNo < 1 {
+	if lineNo < 1 || lineNo > MaxSourceLineNo {
 		lineNo = 0
 	}
 	t.sourceLineNo = lineNo
 	return t
 }
+
+// MaxSourceLineNo is the highest valid order line number (math.MaxInt32):
+// the width of the source_line_no column and of the line_no field in the
+// WorkReleased and TaskCompleted contracts.
+const MaxSourceLineNo = math.MaxInt32
 
 // IsAvailable reports whether the task can be claimed at `now`: it is
 // Pending, or Claimed with an expired lease (which frees it in the caller's
