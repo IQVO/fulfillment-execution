@@ -22,9 +22,12 @@ type WorkReleasedRequest struct {
 	WorkUnitId string
 	CPT        time.Time
 	Ref        string
-	Fragile    bool
-	GiftWrap   bool
-	Transfer   *task.TransferDetails
+	// LineNo is the optional 1-based order line of the release
+	// (WorkReleased.line_no; 0 = absent/unknown).
+	LineNo   int
+	Fragile  bool
+	GiftWrap bool
+	Transfer *task.TransferDetails
 }
 
 // ApplyWorkReleased applies one WorkReleased occurrence exactly once
@@ -86,10 +89,14 @@ func (uc *ApplyWorkReleased) Execute(ctx context.Context, req WorkReleasedReques
 		// The release ref is the ORDER id only for order-originated work;
 		// for transfer work it is a demand id, so nothing is stamped.
 		sourceOrderId := req.Ref
+		// line_no is likewise order-only and explicit: never parsed from
+		// the "<order>-line-<n>" work unit id (decision 18, ADR 0041).
+		sourceLineNo := req.LineNo
 		if req.Transfer != nil {
 			sourceOrderId = ""
+			sourceLineNo = 0
 		}
-		_, err = uc.CreateTask.ExecuteRelease(ctx, task.Type(pathDef.Id), shared.NewCPT(req.CPT), orderRef, required, req.Fragile, req.GiftWrap, sourceOrderId, req.Transfer)
+		_, err = uc.CreateTask.ExecuteRelease(ctx, task.Type(pathDef.Id), shared.NewCPT(req.CPT), orderRef, required, req.Fragile, req.GiftWrap, sourceOrderId, sourceLineNo, req.Transfer)
 		return err
 	})
 	if err == nil {

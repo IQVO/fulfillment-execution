@@ -36,6 +36,9 @@ type fakeTaskRepo struct {
 	// (default: "order-1"), to exercise the omitted-when-absent order_ref.
 	// The task's orderRef (work unit id) is always "order-1-line-1".
 	noSourceOrder bool
+	// sourceLineNo, when > 0, is stamped on the task FindById returns
+	// (per-line confirm-pick, decision 18); 0 leaves the line unknown.
+	sourceLineNo int
 }
 
 func (r fakeTaskRepo) FindById(_ context.Context, id shared.TaskId) (*task.Task, error) {
@@ -46,6 +49,7 @@ func (r fakeTaskRepo) FindById(_ context.Context, id shared.TaskId) (*task.Task,
 	if !r.noSourceOrder {
 		t.WithSourceOrderId("order-1")
 	}
+	t.WithSourceLineNo(r.sourceLineNo)
 	return t, nil
 }
 func (fakeTaskRepo) Save(context.Context, *task.Task) error { return nil }

@@ -74,6 +74,11 @@ type TaskCompletedData struct {
 	DurationSeconds int64  `json:"duration_seconds,omitempty"`
 	TaskType        string `json:"task_type,omitempty"`
 	OrderRef        string `json:"order_ref,omitempty"`
+	// LineNo is the optional 1-based order line the task's work was
+	// released for (Task.SourceLineNo, from WorkReleased.line_no), omitted
+	// when unknown. inventory-storage uses order_ref + line_no to confirm
+	// the reservation of that line (decision 18, ADR 0041).
+	LineNo int `json:"line_no,omitempty"`
 }
 
 // TaskCPTMissedData is the payload of a published TaskCPTMissed event: a
@@ -215,6 +220,7 @@ func (p *Publisher) encodeTaskCompleted(ctx context.Context, tc shared.TaskCompl
 		return nil, fmt.Errorf("kafka: lookup task %s for enrichment: %w", tc.TaskId, err)
 	}
 	var workUnitId, orderRef string
+	var lineNo int
 	var durationSeconds int64
 	var taskType string
 	if t != nil {
@@ -222,6 +228,7 @@ func (p *Publisher) encodeTaskCompleted(ctx context.Context, tc shared.TaskCompl
 		// order_ref is the upstream ORDER id, not the work unit id above
 		// (audit decision 17): empty (omitted) when the task has none.
 		orderRef = t.SourceOrderId()
+		lineNo = t.SourceLineNo()
 		if claimedAt := t.ClaimedAt(); claimedAt != nil {
 			durationSeconds = int64(tc.OccurredAt().Sub(*claimedAt).Seconds())
 		}
@@ -241,6 +248,7 @@ func (p *Publisher) encodeTaskCompleted(ctx context.Context, tc shared.TaskCompl
 		DurationSeconds: durationSeconds,
 		TaskType:        taskType,
 		OrderRef:        orderRef,
+		LineNo:          lineNo,
 	}
 	enc, err := p.encodeIntegration(entityTask, "TaskCompleted", string(tc.TaskId), tc.OccurredAt(), data)
 	if err != nil {
