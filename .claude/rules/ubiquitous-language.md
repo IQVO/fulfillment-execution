@@ -31,10 +31,11 @@ touching `internal/domain/` or `internal/application/usecases/`.
   `kafkacatalog` outbound adapters that load it.
 - **Fragile (packing hint)** — `Task.Fragile()` and the derived
   `Package.FragileHandling()`. Stamped onto the Task by `wes-work-planning`
-  at release time (from `inventory-storage`'s `ProductClassification`, read
-  once upstream — this service never looks the fragile flag up itself; the
-  only direct inventory-storage call is the ADR-0010 hazard-class lookup
-  below).
+  at release time (from product-master's handling classification, which
+  wes-work-planning reads from its own local copy — this service never looks
+  the fragile flag up itself). This service makes no call to
+  inventory-storage at all: the hazard-class lookup below reads a local copy
+  of product-master's `ProductClassified` (ADR-0039).
   `SealPackage` derives `FragileHandling` from the owning task's flag, not a
   separate caller input. Affects packing/downstream sortation only — does
   not gate claiming.
