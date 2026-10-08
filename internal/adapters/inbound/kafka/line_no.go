@@ -15,7 +15,7 @@ import (
 // saturated to math.MaxInt64 (still out of range, hence ignored with a WARN)
 // and any other unrepresentable number (non-integral, or hugely negative)
 // decodes as 0 (absent). A non-number token is still a decode error.
-type lineNo int
+type lineNo int64
 
 func (l *lineNo) UnmarshalJSON(b []byte) error {
 	b = bytes.TrimSpace(b)
@@ -39,6 +39,21 @@ func (l *lineNo) UnmarshalJSON(b []byte) error {
 		*l = 0
 	}
 	return nil
+}
+
+// Int narrows to the use case's int with an explicit bound: anything
+// negative is 0 (unknown) and anything above math.MaxInt32 is reported as
+// math.MaxInt32+1, which the use case ignores (the exact oversized value is
+// irrelevant to it).
+func (l lineNo) Int() int {
+	switch {
+	case l < 0:
+		return 0
+	case l > math.MaxInt32:
+		return math.MaxInt32 + 1
+	default:
+		return int(l)
+	}
 }
 
 func isRangeError(err error) bool {
