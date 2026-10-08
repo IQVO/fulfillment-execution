@@ -575,8 +575,9 @@ hard handling error — there is no default-to-Pick. The rest of the mapping:
 | `data.ref`               | decoded, not mapped                                   |
 | matched path             | required capabilities (from the catalogue)             |
 
-**`data.fragile` is optional**: it is sourced from
-`inventory-storage`'s `ProductClassification` concept and stamped by
+**`data.fragile` is optional**: it is sourced from product-master's handling
+classification (the `Fragile` tag, read by `wes-work-planning` from its own
+local copy of product-master's `ProductClassified`) and stamped by
 `wes-work-planning` at release time, but any already-documented producer that
 predates this field simply omits it, and the consumer defaults to `false`
 rather than rejecting the message. When present and `true`, it means the

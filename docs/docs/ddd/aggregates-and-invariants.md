@@ -243,7 +243,8 @@ changes an existing invariant:
 
 - **`Task.Fragile()`** — set once at construction (`task.New`, threaded
   through `CreateTask`), stamped by `wes-work-planning` at release time from
-  `inventory-storage`'s `ProductClassification` concept. It does not gate
+  product-master's handling classification (the `Fragile` tag, via
+  wes-work-planning's local copy of product-master's `ProductClassified`). It does not gate
   `Claim` — a fragile task claims exactly like any other, on capabilities
   alone.
 - **`Package.FragileHandling()`** — set once at construction (`pack.New`),
@@ -269,9 +270,12 @@ extends `Package` further, for a concern `Task.Fragile()`'s release-time
 stamping pattern does not fit: a Pack task's scanned contents are
 discovered live at the scan station, not known when the task was
 released, so the per-SKU DOT hazard class of each scanned item is looked
-up **live, synchronously, per SKU** inside `SealPackage` — via the new
+up **per SKU at seal time** inside `SealPackage` — via the
 `ports.ProductClassificationLookup` outbound port, permissive-by-default —
-rather than stamped on `Task` upstream.
+rather than stamped on `Task` upstream. Since
+[ADR-0039](../adr/0039-product-classification-local-copy.md) that lookup reads
+a local copy of product-master's `ProductClassified` events
+(`product_classification_copy`), not inventory-storage's REST API.
 
 - **`Package.ScannedHazardClasses()`** — the DOT hazard class (1-9)
   recorded for each already-scanned item that came back Hazmat-classified
@@ -282,8 +286,9 @@ rather than stamped on `Task` upstream.
   `FragileHandling()`, else `STANDARD`. Computed on every call from the
   two inputs above, so it can never drift from them.
 
-`SealPackage`'s per-item lookup fails open for a single SKU's transport
-error (that SKU is treated as unclassified, the rest of the seal
+`SealPackage`'s per-item lookup fails open for a single SKU's lookup
+error (since ADR-0039 a local-copy storage error; that SKU is treated as
+unclassified, the rest of the seal
 proceeds) — a deliberate asymmetry with `inventory-storage`'s `StowStock`,
 which fails closed for a *classified* SKU's placement-lookup error. See
 ADR-0010 for the full reasoning on both points.

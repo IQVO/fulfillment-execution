@@ -115,7 +115,7 @@ flowchart LR
     T1["Task"]:::aggregate
     PK["Packer"]:::actor
     C3["SealPackage"]:::command
-    IS["inventory-storage classification"]:::external
+    IS["product-master ProductClassified<br/>local classification copy"]:::external
     PG["Package"]:::aggregate
     E3["PackageSealed"]:::event
     SL["SLAM line"]:::actor

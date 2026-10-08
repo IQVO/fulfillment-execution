@@ -12,9 +12,13 @@ warehouse-systems: one set of global standards, enforced the same way in every
 repository, while each bounded context owns its own server. It is the MCP
 counterpart to the platform's existing 5-stage quality gate and its ADR
 discipline. `fulfillment-execution` is the reference implementation
-(see [ADR-0008](../adr/0008-mcp-inbound-adapter.md)); the other four contexts —
-`inventory-storage`, `wes-work-planning`, `workforce-management`,
-`facility-layout` — copy it.
+(see [ADR-0008](../adr/0008-mcp-inbound-adapter.md)); the charter was
+written when four other contexts — `inventory-storage`, `wes-work-planning`,
+`workforce-management`, `facility-layout` — copied it. Every backend bounded
+context in the fleet now ships its own `cmd/mcp` server,
+including `product-master`, `order-management`, `process-path-management`,
+`labor-performance`, `warehouse-planning`, `network-fulfillment` and
+`network-inventory-planning`.
 
 Keywords **MUST**, **SHOULD**, **MAY** are used per RFC 2119.
 
