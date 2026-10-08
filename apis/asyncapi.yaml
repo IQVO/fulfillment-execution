@@ -114,6 +114,24 @@ channels:
         - $ref: '#/components/messages/ProcessPathCreated'
         - $ref: '#/components/messages/ProcessPathUpdated'
         - $ref: '#/components/messages/ProcessPathDeactivated'
+  warehouse.product-master.events:
+    description: product-master's integration topic (key and `subject` = SKU). This service consumes only
+      ProductClassified from it, into its local classification copy (ADR-0039), under the consumer group
+      from `PRODUCT_CLASSIFICATION_CONSUMER_GROUP`, only when `PRODUCT_CLASSIFICATION_MODE=kafka`. Every other
+      type on the topic (ProductRegistered, ProductDescriptionChanged, ProductDimensionsDeclared, ProductMeasured)
+      is ignored.
+    publish:
+      operationId: receiveProductClassified
+      summary: Receive ProductClassified from product-master.
+      description: product-master publishes the full classification of a SKU here. The CloudEvents `id` claim
+        and the version-guarded upsert of `product_classification_copy` commit in one transaction; the offset
+        is committed afterwards. A message is applied only when its `version` is greater than the stored one.
+        A message that is not a valid CloudEvent, or whose payload breaks the contract, is logged at WARN
+        and skipped. SealPackage reads the copy for its DOT hazard segregation check.
+      tags:
+      - name: consumed
+      message:
+        $ref: '#/components/messages/ProductClassified'
 components:
   messages:
     TaskCompleted:
@@ -123,7 +141,9 @@ components:
       description: Raised when the station holding the active claim completes the task. Published on `warehouse.fulfillment.events`,
         keyed (and `subject`-ed) by task id, enriched at publish time with `work_unit_id` (the task's
         order reference, so Work Planning can call RecordCompletion), and `associate_id`, `duration_seconds`,
-        `task_type` for labor-performance (ADR-0014, ADR-0023). Consumed by wes-work-planning and labor-performance.
+        `task_type` for labor-performance (ADR-0014, ADR-0023), and the optional `order_ref` (the order
+        key inventory-storage uses to confirm picks, ADR-0040) and `line_no` (the order line, so it can
+        confirm that line's reservation, ADR-0041). Consumed by wes-work-planning and labor-performance.
       contentType: application/cloudevents+json
       tags:
       - name: task
@@ -184,6 +204,22 @@ components:
                   - ARRIVAL
                   description: The completed task's own type; omitted only when the task can no longer
                     be found.
+                order_ref:
+                  type: string
+                  description: The order the completed task belongs to; the key inventory-storage uses to
+                    confirm picks. Optional and additive (the event stays v1) and omitted when the task
+                    has no order reference. Distinct from work_unit_id, which for order work is the per-line
+                    work unit id.
+                line_no:
+                  type: integer
+                  format: int32
+                  minimum: 1
+                  maximum: 2147483647
+                  description: The 1-based order line the completed task's work was released for (copied
+                    from WorkReleased.line_no, ADR-0041); with order_ref it lets inventory-storage confirm
+                    the pick of exactly that line's reservation. Optional and additive (the event stays
+                    v1) and omitted when unknown (transfer work, a release without line_no, or an older
+                    task). Never derived from the work_unit_id.
       examples:
       - name: taskCompleted
         headers:
@@ -205,6 +241,8 @@ components:
             associate_id: worker-42
             duration_seconds: 245
             task_type: PICK
+            order_ref: order-8a1f
+            line_no: 2
     TaskCPTMissed:
       name: TaskCPTMissed
       title: TaskCPTMissed
@@ -605,6 +643,19 @@ components:
                 station_id:
                   type: string
                   description: Station id.
+                order_ref:
+                  type: string
+                  description: The order the completed task belongs to; the key inventory-storage uses to
+                    confirm picks. Optional and additive (the event stays v1) and omitted when the task
+                    has no order reference or cannot be found.
+                line_no:
+                  type: integer
+                  format: int32
+                  minimum: 1
+                  maximum: 2147483647
+                  description: The 1-based order line the completed task's work was released for (ADR-0041).
+                    Optional and additive (the event stays v1) and omitted when unknown or when the task
+                    cannot be found.
       examples:
       - name: analyticsTaskCompleted
         headers:
@@ -623,6 +674,8 @@ components:
             task_id: t1
             task_type: PICK
             station_id: s1
+            order_ref: order-1
+            line_no: 2
     AnalyticsItemPicked:
       name: AnalyticsItemPicked
       title: ItemPicked
@@ -1061,7 +1114,20 @@ components:
                   format: date-time
                 ref:
                   type: string
-                  description: Release reference.
+                  description: Release reference. For order-originated work this is the order id; it is kept
+                    on the Task and published as TaskCompleted.order_ref (ADR-0040). For transfer work it is the demand id.
+                line_no:
+                  type: integer
+                  format: int32
+                  minimum: 1
+                  maximum: 2147483647
+                  description: Optional (additive; the event stays v1). The 1-based order line this work
+                    unit is for; wes-work-planning sets it for order-originated work (explicitly, not encoded
+                    in work_unit_id). It is kept on the Task as source_line_no and published as
+                    TaskCompleted.line_no (ADR-0041). Absent from producers that predate it, and never
+                    honoured for transfer work. A value above 2147483647 (the 32-bit column width) is
+                    ignored by this consumer rather than rejected, so the task is still created with its
+                    line unknown.
                 fragile:
                   type: boolean
                   description: Optional fragile packing hint (default false).
@@ -1110,6 +1176,7 @@ components:
             work_unit_id: wu-8a1f
             cpt: '2026-09-30T18:00:00Z'
             ref: release-1
+            line_no: 2
     TransferPicked:
       name: TransferPicked
       title: TransferPicked
@@ -1496,6 +1563,108 @@ components:
           dataschema: urn:warehouse:process-path-management:events:ProcessPathDeactivated:v1
           data:
             path_id: PICK
+    ProductClassified:
+      name: ProductClassified
+      title: ProductClassified
+      summary: product-master set or replaced a SKU's handling classification (consumed).
+      description: Published by product-master on `warehouse.product-master.events` (its AsyncAPI is the
+        source of truth); consumed here into the local classification copy (ADR-0039). Full-state replacement
+        of the classification; optional fields are omitted when unset. Applied only when `version` is greater
+        than the stored version; dedupe on the CloudEvents `id`.
+      contentType: application/cloudevents+json
+      tags:
+      - name: consumed
+      headers:
+        $ref: '#/components/schemas/KafkaHeaders'
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          required:
+          - type
+          - source
+          - dataschema
+          - data
+          properties:
+            type:
+              type: string
+              const: com.warehouse.wms.product-master.product.ProductClassified
+            source:
+              type: string
+              const: /warehouse/product-master
+            dataschema:
+              type: string
+              const: urn:warehouse:product-master:events:ProductClassified:v1
+            data:
+              type: object
+              required:
+              - sku
+              - handling_tags
+              - classification_source
+              - version
+              properties:
+                sku:
+                  type: string
+                  description: The SKU (also the Kafka key and the CloudEvents `subject`).
+                handling_tags:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: string
+                    enum:
+                    - Hazmat
+                    - Fragile
+                    - TemperatureSensitive
+                    - Oversized
+                    - HighValue
+                  description: Handling tags in stable order. Hazmat and Fragile feed ClassificationInfo; the
+                    others are stored but unused here.
+                temperature_class:
+                  type: string
+                  enum:
+                  - Ambient
+                  - Chilled
+                  - Frozen
+                  description: Omitted when unset.
+                dot_hazard_class:
+                  type: integer
+                  minimum: 1
+                  maximum: 9
+                  description: DOT hazard class; omitted when unset. Drives SealPackage's same-package segregation
+                    (ADR-0010).
+                classification_source:
+                  type: string
+                  enum:
+                  - native
+                  - legacy-import
+                  description: Migration artefact of product-master (its ADR 0003); not used here.
+                version:
+                  type: integer
+                  minimum: 1
+                  format: int64
+                  description: Product aggregate version after the change; the local copy's guard.
+      examples:
+      - name: productClassified
+        headers:
+          content-type: application/cloudevents+json; charset=UTF-8
+        payload:
+          specversion: "1.0"
+          id: 0f6d8a2b-3c4e-4d5f-8a9b-7c6d5e4f3a2b
+          source: /warehouse/product-master
+          type: com.warehouse.wms.product-master.product.ProductClassified
+          subject: SKU-1
+          time: '2026-10-06T21:02:00Z'
+          datacontenttype: application/json
+          dataschema: urn:warehouse:product-master:events:ProductClassified:v1
+          data:
+            sku: SKU-1
+            handling_tags:
+            - Hazmat
+            - TemperatureSensitive
+            temperature_class: Frozen
+            dot_hazard_class: 3
+            classification_source: native
+            version: 3
   schemas:
     TransferFactData:
       type: object

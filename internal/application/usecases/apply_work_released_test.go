@@ -177,4 +177,48 @@ func TestApplyWorkReleased_TransferRequestCreatesTransferTask(t *testing.T) {
 	if list[0].OrderRef() != shared.OrderRef("wu-tr-atomic") {
 		t.Fatalf("orderRef = %q, want the work_unit_id", list[0].OrderRef())
 	}
+	if got := list[0].SourceOrderId(); got != "" {
+		t.Fatalf("transfer work must not carry a source order id (ref is the demand id), got %q", got)
+	}
+}
+
+// TestApplyWorkReleased_StampsSourceOrderIdFromRef pins audit decision 17:
+// for order-originated work wes-work-planning releases one work unit PER
+// ORDER LINE ("<order>-line-<n>", which becomes the task's orderRef) and
+// carries the ORDER id as the release `ref`. The task must keep that order
+// id (it is what TaskCompleted.order_ref publishes, and what
+// inventory-storage matches against reservation demand_ref), while its
+// orderRef stays the work unit id. Transfer work stamps nothing (its ref is
+// a demand id), and a release without a ref leaves it empty.
+func TestApplyWorkReleased_StampsSourceOrderIdFromRef(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		req      usecases.WorkReleasedRequest
+		wantSrc  string
+		wantOref shared.OrderRef
+	}{
+		{"order line release", usecases.WorkReleasedRequest{EventId: "evt-src-1", PathId: "PICK", WorkUnitId: "ORD-9-line-2", Ref: "ORD-9", CPT: atomicEpoch.Add(time.Hour)}, "ORD-9", "ORD-9-line-2"},
+		{"release without ref", usecases.WorkReleasedRequest{EventId: "evt-src-2", PathId: "PICK", WorkUnitId: "ORD-9-line-3", CPT: atomicEpoch.Add(time.Hour)}, "", "ORD-9-line-3"},
+		{"transfer release ref is a demand id", usecases.WorkReleasedRequest{EventId: "evt-src-3", PathId: "PICK", WorkUnitId: "demand-1", Ref: "demand-1", CPT: atomicEpoch.Add(time.Hour),
+			Transfer: &task.TransferDetails{TransferRef: "tr-1", DemandId: "demand-1", WorkKind: task.WorkKindTransferPick}}, "", "demand-1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tasks := memory.NewTaskRepo()
+			create := &usecases.CreateTask{Tasks: tasks, Publisher: events.NewBufferedPublisher(), Clock: memory.NewFixedClock(atomicEpoch), NewId: fixedTaskId("s")}
+			apply := &usecases.ApplyWorkReleased{CreateTask: create, Processed: memory.NewProcessedEventsRepo(), Catalogue: atomicCatalogue()}
+			if err := apply.Execute(context.Background(), tc.req); err != nil {
+				t.Fatalf("apply: %v", err)
+			}
+			list, err := tasks.FindClaimableByType(context.Background(), task.Pick, atomicEpoch)
+			if err != nil || len(list) != 1 {
+				t.Fatalf("expected 1 task, got %d err=%v", len(list), err)
+			}
+			if got := list[0].SourceOrderId(); got != tc.wantSrc {
+				t.Errorf("SourceOrderId = %q, want %q", got, tc.wantSrc)
+			}
+			if got := list[0].OrderRef(); got != tc.wantOref {
+				t.Errorf("OrderRef = %q, want %q (unchanged: the work unit id)", got, tc.wantOref)
+			}
+		})
+	}
 }

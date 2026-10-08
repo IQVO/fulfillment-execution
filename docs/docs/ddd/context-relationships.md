@@ -51,11 +51,13 @@ decodes the envelope and maps its fields into this context's own vocabulary:
 | `cpt` | `shared.CPT` | `shared.NewCPT` |
 | *(from the matched path)* | `shared.CapabilitySet` | the path definition's `requiredCapabilities` |
 | `fragile`, `gift_wrap` | `Task.Fragile`, `Task.GiftWrap` | direct, optional (default `false`) |
+| `ref` | `Task.SourceOrderId` | order work only (not transfer work, whose `ref` is a demand id); published as `TaskCompleted.order_ref` ([ADR-0040](../adr/0040-task-completed-carries-order-ref.md)) |
+| `line_no` | `Task.SourceLineNo` | optional, order work only, never parsed from the work unit id; published as `TaskCompleted.line_no` ([ADR-0041](../adr/0041-task-completed-carries-line-no.md)) |
 
-Note that `data.ref` is decoded but **not** used — the deliberate choice was
-`work_unit_id` as the correlation key, because that is what Work Planning's
-`RecordCompletion` expects back. No upstream struct crosses the boundary. This
-is precisely the discipline the reference model demands: *"WES's `Task` is
+`work_unit_id` stays the correlation key (Work Planning's `RecordCompletion`
+expects it back); `ref` and `line_no` are kept apart on the task so inventory-storage
+can confirm the picked line's reservation. No upstream struct crosses the boundary.
+This is precisely the discipline the reference model demands: *"WES's `Task` is
 built FROM WMS's released work, not shared with it."*
 
 ### `fulfillment-execution` → `wes-work-planning` — **Customer/Supplier (feedback edge)**
@@ -130,18 +132,29 @@ They also share a **published language** for capability names — `pick`,
 `pack`, `slam`, `rebin` — declared once in the process-path catalogue. That is
 a shared *vocabulary*, not a shared type.
 
-### `fulfillment-execution` → `inventory-storage` — **Customer/Supplier + ACL (one opt-in lookup)**
+### `fulfillment-execution` → `inventory-storage` — **Separate Ways**
 
 `inventory-storage` is the WMS-tier authority on stock reality. This service
 does **not** consume its events: stock reality reaches it transitively, via
 what `wes-work-planning` chooses to release. A `Task` carries an `orderRef`,
 never a bin.
 
-The one direct edge is a synchronous read of product classification: with
-`PRODUCT_CLASSIFICATION_MODE=http`, `SealPackage` asks
-`GET /products/{sku}/classification` for each scanned SKU's DOT hazard class
-to enforce package segregation
-([ADR-0010](../adr/0010-package-segregation-and-sort-lane.md)). The response is
+The former direct edge, a synchronous `GET /products/{sku}/classification`
+per scanned SKU (`PRODUCT_CLASSIFICATION_MODE=http`, ADR-0010), was removed:
+classification moved to product-master (below). In the other direction,
+inventory-storage can consume this service's `TaskCompleted` (its additive
+`order_ref`, [ADR-0040](../adr/0040-task-completed-carries-order-ref.md)) to
+confirm an order's picks; that consumer is off by default on its side.
+
+### `product-master` → `fulfillment-execution` — **Published Language + ACL over a local copy (opt-in)**
+
+With `PRODUCT_CLASSIFICATION_MODE=kafka`, a consumer of
+`warehouse.product-master.events` keeps `product_classification_copy` current
+from `ProductClassified` events (version-guarded, deduped on the CloudEvents
+`id`), and `SealPackage` reads each scanned SKU's DOT hazard class from it to
+enforce package segregation
+([ADR-0039](../adr/0039-product-classification-local-copy.md),
+[ADR-0010](../adr/0010-package-segregation-and-sort-lane.md)). The row is
 translated into a local `ClassificationInfo` at the port; the default
 permissive adapter skips the lookup entirely.
 
@@ -191,7 +204,8 @@ conforms to them.
 | `workforce-management` → this | Open Host Service | **Yes** — HTTP `GET /capacity/{capability}` |
 | `warehouse-ops-agent` → this | Open Host Service | **Yes** — MCP server and HTTP `GET /tasks?orderRef=` |
 | `process-path-management` → this | Published Language, Conformist on this side | Opt-in — Kafka `warehouse.process-path-management.events` (`PATH_CATALOGUE_SOURCE=kafka`) |
-| this → `inventory-storage` | Customer/Supplier, ACL on this side | Opt-in — HTTP classification lookup |
+| `product-master` → this | Published Language, ACL over a local copy on this side | **Yes** in the cluster — Kafka `warehouse.product-master.events` (`ProductClassified`, `PRODUCT_CLASSIFICATION_MODE=kafka`; binary default `permissive`) |
+| this → `inventory-storage` | Published Language (one event consumed there) | Wired there, off by default — inventory-storage can consume `TaskCompleted` (with `order_ref`, ADR-0040) to confirm picks. No call from this side: the former HTTP classification lookup was removed (ADR-0039) |
 | this → `facility-layout` | Conformist behind ACL | Opt-in — HTTP location-role lookup |
 | this → WCS / equipment | Customer/Supplier + Conformist behind ACL | No — strategic only |
 

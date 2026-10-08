@@ -78,6 +78,12 @@ type WorkReleasedData struct {
 	WorkUnitId string    `json:"work_unit_id"`
 	CPT        time.Time `json:"cpt"`
 	Ref        string    `json:"ref"`
+	// LineNo is the optional 1-based order line this release is for
+	// (wes-work-planning adds it for order-originated work; decision 18,
+	// per-line confirm-pick, ADR 0041). Absent (0) from any producer that
+	// predates it; the consumer then leaves the task's line unknown and
+	// never guesses it from the "<order>-line-<n>" work unit id.
+	LineNo lineNo `json:"line_no,omitempty"`
 	// Fragile is an optional packing hint set by wes-work-planning at
 	// release time, sourced from inventory-storage's ProductClassification
 	// (true if the upstream order line was classified Fragile). It is
@@ -344,6 +350,7 @@ func (c *Consumer) handleMessageWithRetry(ctx context.Context, raw []byte) error
 			WorkUnitId: env.Data.WorkUnitId,
 			CPT:        env.Data.CPT,
 			Ref:        env.Data.Ref,
+			LineNo:     env.Data.LineNo.Int(),
 			Fragile:    env.Data.Fragile,
 			GiftWrap:   env.Data.GiftWrap,
 			Transfer:   transfer,
@@ -404,6 +411,7 @@ func (c *Consumer) HandleMessage(ctx context.Context, raw []byte) error {
 		WorkUnitId: env.Data.WorkUnitId,
 		CPT:        env.Data.CPT,
 		Ref:        env.Data.Ref,
+		LineNo:     env.Data.LineNo.Int(),
 		Fragile:    env.Data.Fragile,
 		GiftWrap:   env.Data.GiftWrap,
 		Transfer:   transfer,

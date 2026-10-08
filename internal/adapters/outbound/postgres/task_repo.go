@@ -44,8 +44,8 @@ func (r *TaskRepo) Save(ctx context.Context, t *task.Task) error {
 	}
 
 	_, err := querierFrom(ctx, r.pool).Exec(ctx, `
-		INSERT INTO tasks (id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at, transfer_ref, demand_id, work_kind, site_id, sku, quantity)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+		INSERT INTO tasks (id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at, transfer_ref, demand_id, work_kind, site_id, sku, quantity, source_order_id, source_line_no)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
 		ON CONFLICT (id) DO UPDATE SET
 			task_type = EXCLUDED.task_type,
 			status = EXCLUDED.status,
@@ -62,10 +62,12 @@ func (r *TaskRepo) Save(ctx context.Context, t *task.Task) error {
 			work_kind = EXCLUDED.work_kind,
 			site_id = EXCLUDED.site_id,
 			sku = EXCLUDED.sku,
-			quantity = EXCLUDED.quantity
+			quantity = EXCLUDED.quantity,
+			source_order_id = EXCLUDED.source_order_id,
+			source_line_no = EXCLUDED.source_line_no
 	`, string(t.Id()), string(t.Type()), string(t.Status()), t.CPT().Time(), string(t.OrderRef()),
 		capabilitiesToSlice(t.RequiredCapabilities()), leaseStationId, leaseExpiry, t.Fragile(), t.GiftWrap(), t.ClaimedAt(),
-		transferRef, demandId, workKind, siteId, sku, quantity)
+		transferRef, demandId, workKind, siteId, sku, quantity, nullableString(t.SourceOrderId()), nullableLineNo(t.SourceLineNo()))
 	return err
 }
 
@@ -81,9 +83,18 @@ func nullableString(v string) *string {
 	return &v
 }
 
+// nullableLineNo maps the unknown line (0) to SQL NULL: an absent source
+// line is stored as NULL, never as 0 (ADR 0041).
+func nullableLineNo(n int) *int {
+	if n < 1 {
+		return nil
+	}
+	return &n
+}
+
 func (r *TaskRepo) FindById(ctx context.Context, id shared.TaskId) (*task.Task, error) {
 	row := querierFrom(ctx, r.pool).QueryRow(ctx, `
-		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at, transfer_ref, demand_id, work_kind, site_id, sku, quantity
+		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at, transfer_ref, demand_id, work_kind, site_id, sku, quantity, source_order_id, source_line_no
 		FROM tasks WHERE id = $1
 	`, string(id))
 	t, err := scanTask(row)
@@ -95,7 +106,7 @@ func (r *TaskRepo) FindById(ctx context.Context, id shared.TaskId) (*task.Task, 
 
 func (r *TaskRepo) FindClaimableByType(ctx context.Context, taskType task.Type, now time.Time) ([]*task.Task, error) {
 	rows, err := querierFrom(ctx, r.pool).Query(ctx, `
-		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at, transfer_ref, demand_id, work_kind, site_id, sku, quantity
+		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at, transfer_ref, demand_id, work_kind, site_id, sku, quantity, source_order_id, source_line_no
 		FROM tasks
 		WHERE task_type = $1
 		  AND (status = 'PENDING' OR (status = 'CLAIMED' AND lease_expiry <= $2))
@@ -130,7 +141,7 @@ func (r *TaskRepo) SaveClaim(ctx context.Context, t *task.Task, now time.Time) (
 
 func (r *TaskRepo) FindAllClaimed(ctx context.Context) ([]*task.Task, error) {
 	rows, err := querierFrom(ctx, r.pool).Query(ctx, `
-		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at, transfer_ref, demand_id, work_kind, site_id, sku, quantity
+		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at, transfer_ref, demand_id, work_kind, site_id, sku, quantity, source_order_id, source_line_no
 		FROM tasks WHERE status = 'CLAIMED'
 	`)
 	if err != nil {
@@ -146,7 +157,7 @@ func (r *TaskRepo) FindAllClaimed(ctx context.Context) ([]*task.Task, error) {
 // own status guard.
 func (r *TaskRepo) FindOpenPastCPT(ctx context.Context, now time.Time) ([]*task.Task, error) {
 	rows, err := querierFrom(ctx, r.pool).Query(ctx, `
-		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at, transfer_ref, demand_id, work_kind, site_id, sku, quantity
+		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at, transfer_ref, demand_id, work_kind, site_id, sku, quantity, source_order_id, source_line_no
 		FROM tasks
 		WHERE status IN ('PENDING', 'CLAIMED') AND cpt <= $1
 	`, now)
@@ -167,7 +178,7 @@ func (r *TaskRepo) CountByTypeAndStatus(ctx context.Context, taskType task.Type,
 
 func (r *TaskRepo) FindByOrderRef(ctx context.Context, orderRef shared.OrderRef) ([]*task.Task, error) {
 	rows, err := querierFrom(ctx, r.pool).Query(ctx, `
-		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at, transfer_ref, demand_id, work_kind, site_id, sku, quantity
+		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at, transfer_ref, demand_id, work_kind, site_id, sku, quantity, source_order_id, source_line_no
 		FROM tasks WHERE order_ref = $1
 	`, string(orderRef))
 	if err != nil {
@@ -197,8 +208,10 @@ func scanTask(row rowScanner) (*task.Task, error) {
 		siteId                         *string
 		sku                            *string
 		quantity                       *int
+		sourceOrderId                  *string
+		sourceLineNo                   *int
 	)
-	if err := row.Scan(&id, &taskType, &status, &cpt, &orderRef, &requiredCapabilities, &leaseStationId, &leaseExpiry, &fragile, &giftWrap, &claimedAt, &transferRef, &demandId, &workKind, &siteId, &sku, &quantity); err != nil {
+	if err := row.Scan(&id, &taskType, &status, &cpt, &orderRef, &requiredCapabilities, &leaseStationId, &leaseExpiry, &fragile, &giftWrap, &claimedAt, &transferRef, &demandId, &workKind, &siteId, &sku, &quantity, &sourceOrderId, &sourceLineNo); err != nil {
 		return nil, err
 	}
 
@@ -220,7 +233,7 @@ func scanTask(row rowScanner) (*task.Task, error) {
 	if err != nil {
 		return nil, err
 	}
-	return task.RehydrateTransfer(
+	t := task.RehydrateTransfer(
 		shared.TaskId(id),
 		taskTypeParsed,
 		statusParsed,
@@ -232,7 +245,14 @@ func scanTask(row rowScanner) (*task.Task, error) {
 		giftWrap,
 		claimedAt,
 		transfer,
-	), nil
+	)
+	if sourceOrderId != nil {
+		t.WithSourceOrderId(*sourceOrderId)
+	}
+	if sourceLineNo != nil {
+		t.WithSourceLineNo(*sourceLineNo)
+	}
+	return t, nil
 }
 
 // scanTransferDetails rebuilds the nullable transfer-correlation block

@@ -195,6 +195,11 @@ otel:
   endpoint: "otel-collector.observability.svc.cluster.local:4317"
   serviceName: "fulfillment-execution"
 
+# Extra env for the execution container. Product classification (ADR-0039)
+# has no dedicated values: set PRODUCT_CLASSIFICATION_MODE=kafka together with
+# PRODUCT_CLASSIFICATION_CONSUMER_GROUP here (the binary defaults to
+# permissive). PRODUCT_CLASSIFICATION_MODE=http was removed and fails the
+# boot, and INVENTORY_STORAGE_BASE_URL is no longer read.
 extraEnv: []
 
 # ---------------------------------------------------------------------------

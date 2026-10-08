@@ -31,10 +31,11 @@ touching `internal/domain/` or `internal/application/usecases/`.
   `kafkacatalog` outbound adapters that load it.
 - **Fragile (packing hint)** — `Task.Fragile()` and the derived
   `Package.FragileHandling()`. Stamped onto the Task by `wes-work-planning`
-  at release time (from `inventory-storage`'s `ProductClassification`, read
-  once upstream — this service never looks the fragile flag up itself; the
-  only direct inventory-storage call is the ADR-0010 hazard-class lookup
-  below).
+  at release time (from product-master's handling classification, which
+  wes-work-planning reads from its own local copy — this service never looks
+  the fragile flag up itself). This service makes no call to
+  inventory-storage at all: the hazard-class lookup below reads a local copy
+  of product-master's `ProductClassified` (ADR-0039).
   `SealPackage` derives `FragileHandling` from the owning task's flag, not a
   separate caller input. Affects packing/downstream sortation only — does
   not gate claiming.
@@ -45,10 +46,10 @@ touching `internal/domain/` or `internal/application/usecases/`.
   pre-existing generic capability-matching mechanism — no structural change
   needed (ADR-0009).
 - **Package segregation & SortLane (ADR-0010)** — `SealPackage` performs a
-  LIVE, synchronous per-scanned-SKU classification lookup (outbound port
-  `ports.ProductClassificationLookup`, permissive-by-default HTTP adapter
-  mirroring inventory-storage's own `facilitylayout` pattern:
-  `PRODUCT_CLASSIFICATION_MODE=http|permissive`) — NOT a value stamped onto
+  per-scanned-SKU classification lookup (outbound port
+  `ports.ProductClassificationLookup`; since ADR-0039 it reads a LOCAL COPY of
+  product-master's `ProductClassified` events,
+  `PRODUCT_CLASSIFICATION_MODE=kafka|permissive`) — NOT a value stamped onto
   the Task at release time, because a Pack task's contents (which SKUs get
   scanned into it) are only known live at the scan station, not at release.
   `Package.ScanItemWithClass` rejects a scan whose DOT hazard class is

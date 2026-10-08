@@ -40,6 +40,18 @@ func newTestTask(t *testing.T, tasks *memory.TaskRepo, orderRef shared.OrderRef)
 	return tk
 }
 
+// newTestTaskFromOrder saves a PICK task whose orderRef (work_unit_id) is the
+// per-line work unit id and whose source order id is the upstream order, as
+// ApplyWorkReleased builds it for order-originated work.
+func newTestTaskFromOrder(t *testing.T, tasks *memory.TaskRepo, orderRef shared.OrderRef, sourceOrderId string) *task.Task {
+	t.Helper()
+	tk := task.New("task-1", task.Pick, shared.NewCPT(epoch.Add(time.Hour)), orderRef, shared.NewCapabilitySet("pick"), false, false).WithSourceOrderId(sourceOrderId)
+	if err := tasks.Save(context.Background(), tk); err != nil {
+		t.Fatalf("save task: %v", err)
+	}
+	return tk
+}
+
 func TestPublish_PublishesTaskCompletedEnrichedWithOrderRef(t *testing.T) {
 	tasks := memory.NewTaskRepo()
 	newTestTask(t, tasks, shared.OrderRef("wu-original"))
@@ -295,6 +307,57 @@ func TestPublish_EnrichesWithTaskType(t *testing.T) {
 			_, data := decodeCE[outboundkafka.TaskCompletedData](t, w.msgs[0].Value)
 			if data.TaskType != string(tt.taskType) {
 				t.Errorf("Data.TaskType = %q, want %q", data.TaskType, string(tt.taskType))
+			}
+		})
+	}
+}
+
+// order_ref (audit decision 17) is the ORDER the completed task belongs to —
+// the key inventory-storage uses to confirm picks (reservations carry
+// demand_ref = OrderId). It is the order id stamped on the Task from
+// WorkReleased.ref, NOT the task's orderRef (work_unit_id), which for
+// order-originated work is the per-line work unit id "<order>-line-<n>".
+// It is an additive optional field: present when the task carries a source
+// order id, ABSENT from the JSON (not "") otherwise.
+func TestPublish_TaskCompletedCarriesOrderRef(t *testing.T) {
+	tasks := memory.NewTaskRepo()
+	newTestTaskFromOrder(t, tasks, "ord-77-line-1", "ord-77")
+	w := &fakeWriter{}
+	p := &outboundkafka.Publisher{Writer: w, Tasks: tasks, NewId: func() string { return "evt-1" }}
+
+	if err := p.Publish(context.Background(), shared.NewTaskCompleted("task-1", "station-1", epoch)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	_, data := decodeCE[outboundkafka.TaskCompletedData](t, w.msgs[0].Value)
+	if data.OrderRef != "ord-77" {
+		t.Errorf("Data.OrderRef = %q, want the order id %q", data.OrderRef, "ord-77")
+	}
+	if data.WorkUnitId != "ord-77-line-1" {
+		t.Errorf("work_unit_id must be unchanged (the task's orderRef), got %q", data.WorkUnitId)
+	}
+}
+
+func TestPublish_TaskCompletedOmitsOrderRefWhenNoSourceOrder(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, tasks *memory.TaskRepo)
+	}{
+		// A non-empty orderRef (work_unit_id) must NOT leak into order_ref.
+		{"no source order id", func(t *testing.T, tasks *memory.TaskRepo) { newTestTask(t, tasks, "ord-77-line-1") }},
+		{"empty everything", func(t *testing.T, tasks *memory.TaskRepo) { newTestTask(t, tasks, "") }},
+		{"task not found", func(*testing.T, *memory.TaskRepo) {}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tasks := memory.NewTaskRepo()
+			tc.setup(t, tasks)
+			w := &fakeWriter{}
+			p := &outboundkafka.Publisher{Writer: w, Tasks: tasks, NewId: func() string { return "evt-1" }}
+			if err := p.Publish(context.Background(), shared.NewTaskCompleted("task-1", "station-1", epoch)); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			_, data := decodeCE[map[string]any](t, w.msgs[0].Value)
+			if _, present := data["order_ref"]; present {
+				t.Errorf("order_ref must be omitted without a source order id, got %v", data)
 			}
 		})
 	}

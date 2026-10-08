@@ -63,7 +63,6 @@ sequenceDiagram
     actor Packer as Packer at pack-01
     actor Slam as SLAM line
     participant FE as fulfillment-execution
-    participant IS as inventory-storage
     participant OM as order-management
     Rebinner->>FE: cmd: POST /rebin/arrivals line-1 of order wu-42
     Note over FE: ItemArrivedAtRebin - in-process only
@@ -71,7 +70,7 @@ sequenceDiagram
     Note over FE: last line - CreateTask PACK and OrderConsolidated
     Packer->>FE: cmd: POST /stations/pack-01/claim-next with taskType PACK
     Packer->>FE: cmd: POST /tasks/task-9/seal-package with contents
-    FE->>IS: qry: GET /products/sku-1/classification - opt-in, per SKU
+    Note over FE: per scanned SKU, DOT hazard class read from the local copy of product-master's ProductClassified - fail-open
     Note over FE: segregation check, Seal, PackageSealed - reply 201 with sortLane
     Packer->>FE: cmd: POST /tasks/task-9/complete
     Slam->>FE: cmd: POST /packages/pkg-7/slam with actualWeight and expectedWeight
@@ -81,7 +80,8 @@ sequenceDiagram
 
 Source: `internal/application/usecases/arrive_at_rebin.go`, `seal_package.go`,
 `run_slam.go`, `get_package.go`,
-`internal/adapters/outbound/productclassification/client.go`,
+`internal/adapters/outbound/productclassificationcopy/` (fed by
+`internal/adapters/inbound/kafka/product_classified_consumer.go`, ADR-0039),
 `internal/adapters/outbound/kafka/publisher.go`. Omits the divert branch
 (outside tolerance the package becomes `DIVERTED`, raising
 `WeightDiscrepancyDetected` and `PackageDiverted` on the analytics topic

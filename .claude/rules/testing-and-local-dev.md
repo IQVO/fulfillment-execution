@@ -14,7 +14,7 @@ paths:
 
 - Go 1.26, modules; chi (`go-chi/chi/v5`); pgx/v5 + pgxpool; golang-migrate.
 - Config via env (`DATABASE_URL`, `HTTP_ADDR`, `ANALYTICS_DATABASE_URL`, mode
-  flags like `PRODUCT_CLASSIFICATION_MODE=http|permissive`).
+  flags like `PRODUCT_CLASSIFICATION_MODE=kafka|permissive`).
 - gofmt/go vet clean; every package has a doc comment.
 
 ## Testing

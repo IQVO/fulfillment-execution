@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
@@ -22,9 +23,12 @@ type WorkReleasedRequest struct {
 	WorkUnitId string
 	CPT        time.Time
 	Ref        string
-	Fragile    bool
-	GiftWrap   bool
-	Transfer   *task.TransferDetails
+	// LineNo is the optional 1-based order line of the release
+	// (WorkReleased.line_no; 0 = absent/unknown).
+	LineNo   int
+	Fragile  bool
+	GiftWrap bool
+	Transfer *task.TransferDetails
 }
 
 // ApplyWorkReleased applies one WorkReleased occurrence exactly once
@@ -54,6 +58,33 @@ type ApplyWorkReleased struct {
 	// then undoes the claim explicitly via ports.ProcessedEventReleaser
 	// so a retry still re-applies.
 	UnitOfWork ports.UnitOfWork
+	// Logger receives the WARN for an ignored out-of-range line_no. Nil
+	// means slog.Default().
+	Logger *slog.Logger
+}
+
+func (uc *ApplyWorkReleased) logger() *slog.Logger {
+	if uc.Logger != nil {
+		return uc.Logger
+	}
+	return slog.Default()
+}
+
+// boundedLineNo returns the line number to stamp: req.LineNo when it is in
+// 1..task.MaxSourceLineNo, else 0 (unknown). A value above the maximum is a
+// corrupt producer value; it is ignored like an absent one (with a WARN
+// naming the event) so the task is still created and the value can never
+// fail the tasks insert (32-bit column) or poison the partition. Non-positive
+// values are unknown silently, as before.
+func (uc *ApplyWorkReleased) boundedLineNo(ctx context.Context, req WorkReleasedRequest) int {
+	if req.LineNo > task.MaxSourceLineNo && req.Transfer == nil {
+		uc.logger().WarnContext(ctx, "WorkReleased line_no above the 32-bit maximum ignored; source line left unknown",
+			"event_id", req.EventId, "work_unit_id", req.WorkUnitId, "line_no", req.LineNo, "max", task.MaxSourceLineNo)
+	}
+	if req.LineNo < 1 || req.LineNo > task.MaxSourceLineNo {
+		return 0
+	}
+	return req.LineNo
 }
 
 // Execute applies req. A nil return means the occurrence is fully applied
@@ -83,11 +114,17 @@ func (uc *ApplyWorkReleased) Execute(ctx context.Context, req WorkReleasedReques
 
 		required := shared.NewCapabilitySet(capabilitiesOf(pathDef)...)
 		orderRef := shared.OrderRef(req.WorkUnitId)
+		// The release ref is the ORDER id only for order-originated work;
+		// for transfer work it is a demand id, so nothing is stamped.
+		sourceOrderId := req.Ref
+		// line_no is likewise order-only and explicit: never parsed from
+		// the "<order>-line-<n>" work unit id (decision 18, ADR 0041).
+		sourceLineNo := uc.boundedLineNo(ctx, req)
 		if req.Transfer != nil {
-			_, err = uc.CreateTask.ExecuteTransfer(ctx, task.Type(pathDef.Id), shared.NewCPT(req.CPT), orderRef, required, req.Fragile, req.GiftWrap, req.Transfer)
-		} else {
-			_, err = uc.CreateTask.Execute(ctx, task.Type(pathDef.Id), shared.NewCPT(req.CPT), orderRef, required, req.Fragile, req.GiftWrap)
+			sourceOrderId = ""
+			sourceLineNo = 0
 		}
+		_, err = uc.CreateTask.ExecuteRelease(ctx, task.Type(pathDef.Id), shared.NewCPT(req.CPT), orderRef, required, req.Fragile, req.GiftWrap, sourceOrderId, sourceLineNo, req.Transfer)
 		return err
 	})
 	if err == nil {

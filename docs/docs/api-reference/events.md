@@ -74,10 +74,30 @@ mutating the old one.
     "work_unit_id": "wu-8a1f",
     "associate_id": "worker-42",
     "duration_seconds": 245,
-    "task_type": "PICK"
+    "task_type": "PICK",
+    "order_ref": "order-8a1f",
+    "line_no": 2
   }
 }
 ```
+
+`order_ref` is optional (omitted when empty) and additive — the event stays
+v1 ([ADR-0040](../adr/0040-task-completed-carries-order-ref.md)). It is the
+upstream **order** id (`WorkReleased.ref`, kept on the task), the key
+inventory-storage uses to confirm picks; it is not `work_unit_id`, which for
+order work is the per-line work unit id. The analytics-topic `TaskCompleted`
+carries the same optional field.
+
+`line_no` is likewise optional (omitted when unknown, never `0`) and additive
+([ADR-0041](../adr/0041-task-completed-carries-line-no.md)): the 1-based order
+line the task's work was released for, copied from the optional
+`WorkReleased.line_no` and stored on the task as `source_line_no`. It is set
+for order work only (never transfer work) and is never parsed from
+`work_unit_id`. With `order_ref` it lets inventory-storage confirm the
+reservation of exactly that line. The analytics-topic `TaskCompleted` carries
+it too. The valid range is 1..2147483647 (32-bit); on the consumed
+`WorkReleased` a larger value is ignored (the task's line stays unknown), not
+rejected.
 
 ## Channels
 
@@ -95,7 +115,7 @@ per service via `KAFKA_BROKERS`.
 
 | `type` | `data` fields | Consumed by |
 | --- | --- | --- |
-| `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` | `task_id`, `station_id`, `work_unit_id`, `associate_id`, `duration_seconds`, `task_type` | wes-work-planning, labor-performance |
+| `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` | `task_id`, `station_id`, `work_unit_id`, `associate_id`, `duration_seconds`, `task_type`, `order_ref`? ([ADR-0040](../adr/0040-task-completed-carries-order-ref.md)), `line_no`? ([ADR-0041](../adr/0041-task-completed-carries-line-no.md)) | wes-work-planning, labor-performance, inventory-storage (pick confirmation) |
 | `com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed` | `task_id`, `order_ref`, `task_type`, `cpt` | order-management |
 | `com.warehouse.wes.fulfillment-execution.package.PackageManifested` | `package_id`, `order_ref` | order-management |
 
@@ -138,7 +158,7 @@ Same `type` strings, `dataschema` `urn:warehouse:fulfillment-execution:analytics
 | `...task.TaskCreated` | `task_id`, `task_type` |
 | `...task.TaskClaimed` | `task_id`, `task_type`, `station_id` |
 | `...task.LeaseExpired` | `task_id`, `task_type` |
-| `...task.TaskCompleted` | `task_id`, `task_type`, `station_id` |
+| `...task.TaskCompleted` | `task_id`, `task_type`, `station_id`, `order_ref`?, `line_no`? |
 | `...task.ItemPicked` | `task_id`, `task_type` |
 | `...package.PackageSealed` | `package_id` |
 | `...package.WeightDiscrepancyDetected` | `package_id`, `expected_g`, `actual_g` |
@@ -187,7 +207,8 @@ Mapping into this context's model (the Anti-Corruption Layer):
 | `data.work_unit_id` | `shared.OrderRef` | direct |
 | `data.cpt` | `shared.CPT` | RFC 3339 → `time.Time` |
 | *(from the matched path)* | `shared.CapabilitySet` | the path definition's `requiredCapabilities` |
-| `data.ref` | *(unused)* | decoded but not mapped — `work_unit_id` is the correlation key |
+| `data.ref` | `Task.SourceOrderId` | order work only, never transfer work (its `ref` is a demand id); published as `TaskCompleted.order_ref` ([ADR-0040](../adr/0040-task-completed-carries-order-ref.md)) |
+| `data.line_no` | `Task.SourceLineNo` | optional; valid range 1..2147483647 (32-bit, the `source_line_no` column width); a larger value is ignored (line unknown, WARN with the event id) and the task is still created, so it never fails the insert or dead-letters the message; order work only, never transfer work; never parsed from `work_unit_id`; published as `TaskCompleted.line_no` ([ADR-0041](../adr/0041-task-completed-carries-line-no.md)) |
 
 ### Invalid and legacy messages
 

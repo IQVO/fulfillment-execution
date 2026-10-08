@@ -32,13 +32,25 @@ type fakeTaskRepo struct {
 	taskType   task.Type
 	found      bool
 	byOrderRef map[shared.OrderRef][]*task.Task
+	// noSourceOrder makes FindById return a task WITHOUT a source order id
+	// (default: "order-1"), to exercise the omitted-when-absent order_ref.
+	// The task's orderRef (work unit id) is always "order-1-line-1".
+	noSourceOrder bool
+	// sourceLineNo, when > 0, is stamped on the task FindById returns
+	// (per-line confirm-pick, decision 18); 0 leaves the line unknown.
+	sourceLineNo int
 }
 
 func (r fakeTaskRepo) FindById(_ context.Context, id shared.TaskId) (*task.Task, error) {
 	if !r.found {
 		return nil, nil
 	}
-	return task.New(id, r.taskType, shared.NewCPT(time.Now()), "order-1", shared.NewCapabilitySet(), false, false), nil
+	t := task.New(id, r.taskType, shared.NewCPT(time.Now()), "order-1-line-1", shared.NewCapabilitySet(), false, false)
+	if !r.noSourceOrder {
+		t.WithSourceOrderId("order-1")
+	}
+	t.WithSourceLineNo(r.sourceLineNo)
+	return t, nil
 }
 func (fakeTaskRepo) Save(context.Context, *task.Task) error { return nil }
 func (fakeTaskRepo) SaveClaim(context.Context, *task.Task, time.Time) (bool, error) {
@@ -264,6 +276,59 @@ func TestAnalyticsPublisher_EnrichesTaskType(t *testing.T) {
 	}
 	if data["station_id"] != "s1" {
 		t.Errorf("station_id = %v, want s1", data["station_id"])
+	}
+}
+
+// TestAnalyticsPublisher_TaskCompleted_CarriesOrderRef asserts the analytics
+// TaskCompleted payload carries the completed task's order reference as
+// order_ref (audit decision 17), and omits the key entirely when the task
+// has none.
+func TestAnalyticsPublisher_TaskCompleted_CarriesOrderRef(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		repo    fakeTaskRepo
+		want    string
+		wantKey bool
+	}{
+		{"order ref set", fakeTaskRepo{taskType: task.Pick, found: true}, "order-1", true},
+		{"source order empty is omitted", fakeTaskRepo{taskType: task.Pick, found: true, noSourceOrder: true}, "", false},
+		{"task not found is omitted", fakeTaskRepo{}, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := &fakeAnalyticsWriter{}
+			p := outboundkafka.NewAnalyticsPublisherWithWriter(w, tc.repo, func() string { return "evt" })
+			if err := p.Publish(context.Background(), shared.NewTaskCompleted("t1", "s1", time.Now())); err != nil {
+				t.Fatalf("Publish: %v", err)
+			}
+			_, data := decodeCE[map[string]any](t, w.msgs[0].Value)
+			got, present := data["order_ref"]
+			if present != tc.wantKey {
+				t.Fatalf("order_ref present = %v, want %v (data=%v)", present, tc.wantKey, data)
+			}
+			if tc.wantKey && got != tc.want {
+				t.Errorf("order_ref = %v, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAnalyticsPublisher_OrderRefOnlyOnTaskCompleted asserts the additive
+// field does not leak onto the other task-scoped analytics events.
+func TestAnalyticsPublisher_OrderRefOnlyOnTaskCompleted(t *testing.T) {
+	w := &fakeAnalyticsWriter{}
+	p := outboundkafka.NewAnalyticsPublisherWithWriter(w, fakeTaskRepo{taskType: task.Pick, found: true}, func() string { return "evt" })
+	at := time.Now()
+	if err := p.Publish(context.Background(),
+		shared.NewTaskCreated("t1", at),
+		shared.NewTaskClaimed("t1", "s1", at),
+		shared.NewLeaseExpired("t1", at),
+	); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	for _, m := range w.msgs {
+		if _, data := decodeCE[map[string]any](t, m.Value); data["order_ref"] != nil {
+			t.Errorf("order_ref leaked onto %s: %v", string(m.Key), data)
+		}
 	}
 }
 

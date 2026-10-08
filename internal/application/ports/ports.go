@@ -176,15 +176,15 @@ type ProcessedEventReleaser interface {
 
 // ClassificationInfo is the placement/segregation-relevant subset of a
 // SKU's classification, as seen from this bounded context — the result of
-// the live, synchronous cross-context lookup SealPackage uses per scanned
-// SKU. Known=false means "no classification info available for this SKU",
-// which SealPackage treats as no constraint (fail-open) — this service
-// does not own product classification and cannot assume every SKU is known
-// to inventory-storage (see ADR-0010, mirroring inventory-storage's own
-// SlotAttributes.Known convention for facility-layout lookups).
+// the per-scanned-SKU lookup SealPackage runs. Known=false means "no
+// classification info available for this SKU", which SealPackage treats
+// as no constraint (fail-open) — this service does not own product
+// classification and cannot assume every SKU is known to product-master
+// (see ADR-0010 for the semantics, ADR-0039 for the local copy that now
+// answers the lookup).
 type ClassificationInfo struct {
-	// Hazmat reports whether inventory-storage's ProductClassification
-	// carries the Hazmat handling tag for this SKU.
+	// Hazmat reports whether product-master's classification carries the
+	// Hazmat handling tag for this SKU.
 	Hazmat bool
 	// DOTHazardClass is the DOT hazard class (1-9) when Hazmat is true.
 	// Zero when Hazmat is false or the class is not (yet) recorded
@@ -205,16 +205,41 @@ type ClassificationInfo struct {
 	Known bool
 }
 
-// ProductClassificationLookup is the outbound port for the live,
-// synchronous, per-scanned-item cross-context read from inventory-storage's
-// GET /products/{sku}/classification endpoint, used by SealPackage to
-// enforce same-package DOT hazard segregation (see ADR-0010). Unlike the
-// Fragile flag (ADR-0009, stamped onto Task at release time by
-// wes-work-planning), a Pack task's scanned contents are discovered live at
-// the scan station — the classification of each scanned SKU must be looked
-// up at seal time, not release time.
+// ProductClassificationLookup is the outbound port for the per-scanned-item
+// classification read SealPackage uses to enforce same-package DOT hazard
+// segregation (see ADR-0010). Unlike the Fragile flag (ADR-0009, stamped
+// onto Task at release time by wes-work-planning), a Pack task's scanned
+// contents are discovered live at the scan station — the classification of
+// each scanned SKU must be looked up at seal time, not release time. Since
+// ADR-0039 the adapter behind it reads a local copy of product-master's
+// ProductClassified events instead of calling another context over REST.
 type ProductClassificationLookup interface {
 	GetClassification(ctx context.Context, sku string) (ClassificationInfo, error)
+}
+
+// ProductClassificationRecord is one SKU's classification as carried by
+// product-master's ProductClassified event (full-state replacement), plus
+// the product aggregate version it was published at. DOTHazardClass is 0
+// and TemperatureClass is "" when the producer omitted them (unset).
+type ProductClassificationRecord struct {
+	SKU              string
+	HandlingTags     []string
+	TemperatureClass string
+	DOTHazardClass   int
+	Version          int64
+}
+
+// ProductClassificationCopy is the write side of the local classification
+// copy (ADR-0039): one row per SKU, replaced only by a newer version.
+// Implementations must issue their write through the transaction bound to
+// ctx by UnitOfWork (when there is one), so the processed-event claim and
+// the upsert commit or roll back together.
+type ProductClassificationCopy interface {
+	// UpsertIfNewer inserts rec when the SKU is absent, or replaces the
+	// stored row when rec.Version is greater than the stored version. It
+	// reports whether a row was written; a stale or equal version is not
+	// an error (applied=false).
+	UpsertIfNewer(ctx context.Context, rec ProductClassificationRecord) (applied bool, err error)
 }
 
 // LocationRoleInfo is the placement-relevant subset of a facility-layout

@@ -1,8 +1,7 @@
 // breaker.go wraps Client with a per-dependency circuit breaker
 // (sony/gobreaker/v2, ADR-0029) AND jittered retry (cenkalti/backoff/v4)
 // — GetRole is a pure read (GET /locations/{locationCode}), safe to
-// retry, exactly like productclassification's own GetClassification
-// (see that package's breaker.go for the identical reasoning). While the
+// retry. While the
 // breaker is OPEN, this falls back to PermissiveLookup's existing
 // fail-open behaviour (Known=false, nil error) — the SAME fallback
 // RegisterStation already treats a lookup problem as (see

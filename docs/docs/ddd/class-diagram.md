@@ -358,9 +358,9 @@ classDiagram
         <<OutboundAdapter>>
         outbound/filecatalog + outbound/kafkacatalog
     }
-    class ClassificationClient {
+    class ClassificationCopy {
         <<OutboundAdapter>>
-        outbound/productclassification
+        outbound/productclassificationcopy
     }
     class FacilityLayoutClient {
         <<OutboundAdapter>>
@@ -394,7 +394,7 @@ classDiagram
     KafkaEncoders ..|> EventPublisher
     OutboxPublisher ..|> EventPublisher
     CatalogueLoaders ..|> PathCatalogue
-    ClassificationClient ..|> ProductClassificationLookup
+    ClassificationCopy ..|> ProductClassificationLookup
     FacilityLayoutClient ..|> LocationRoleLookup
 ```
 

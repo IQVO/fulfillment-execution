@@ -46,6 +46,7 @@ CloudEvents 1.0 event:
 | publish | `warehouse.fulfillment.analytics` | analytics events (10 types, see below) |
 | consume | `warehouse.work-planning.events` | `WorkReleased` from wes-work-planning |
 | consume | `warehouse.process-path-management.events` | `ProcessPath*` catalogue events |
+| consume | `warehouse.product-master.events` | `ProductClassified` from product-master, into the local classification copy ([ADR-0039](./0039-product-classification-local-copy.md)) |
 | consume | `warehouse.fulfillment.analytics` | the analytics projector (`cmd/fulfillment-projector`) |
 
 There is no flat envelope, no dual-write, no dual-read and no
@@ -133,6 +134,7 @@ com.warehouse.wes.work-planning.workunit.WorkReleased
 com.warehouse.wes.process-path-management.processpath.ProcessPathCreated
 com.warehouse.wes.process-path-management.processpath.ProcessPathUpdated
 com.warehouse.wes.process-path-management.processpath.ProcessPathDeactivated
+com.warehouse.wms.product-master.product.ProductClassified                (local classification copy, ADR-0039)
 com.warehouse.wes.fulfillment-execution.task.TaskClaimed                  (analytics projector)
 com.warehouse.wes.fulfillment-execution.task.TaskCompleted                (analytics projector)
 com.warehouse.wes.fulfillment-execution.task.LeaseExpired                 (analytics projector)
@@ -155,7 +157,10 @@ one.
    - the `WorkReleased` consumer dead-letters it to `<topic>.dlq` (its
      existing ADR-0029 DLQ path);
    - the process-path catalogue consumer and the analytics projector log
-     it at WARN with topic/partition/offset and commit past it.
+     it at WARN with topic/partition/offset and commit past it;
+   - the `ProductClassified` consumer (ADR-0039) logs it at WARN and commits
+     past it, and does the same for a `ProductClassified` whose payload
+     breaks the contract.
    It is never retried, never crashes the loop, and never falls back to a
    flat parser.
 3. Unknown types are ignored silently (forward compatibility).

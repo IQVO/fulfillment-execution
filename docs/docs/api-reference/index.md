@@ -178,5 +178,6 @@ All types share the base URI
 - **Work release.** `wes-work-planning` decides what to release; it arrives
   over Kafka, not HTTP.
 - **Inventory reservations.** `inventory-storage` owns stock truth; this
-  service only reads per-SKU hazard classification from it (opt-in).
+  service does not call it. Per-SKU hazard classification comes from a local
+  copy of product-master's `ProductClassified` events (ADR-0039).
 - **WCS / equipment commands.** A separate command channel, not built.

@@ -90,7 +90,7 @@ sequenceDiagram
             CO->>CO: skip
         else new
             CO->>CAT: Lookup path_id - longest matchPrefix
-            CO->>UC: Execute type from path, cpt, orderRef = work_unit_id, fragile, gift_wrap
+            CO->>UC: Execute type from path, cpt, orderRef = work_unit_id, sourceOrderId = ref and sourceLineNo = line_no (order work only), fragile, gift_wrap
             UC->>R: Save task
             UC->>P: Publish TaskCreated
         end
@@ -231,7 +231,7 @@ sequenceDiagram
     end
     UC->>R: Save - BEGIN UnitOfWork
     UC->>ENC: Publish TaskCompleted
-    ENC->>R: FindById for work_unit_id, task_type, claimedAt
+    ENC->>R: FindById for work_unit_id, order_ref, line_no, task_type, claimedAt
     ENC->>OB: INSERT integration row and analytics row - COMMIT
     IN-->>S: 204
     loop relay poll
@@ -296,8 +296,8 @@ sequenceDiagram
 
 Source: `internal/application/usecases/seal_package.go`,
 `internal/domain/package/package.go`, `segregation.go`,
-`internal/adapters/outbound/productclassification/`. Omits the retry and
-circuit breaker around the classification client. The ownership check is
+`internal/adapters/outbound/productclassificationcopy/` (local copy of
+product-master's classifications, ADR-0039). The ownership check is
 `Task.VerifyHeldBy(stationId, now)`: it requires a lease held by the caller
 that has not expired at the `Clock`'s `now` (expiry is inclusive, as in
 `Complete`), and it does not free the task, so an expired lease is rejected

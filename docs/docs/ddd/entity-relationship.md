@@ -26,7 +26,7 @@ draw no relationship lines. The logical links are explained below the
 diagrams — each one crosses an aggregate boundary, which is exactly why it
 is held by id and not by a constraint.
 
-## OLTP schema (final, after 0014)
+## OLTP schema (`tasks` after 0017; other tables as of 0014)
 
 ```mermaid
 erDiagram
@@ -48,6 +48,8 @@ erDiagram
         text site_id "0014, nullable"
         text sku "0014, nullable"
         integer quantity "0014, nullable"
+        text source_order_id "0016, nullable - order id from WorkReleased.ref, order work only"
+        integer source_line_no "0017, nullable - order line from WorkReleased.line_no, order work only"
     }
     stations {
         text id PK
@@ -109,7 +111,9 @@ erDiagram
     }
 ```
 
-Source: `migrations/0001_init.up.sql` to `migrations/0013_package_order_ref_index.up.sql`
+Source: `migrations/0001_init.up.sql` to `migrations/0013_package_order_ref_index.up.sql`,
+plus `0016_task_source_order_id` and `0017_task_source_line_no` for the two
+`tasks` columns above (`0015`'s product-classification copy table is not drawn)
 applied in order; `schema_migrations` is golang-migrate's own table
 (`internal/adapters/outbound/postgres/migrate.go`). Array columns are shown
 as `text_array` / `integer_array` (Postgres `TEXT[]` / `INTEGER[]`).

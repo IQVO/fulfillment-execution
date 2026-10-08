@@ -50,6 +50,7 @@ flowchart LR
         OM["order-management<br/>Generic/Supporting"]
         IS["inventory-storage<br/>Core"]
         FL["facility-layout<br/>Generic"]
+        PM["product-master<br/>Supporting"]
     end
     subgraph WCSTIER["WCS tier, not built"]
         WCS["WCS / equipment<br/>Generic"]
@@ -62,7 +63,7 @@ flowchart LR
     FE -->|"U: OHS / D: CF<br/>REST GET /capacity/capability"| WFM
     FE -->|"U: OHS / D: CF<br/>MCP tools and REST GET /tasks?orderRef="| OA
     PPM -.->|"opt-in - U: PL / D: CF<br/>Kafka ...process-path-management.processpath.ProcessPath*"| FE
-    IS -.->|"opt-in - U: OHS / D: ACL<br/>REST GET /products/sku/classification"| FE
+    PM -.->|"opt-in - U: PL / D: ACL, local copy<br/>Kafka com.warehouse.wms.product-master.product.ProductClassified"| FE
     FL -.->|"opt-in - U: OHS / D: ACL<br/>REST GET /locations/locationCode"| FE
     FE -.-x|"deliberately absent - U / D: ACL seam<br/>ports.EquipmentCommandPort, no adapter"| WCS
 
@@ -75,7 +76,8 @@ flowchart LR
 Source: `internal/adapters/inbound/kafka/consumer.go`,
 `internal/adapters/outbound/kafka/publisher.go`,
 `internal/adapters/outbound/kafkacatalog/consumer.go`,
-`internal/adapters/outbound/productclassification/client.go`,
+`internal/adapters/inbound/kafka/product_classified_consumer.go`,
+`internal/adapters/outbound/productclassificationcopy/`,
 `internal/adapters/outbound/facilitylayout/client.go`,
 `internal/adapters/inbound/http/router.go`, `cmd/mcp/router.go`,
 `internal/application/ports/equipment.go`, `apis/asyncapi.yaml`.
@@ -99,10 +101,10 @@ diagram labels.
 | 5 | **this** → `workforce-management` | U: OHS; D: CF | REST `GET /capacity/{capability}` (called by workforce-management) | **Live** | `internal/adapters/inbound/http/router.go`, `usecases.GetInstalledCapacity`; [ADR-0018](../adr/0018-installed-capacity-read-endpoint.md) |
 | 6 | **this** → `warehouse-ops-agent` | U: OHS; D: CF | MCP Streamable HTTP (`cmd/mcp`, tools `get_queue_status`, `find_claimable_work`, `diagnose_stuck_tasks`, `complete_task`, plus `get_fulfillment_throughput_report` / `get_on_time_to_cpt` when `REPORTS_BASE_URL` is set); REST `GET /tasks?orderRef=` from the console BFF | **Live** | `cmd/mcp/router.go`, `internal/adapters/inbound/mcp/tools.go`; [ADR-0008](../adr/0008-mcp-inbound-adapter.md), [ADR-0013](../adr/0013-fulfillment-mfe-console-adoption.md) |
 | 7 | `process-path-management` → **this** | U: PL; D: CF | Kafka `warehouse.process-path-management.events`, `com.warehouse.wes.process-path-management.processpath.ProcessPathCreated` / `ProcessPathUpdated` / `ProcessPathDeactivated`; per-process group | **Opt-in** (`PATH_CATALOGUE_SOURCE=kafka`; default `file` reads the same shape from YAML) | `internal/adapters/outbound/kafkacatalog/consumer.go`; [ADR-0017](../adr/0017-process-path-catalogue-as-configuration.md) |
-| 8 | `inventory-storage` → **this** | U: OHS; D: **ACL** (`ports.ClassificationInfo`) | REST `GET /products/{sku}/classification`, called per scanned SKU at seal time, behind retry + circuit breaker | **Opt-in** (`PRODUCT_CLASSIFICATION_MODE=http` + `INVENTORY_STORAGE_BASE_URL`; default permissive no-op) | `internal/adapters/outbound/productclassification/`; [ADR-0010](../adr/0010-package-segregation-and-sort-lane.md), [ADR-0029](../adr/0029-resilience-circuit-breakers-retry-dlq-shutdown.md) |
+| 8 | `product-master` → **this** | U: PL; D: **ACL** (`ports.ClassificationInfo`) over a local copy | Kafka `warehouse.product-master.events`, `com.warehouse.wms.product-master.product.ProductClassified` → table `product_classification_copy`, read per scanned SKU at seal time; group `PRODUCT_CLASSIFICATION_CONSUMER_GROUP` | **Opt-in** (`PRODUCT_CLASSIFICATION_MODE=kafka`; default permissive no-op; `http`, the former inventory-storage REST lookup, fails the boot) | `internal/adapters/inbound/kafka/product_classified_consumer.go`, `internal/adapters/outbound/productclassificationcopy/`; [ADR-0039](../adr/0039-product-classification-local-copy.md) (supersedes the live lookup of [ADR-0010](../adr/0010-package-segregation-and-sort-lane.md)) |
 | 9 | `facility-layout` → **this** | U: OHS; D: **ACL** (`ports.LocationRoleInfo`), conforming to the `LocationRole` vocabulary | REST `GET /locations/{locationCode}`, called once per `RegisterStation` with a `locationCode`, behind retry + circuit breaker | **Opt-in** (`LOCATION_ROLE_MODE=http` + `FACILITY_LAYOUT_BASE_URL`; default permissive no-op) | `internal/adapters/outbound/facilitylayout/`; [ADR-0024](../adr/0024-station-location-code-and-workcenter-role-check.md) |
 | 10 | **this** → WCS / equipment | Strategically U: this; D: WCS; ACL seam on this side | none | **Deliberately absent** — the port declares no methods and has no adapter | `internal/application/ports/equipment.go`; [ADR-0015](../adr/0015-wcs-equipment-anti-corruption-seam.md) |
-| 11 | `inventory-storage`, `facility-layout`, `order-management` events → **this** | Separate Ways | none | **Deliberately absent** — stock, layout and order facts reach this context only through what `wes-work-planning` releases (plus the two opt-in lookups above) | no consumer for those topics in `internal/adapters/inbound/kafka/` |
+| 11 | `inventory-storage`, `facility-layout`, `order-management` events → **this** | Separate Ways | none | **Deliberately absent** — stock, layout and order facts reach this context only through what `wes-work-planning` releases (plus the opt-in facility-layout lookup and product-master copy above) | no consumer for those topics in `internal/adapters/inbound/kafka/` |
 
 All REST and MCP surfaces are unauthenticated
 ([ADR-0022](../adr/0022-remove-rest-mcp-auth.md)). No Shared Kernel and no
