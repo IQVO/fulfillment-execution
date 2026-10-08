@@ -222,7 +222,8 @@ expired lease, `task.ErrNotOwner` for an active lease of another station;
 - A diverted package goes to manual handling; nothing in this context
   re-weighs it.
 - A hazard lookup failure is treated as "no hazard class" (fail-open), so
-  sealing never blocks on `inventory-storage`.
+  sealing never blocks on the classification copy (product-master's
+  `ProductClassified`, ADR-0039).
 
 ### 6. Handled Commands
 

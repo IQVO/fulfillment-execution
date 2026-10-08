@@ -88,7 +88,8 @@ The same classification is plotted on the ddd-crew
 
 | Context | Tier | Classification | Relationship to this context |
 | --- | --- | --- | --- |
-| `inventory-storage` | WMS | **Core** — chaotic stow + bin-accurate tracking is a real operational innovation | No direct edge; reaches this context indirectly via Work Planning |
+| `inventory-storage` | WMS | **Core** — chaotic stow + bin-accurate tracking is a real operational innovation | No call from this side; it can consume this context's `TaskCompleted` (`order_ref`) to confirm picks (off by default there). Stock reaches this context indirectly via Work Planning |
+| `product-master` | WMS | **Supporting** (per product-master's own ADR 0001) — SKU product master data | **Upstream**: its `ProductClassified` feeds this context's local classification copy (ADR-0039) |
 | `wes-work-planning` | WES | **Core** — "the conductor," continuous waveless release | **Upstream** supplier of released work; **downstream** consumer of completions |
 | `workforce-management` | — | **Supporting** — "allocates workforce to workload; important, industry-common" | No technical edge; a deliberate boundary at the process path |
 | **`fulfillment-execution`** | **WES** | **Core** | — |

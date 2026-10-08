@@ -118,8 +118,12 @@ and a retried call returns the already-sealed package (backed by the
 partial unique index on `packages.task_id`, migration 0011).
 
 When `ClassificationLookup` (`ports.ProductClassificationLookup`) is wired,
-`SealPackage` also performs a live, synchronous classification lookup per
-scanned SKU — see [ADR-0010](../adr/0010-package-segregation-and-sort-lane.md).
+`SealPackage` also performs a classification lookup per scanned SKU — see
+[ADR-0010](../adr/0010-package-segregation-and-sort-lane.md); since
+[ADR-0039](../adr/0039-product-classification-local-copy.md) it reads the
+local copy of product-master's `ProductClassified`
+(`PRODUCT_CLASSIFICATION_MODE=kafka`), not a synchronous call to
+inventory-storage.
 Unlike `Fragile`, this cannot be stamped onto `Task` at release time: a
 Pack task's contents are discovered live at the scan station, not known
 when the task was released. The port is nil-safe (permissive by default),
