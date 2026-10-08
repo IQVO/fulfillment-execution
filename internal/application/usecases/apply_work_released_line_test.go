@@ -1,7 +1,11 @@
 package usecases_test
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,6 +32,11 @@ func TestApplyWorkReleased_StampsSourceLineNoFromLineNo(t *testing.T) {
 		{"line_no is not derived from the work unit id", usecases.WorkReleasedRequest{EventId: "evt-ln-2", PathId: "PICK", WorkUnitId: "ORD-9-line-3", Ref: "ORD-9", CPT: atomicEpoch.Add(time.Hour)}, 0},
 		{"line_no differs from the id suffix: the explicit field wins", usecases.WorkReleasedRequest{EventId: "evt-ln-3", PathId: "PICK", WorkUnitId: "ORD-9-line-3", Ref: "ORD-9", LineNo: 1, CPT: atomicEpoch.Add(time.Hour)}, 1},
 		{"non-positive line_no is unknown", usecases.WorkReleasedRequest{EventId: "evt-ln-4", PathId: "PICK", WorkUnitId: "ORD-9-line-4", Ref: "ORD-9", LineNo: -4, CPT: atomicEpoch.Add(time.Hour)}, 0},
+		{"line_no 0 is unknown", usecases.WorkReleasedRequest{EventId: "evt-ln-6", PathId: "PICK", WorkUnitId: "ORD-9-line-5", Ref: "ORD-9", LineNo: 0, CPT: atomicEpoch.Add(time.Hour)}, 0},
+		{"line_no 1 is the lowest valid line", usecases.WorkReleasedRequest{EventId: "evt-ln-7", PathId: "PICK", WorkUnitId: "ORD-9-line-1", Ref: "ORD-9", LineNo: 1, CPT: atomicEpoch.Add(time.Hour)}, 1},
+		{"line_no MaxInt32 is the highest valid line", usecases.WorkReleasedRequest{EventId: "evt-ln-8", PathId: "PICK", WorkUnitId: "ORD-9-line-max", Ref: "ORD-9", LineNo: math.MaxInt32, CPT: atomicEpoch.Add(time.Hour)}, math.MaxInt32},
+		{"line_no above MaxInt32 is unknown but the task is still created", usecases.WorkReleasedRequest{EventId: "evt-ln-9", PathId: "PICK", WorkUnitId: "ORD-9-line-big", Ref: "ORD-9", LineNo: math.MaxInt32 + 1, CPT: atomicEpoch.Add(time.Hour)}, 0},
+		{"line_no MaxInt64 is unknown but the task is still created", usecases.WorkReleasedRequest{EventId: "evt-ln-10", PathId: "PICK", WorkUnitId: "ORD-9-line-huge", Ref: "ORD-9", LineNo: math.MaxInt64, CPT: atomicEpoch.Add(time.Hour)}, 0},
 		{"transfer work never carries a line", usecases.WorkReleasedRequest{EventId: "evt-ln-5", PathId: "PICK", WorkUnitId: "demand-1", Ref: "demand-1", LineNo: 2, CPT: atomicEpoch.Add(time.Hour),
 			Transfer: &task.TransferDetails{TransferRef: "tr-1", DemandId: "demand-1", WorkKind: task.WorkKindTransferPick}}, 0},
 	} {
@@ -44,6 +53,39 @@ func TestApplyWorkReleased_StampsSourceLineNoFromLineNo(t *testing.T) {
 			}
 			if got := list[0].SourceLineNo(); got != tc.want {
 				t.Errorf("SourceLineNo = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// An out-of-range line_no is ignored with a WARN naming the event id; a
+// valid one logs nothing.
+func TestApplyWorkReleased_OutOfRangeLineNoWarnsWithEventId(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		lineNo   int
+		wantWarn bool
+	}{
+		{"MaxInt32 is valid: no warning", math.MaxInt32, false},
+		{"MaxInt32+1 warns", math.MaxInt32 + 1, true},
+		{"MaxInt64 warns", math.MaxInt64, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&buf, nil))
+			tasks := memory.NewTaskRepo()
+			create := &usecases.CreateTask{Tasks: tasks, Publisher: events.NewBufferedPublisher(), Clock: memory.NewFixedClock(atomicEpoch), NewId: fixedTaskId("w")}
+			apply := &usecases.ApplyWorkReleased{CreateTask: create, Processed: memory.NewProcessedEventsRepo(), Catalogue: atomicCatalogue(), Logger: logger}
+			req := usecases.WorkReleasedRequest{EventId: "evt-warn-1", PathId: "PICK", WorkUnitId: "ORD-9-line-w", Ref: "ORD-9", LineNo: tc.lineNo, CPT: atomicEpoch.Add(time.Hour)}
+			if err := apply.Execute(context.Background(), req); err != nil {
+				t.Fatalf("apply: %v", err)
+			}
+			out := buf.String()
+			if tc.wantWarn && (!strings.Contains(out, "level=WARN") || !strings.Contains(out, "evt-warn-1")) {
+				t.Errorf("want a WARN naming event evt-warn-1, got %q", out)
+			}
+			if !tc.wantWarn && out != "" {
+				t.Errorf("want no log output, got %q", out)
 			}
 		})
 	}

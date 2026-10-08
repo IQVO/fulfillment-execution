@@ -95,7 +95,9 @@ line the task's work was released for, copied from the optional
 for order work only (never transfer work) and is never parsed from
 `work_unit_id`. With `order_ref` it lets inventory-storage confirm the
 reservation of exactly that line. The analytics-topic `TaskCompleted` carries
-it too.
+it too. The valid range is 1..2147483647 (32-bit); on the consumed
+`WorkReleased` a larger value is ignored (the task's line stays unknown), not
+rejected.
 
 ## Channels
 
@@ -206,7 +208,7 @@ Mapping into this context's model (the Anti-Corruption Layer):
 | `data.cpt` | `shared.CPT` | RFC 3339 → `time.Time` |
 | *(from the matched path)* | `shared.CapabilitySet` | the path definition's `requiredCapabilities` |
 | `data.ref` | `Task.SourceOrderId` | order work only, never transfer work (its `ref` is a demand id); published as `TaskCompleted.order_ref` ([ADR-0040](../adr/0040-task-completed-carries-order-ref.md)) |
-| `data.line_no` | `Task.SourceLineNo` | optional; order work only, never transfer work; never parsed from `work_unit_id`; published as `TaskCompleted.line_no` ([ADR-0041](../adr/0041-task-completed-carries-line-no.md)) |
+| `data.line_no` | `Task.SourceLineNo` | optional; valid range 1..2147483647 (32-bit, the `source_line_no` column width); a larger value is ignored (line unknown, WARN with the event id) and the task is still created, so it never fails the insert or dead-letters the message; order work only, never transfer work; never parsed from `work_unit_id`; published as `TaskCompleted.line_no` ([ADR-0041](../adr/0041-task-completed-carries-line-no.md)) |
 
 ### Invalid and legacy messages
 

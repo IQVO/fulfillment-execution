@@ -212,7 +212,9 @@ components:
                     work unit id.
                 line_no:
                   type: integer
+                  format: int32
                   minimum: 1
+                  maximum: 2147483647
                   description: The 1-based order line the completed task's work was released for (copied
                     from WorkReleased.line_no, ADR-0041); with order_ref it lets inventory-storage confirm
                     the pick of exactly that line's reservation. Optional and additive (the event stays
@@ -648,7 +650,9 @@ components:
                     has no order reference or cannot be found.
                 line_no:
                   type: integer
+                  format: int32
                   minimum: 1
+                  maximum: 2147483647
                   description: The 1-based order line the completed task's work was released for (ADR-0041).
                     Optional and additive (the event stays v1) and omitted when unknown or when the task
                     cannot be found.
@@ -1114,12 +1118,16 @@ components:
                     on the Task and published as TaskCompleted.order_ref (ADR-0040). For transfer work it is the demand id.
                 line_no:
                   type: integer
+                  format: int32
                   minimum: 1
+                  maximum: 2147483647
                   description: Optional (additive; the event stays v1). The 1-based order line this work
                     unit is for; wes-work-planning sets it for order-originated work (explicitly, not encoded
                     in work_unit_id). It is kept on the Task as source_line_no and published as
                     TaskCompleted.line_no (ADR-0041). Absent from producers that predate it, and never
-                    honoured for transfer work.
+                    honoured for transfer work. A value above 2147483647 (the 32-bit column width) is
+                    ignored by this consumer rather than rejected, so the task is still created with its
+                    line unknown.
                 fragile:
                   type: boolean
                   description: Optional fragile packing hint (default false).

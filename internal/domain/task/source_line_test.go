@@ -1,6 +1,7 @@
 package task_test
 
 import (
+	"math"
 	"testing"
 
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
@@ -29,6 +30,26 @@ func TestWithSourceLineNo_StampsWithoutTouchingOrderRefOrSourceOrder(t *testing.
 	}
 	if got := tk.SourceOrderId(); got != "ORD-1" {
 		t.Errorf("SourceOrderId = %q, want ORD-1", got)
+	}
+}
+
+// The source_line_no column is a 32-bit INTEGER, so the domain can only hold
+// 1..math.MaxInt32; anything above is unknown (0), never an out-of-range
+// value that would fail the tasks insert.
+func TestWithSourceLineNo_BoundaryTable(t *testing.T) {
+	for _, tc := range []struct {
+		in   int
+		want int
+	}{
+		{0, 0},
+		{1, 1},
+		{math.MaxInt32, math.MaxInt32},
+		{math.MaxInt32 + 1, 0},
+		{math.MaxInt64, 0},
+	} {
+		if got := newPickTask().WithSourceLineNo(tc.in).SourceLineNo(); got != tc.want {
+			t.Errorf("WithSourceLineNo(%d).SourceLineNo() = %d, want %d", tc.in, got, tc.want)
+		}
 	}
 }
 
