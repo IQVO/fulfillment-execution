@@ -211,6 +211,10 @@ func (h *Handlers) PostRunSlam(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, r, "invalid request body")
 		return
 	}
+	if msg := req.validate(); msg != "" {
+		writeBadRequest(w, r, msg)
+		return
+	}
 
 	if err := h.RunSlam.Execute(r.Context(), shared.PackageId(packageId), req.ActualWeight, req.ExpectedWeight); err != nil {
 		writeError(w, r, err)
