@@ -38,6 +38,7 @@ type world struct {
 	client    *http.Client
 	clock     *memory.FixedClock
 	publisher *events.BufferedPublisher
+	readiness *execmhttp.Readiness
 
 	// last response observed by a step that drives the API
 	status int
@@ -49,6 +50,10 @@ type world struct {
 	claimBody     []byte
 	packageId     string
 	sealBody      []byte
+
+	// w2 holds the wave-2 state (Rebin, Kafka consumers); see
+	// features_wave2_test.go.
+	w2 wave2State
 }
 
 // reset builds a brand-new service (fresh in-memory repos, fresh event
@@ -93,6 +98,9 @@ func (w *world) reset() {
 		GetPackagesByOrderRef: &usecases.GetPackagesByOrderRef{Packages: packages},
 	}
 
+	w.wireWave2(h)
+	w.readiness = &execmhttp.Readiness{}
+	h.Readiness = w.readiness
 	w.server = httptest.NewServer(execmhttp.NewRouter(h, nil))
 	w.client = w.server.Client()
 	w.clock = clock
@@ -714,6 +722,9 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	sc.Step(`^no "([^"]*)" domain event is recorded$`, w.noDomainEventIsRecorded)
 	sc.Step(`^no domain events are recorded$`, w.noDomainEventsAreRecorded)
 	sc.Step(`^exactly (\d+) "([^"]*)" domain events? (?:is|are) recorded$`, w.exactlyNDomainEventsAreRecorded)
+
+	w.registerWave2Steps(sc)
+	w.registerWave3Steps(sc)
 }
 
 // TestFeatures runs every Gherkin scenario under features/ as a Go test.
@@ -723,6 +734,7 @@ func TestFeatures(t *testing.T) {
 		Options: &godog.Options{
 			Format:   "pretty",
 			Paths:    []string{"features"},
+			Strict:   true,
 			TestingT: t,
 		},
 	}
