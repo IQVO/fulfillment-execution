@@ -8,18 +8,91 @@ description: The exact topics, envelopes, mappings, idempotency guarantees and c
 
 # Integration contracts
 
-The operational detail behind the Kafka edges on the
+The operational detail behind the Kafka and HTTP edges on the
 [Context map](./context-map.md). Everything here is taken from the adapter
-code and `INTEGRATION.md`, not from intent.
+code on `develop` and from the consumers' own code, not from intent.
 
 ## Topic summary
 
-| Direction | Topic | Event | Adapter |
+| Direction | Topic | Event | Adapter | Consumer group |
+| --- | --- | --- | --- | --- |
+| Consume | `warehouse.work-planning.events` | `WorkReleased` | `internal/adapters/inbound/kafka/consumer.go` | `WORK_RELEASED_CONSUMER_GROUP` (default `fulfillment-execution`); a new group starts at the **latest** offset |
+| Consume (opt-in) | `warehouse.product-master.events` | `ProductClassified` | `internal/adapters/inbound/kafka/product_classified_consumer.go`, only when `PRODUCT_CLASSIFICATION_MODE=kafka` | `PRODUCT_CLASSIFICATION_CONSUMER_GROUP` (no default; required) |
+| Consume (opt-in) | `warehouse.process-path-management.events` | process-path catalogue events | `internal/adapters/outbound/kafkacatalog`, only when `PATH_CATALOGUE_SOURCE=kafka` | a fresh group per process: full replay on every boot |
+| Publish | `warehouse.fulfillment.events` | `TaskCompleted`, `TaskCPTMissed`, `PackageManifested`, `TransferPicked`, `TransferDispatched`, `TransferArrived` | `internal/adapters/outbound/kafka/publisher.go` | – |
+| Publish | `warehouse.work-planning.events.dlq` | failed / poison `WorkReleased` | `consumer.go` (`DeadLetterTopic`), only when `EVENT_PUBLISHER=kafka` | – |
+| Publish + consume | `warehouse.fulfillment.analytics` | `TaskCreated`, `TaskClaimed`, `LeaseExpired`, `TaskCompleted`, `ItemPicked`, `PackageSealed`, `WeightDiscrepancyDetected`, `LabelApplied`, `PackageDiverted`, `PackageManifested` ([ADR-0012](../adr/0012-analytical-data-product.md)) | `outbound/kafka/analytics_publisher.go` → `inbound/kafka/analytics_consumer.go` (projector) | `fulfillment-analytics` (constant) |
+
+The projector applies five of the ten analytics types (`TaskClaimed`,
+`TaskCompleted`, `LeaseExpired`, `WeightDiscrepancyDetected`,
+`PackageManifested`) and ignores the rest.
+
+## Who depends on this service
+
+Found by searching the sibling repositories' `develop` branches for this
+service's topics, CloudEvents types, base URL and MCP endpoint. No other
+repository consumes `warehouse.fulfillment.analytics`.
+
+| Consumer | Edge | What it uses | Where (in that repo) |
 | --- | --- | --- | --- |
-| Consume | `warehouse.work-planning.events` | `WorkReleased` | `internal/adapters/inbound/kafka/consumer.go` |
-| Publish | `warehouse.fulfillment.events` | `TaskCompleted`, `TaskCPTMissed`, `PackageManifested`, `TransferPicked`, `TransferDispatched`, `TransferArrived` | `internal/adapters/outbound/kafka/publisher.go` |
-| Consume (opt-in) | `warehouse.process-path-management.events` | process-path catalogue events | `internal/adapters/outbound/kafkacatalog` — only when `PATH_CATALOGUE_SOURCE=kafka` |
-| Publish + consume | `warehouse.fulfillment.analytics` | analytics events (ADR-0012) | `outbound/kafka/analytics_publisher.go` → `inbound/kafka/analytics_consumer.go` |
+| wes-work-planning | Kafka `warehouse.fulfillment.events` | `TaskCompleted` (`work_unit_id`) to record completion of the work unit | `internal/adapters/inbound/kafka/consumer.go`, `usecases/apply_task_completed.go` |
+| labor-performance | Kafka `warehouse.fulfillment.events`, group `KAFKA_CONSUMER_GROUP` (default `labor-performance`) | `TaskCompleted` (`associate_id`, `duration_seconds`, `task_type`) | `internal/adapters/inbound/kafka/consumer.go`, `cmd/labor/main.go` |
+| inventory-storage | Kafka `warehouse.fulfillment.events`, group `inventory-storage-confirm-pick` | `TaskCompleted` of PICK tasks, counted per order to confirm picked reservations | `internal/adapters/inbound/kafka/task_completed_consumer.go` |
+| order-management | Kafka `warehouse.fulfillment.events`, group `order-management-repromise` | `TaskCPTMissed` and `PackageManifested` (re-promise loop) | `internal/adapters/inbound/kafka/repromise_consumer.go` |
+| network-inventory-planning | Kafka `warehouse.fulfillment.events` | `TransferPicked`, `TransferDispatched`, `TransferArrived` (transfer saga) | `internal/adapters/inbound/kafka/transfer_fact_consumer.go` |
+| workforce-management | REST `GET /capacity/{capability}` behind a circuit breaker, base URL `FULFILLMENT_EXECUTION_BASE_URL`, `INSTALLED_CAPACITY_MODE` | installed station count when committing a shift plan | `internal/adapters/outbound/fulfillmentexecution/client.go`, `cmd/workforce/main.go` |
+| warehouse-ops-agent | MCP (`FULFILLMENT_EXECUTION_MCP_ENDPOINT`) and REST (`FULFILLMENT_EXECUTION_REST_URL`, `FULFILLMENT_EXECUTION_REPORTS_REST_URL`) | the [MCP tools](../mcp/tools.md) and the REST API | `internal/config/config.go` |
+| warehouse-console | REST through Kong at `/api/fulfillment-execution` | the throughput report on its context-reports screen | `src/config.ts`, `src/features/context-reports/fulfillmentExecution.config.tsx` |
+| e2e-tests | Kafka and REST | end-to-end scenarios | `e2e_test.go`, `transfer_test.go` |
+
+`GET /capacity/{capability}` matches the registered capability string
+exactly, so `GET /capacity/PICK` returns `0` when stations registered `pick`.
+
+```mermaid
+sequenceDiagram
+    participant WP as wes-work-planning
+    participant K1 as warehouse.work-planning.events
+    participant FE as fulfillment-execution
+    participant K2 as warehouse.fulfillment.events
+    participant C as labor-performance, inventory-storage,<br/>order-management, network-inventory-planning
+    WP->>K1: WorkReleased (key = work unit)
+    K1->>FE: consume (group fulfillment-execution)
+    FE->>FE: ApplyWorkReleased: dedupe, catalogue lookup,<br/>save Task + outbox row in one tx
+    Note over FE: station claim-next / complete over REST or MCP
+    FE->>K2: TaskCompleted (+ TransferPicked etc.) via outbox relay
+    K2->>WP: TaskCompleted (work_unit_id)
+    K2->>C: TaskCompleted / TaskCPTMissed / PackageManifested / Transfer*
+```
+
+Source: `internal/adapters/inbound/kafka/consumer.go`,
+`internal/application/usecases/consume_work_released.go`,
+`internal/adapters/outbound/postgres/outbox_relay.go`, and the consumer files listed
+in the table above.
+
+## Outbound HTTP
+
+| Dependency | Call | When | Failure behaviour |
+| --- | --- | --- | --- |
+| facility-layout | `GET {FACILITY_LAYOUT_BASE_URL}/locations/{locationCode}` | `RegisterStation`, only with `LOCATION_ROLE_MODE=http` | Behind a circuit breaker (`internal/adapters/outbound/facilitylayout`); an error or open breaker yields "role unknown", which is accepted ([ADR-0024](../adr/0024-station-location-code-and-workcenter-role-check.md)). |
+| fulfillment-reports (own service) | `GET {REPORTS_BASE_URL}/reports/throughput` | MCP report tools, only with `REPORTS_BASE_URL` | The tool returns an error result. |
+
+## Inbound: `ProductClassified`
+
+Only with `PRODUCT_CLASSIFICATION_MODE=kafka`
+([ADR-0039](../adr/0039-product-classification-local-copy.md)). The consumer
+dispatches on the full type
+`com.warehouse.wms.product-master.product.ProductClassified` (key and
+`subject` = the SKU) and ignores every other type on the topic. Each event is
+a full-state replacement of one SKU's classification (`sku`,
+`handling_tags`, `temperature_class`, `dot_hazard_class`,
+`classification_source`, `version`) and is upserted into
+`product_classification_copy` with a version guard, so an older event never
+overwrites a newer one. `SealPackage` reads the hazard class from that copy
+for the segregation check. A payload that breaks the contract (missing
+`sku`, `version < 1`, `dot_hazard_class` outside 1–9) is logged and
+committed past; any other failure retries the same message with backoff
+(200ms to 5s) until it succeeds, so it blocks its partition but never loses
+an event.
 
 Every message on every one of these topics is a **CloudEvents 1.0** event in
 structured content mode, built and validated with the official
@@ -66,6 +139,9 @@ type:
 ```
 
 `fragile` and `gift_wrap` are optional packing hints (default `false`).
+`line_no` is the optional 1-based order line the release is for
+([ADR-0041](../adr/0041-task-completed-carries-line-no.md)); when it is absent
+the task's line stays unknown and is never guessed from the work unit id.
 
 ### The translation (Anti-Corruption Layer)
 
@@ -76,7 +152,8 @@ type:
 | `data.cpt` | `shared.CPT` | RFC 3339 timestamp |
 | *(from the matched path)* | `shared.CapabilitySet` | the path definition's `requiredCapabilities` |
 | `data.fragile` / `data.gift_wrap` | `Task.Fragile` / `Task.GiftWrap` | direct, default `false` |
-| `data.ref` | — | decoded, not mapped |
+| `data.line_no` | `Task.SourceLineNo` | direct; republished as `line_no` on `TaskCompleted` |
+| `data.ref` | — | decoded; becomes `demand_id` on a transfer fact |
 
 The consumer then calls the **existing** `CreateTask` use case. No new use
 case was introduced for the Kafka path — creating a task from released work
@@ -203,10 +280,18 @@ got** — the default stays `log` so tests and local runs need no broker.
     "work_unit_id": "wu-8a1f",
     "associate_id": "worker-42",
     "duration_seconds": 245,
-    "task_type": "PICK"
+    "task_type": "PICK",
+    "order_ref": "order-4471",
+    "line_no": 2
   }
 }
 ```
+
+`associate_id`, `duration_seconds`, `task_type`, `order_ref` and `line_no`
+are omitted when empty (`omitempty` on `TaskCompletedData`); `order_ref` and
+`line_no` were added by [ADR-0040](../adr/0040-task-completed-carries-order-ref.md)
+and [ADR-0041](../adr/0041-task-completed-carries-line-no.md) so
+inventory-storage can confirm the reservation of one order line.
 
 Message key (and CloudEvents `subject`): the task id, so all events for one
 task land on the same partition and preserve order. The `id` is a UUID v4

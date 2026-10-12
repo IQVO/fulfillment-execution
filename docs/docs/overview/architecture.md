@@ -24,7 +24,7 @@ flowchart TB
     end
 
     subgraph app["Application layer"]
-        UC["usecases<br/>one struct per use case (17)"]
+        UC["usecases<br/>one struct per use case (19)"]
         P["ports<br/>TaskRepo · StationRepo · PackageRepo · OrderConsolidationRepo<br/>EventPublisher · UnitOfWork · Clock · ProcessedEvents · PathCatalogue<br/>ProductClassificationLookup · LocationRoleLookup · Metrics"]
     end
 
@@ -34,7 +34,7 @@ flowchart TB
         PK["pack.Package"]
         OC["consolidation.OrderConsolidation"]
         PC["pathcatalog"]
-        SH["shared<br/>TaskId · StationId · CPT · Capability · 13 events"]
+        SH["shared<br/>TaskId · StationId · CPT · Capability · 16 events"]
     end
 
     subgraph outbound["Outbound adapters (driven)"]
@@ -68,6 +68,9 @@ flowchart TB
     CAT -.loads.-> PC
 ```
 
+Source: the package layout under `internal/`, `internal/application/ports/ports.go`,
+`internal/architecture/architecture_test.go`.
+
 The analytics read side (`cmd/fulfillment-projector`,
 `cmd/fulfillment-reports`, `internal/analytics/report`,
 `outbound/analyticsstore`) follows the same layering against a separate
@@ -92,11 +95,11 @@ internal/
     package/                   Package aggregate (seal, segregation, SLAM weigh-check)
     consolidation/             OrderConsolidation — Rebin fan-in tracker
     pathcatalog/               process-path catalogue model (prefix-match lookup)
-    shared/                    TaskId, StationId, CPT, Capability, 13 domain events
+    shared/                    TaskId, StationId, CPT, Capability, 16 domain events
   analytics/report/            analytical read model + store ports
   application/
     ports/                     OUT interfaces (see Use cases & ports)
-    usecases/                  one struct per use case (17 of them)
+    usecases/                  one struct per use case (19 of them)
   adapters/
     inbound/http/              chi router, handlers, DTOs, RFC 7807 error mapping
     inbound/kafka/             WorkReleased + ProductClassified consumers, analytics projector consumer
@@ -122,6 +125,62 @@ charts/fulfillment-execution/  Helm chart
 The `package` directory is imported as `pack` in Go, because `package` is a
 reserved keyword — the aggregate is still called `Package` in the ubiquitous
 language, and only the Go identifier bends.
+
+## Binaries, ports and data stores
+
+Four binaries are built from this module into one image (`/app/<name>`).
+Each has its own composition root under `cmd/` and is deployed as its own
+Kubernetes Deployment ([Runbook](../operations/runbook.md#deployment-shape)).
+
+| Binary | Role | Listens on (default) | HTTP surface | Reads / writes |
+| --- | --- | --- | --- | --- |
+| `cmd/execution` | OLTP service: REST API, `WorkReleased` consumer, optional `ProductClassified` and process-path catalogue consumers, outbox relay | `HTTP_ADDR` `:8080` | every route in `apis/openapi.yaml`, incl. `/healthz` and `/readyz` | OLTP Postgres (read-write, runs migrations); Kafka in and out |
+| `cmd/mcp` | MCP server over Streamable HTTP; same use cases over the same database | `MCP_ADDR` `:8090` | `/` and `/mcp` (MCP), `/healthz` | OLTP Postgres (runs migrations, writes `outbox_events` via `complete_task`); calls `cmd/fulfillment-reports` when `REPORTS_BASE_URL` is set |
+| `cmd/fulfillment-projector` | Analytics **writer**: consumes `warehouse.fulfillment.analytics` and projects it | `ADMIN_ADDR` `:8091` | `/healthz` only | analytical Postgres (read-write, runs analytics migrations) |
+| `cmd/fulfillment-reports` | Analytics **reader**: serves the throughput report | `HTTP_ADDR` `:8092` (chart: `:8080`) | `/reports/throughput`, `/reports/throughput/freshness`, `/healthz` | analytical Postgres over a read-only pool |
+
+Data stores: one **OLTP** Postgres database (`tasks`, `stations`,
+`packages`, `order_consolidations`, `processed_events`, `outbox_events`,
+`idempotency_keys`, `product_classification_copy`, plus the unused
+`domain_events` from migration 0001) and one separate **analytical**
+Postgres database (`throughput_rollup`, `analytics_pending_claims`,
+`analytics_processed_events`, `analytics_consumed_events`). Without
+`DATABASE_URL`, `cmd/execution` and `cmd/mcp` each keep their state in
+process memory.
+
+```mermaid
+flowchart LR
+    WP["wes-work-planning"] -- "WorkReleased<br/>warehouse.work-planning.events" --> EX
+    PM["product-master"] -- "ProductClassified<br/>warehouse.product-master.events" --> EX
+    PPM["process-path-management"] -- "ProcessPath*<br/>warehouse.process-path-management.events" --> EX
+    Clients["stations, console, workforce-management<br/>(via Kong /api/fulfillment-execution)"] -- REST --> EX
+    Agent["warehouse-ops-agent"] -- "MCP /mcp" --> MCP
+
+    subgraph svc["fulfillment-execution"]
+        EX["cmd/execution<br/>:8080"]
+        MCP["cmd/mcp<br/>:8090"]
+        PROJ["cmd/fulfillment-projector<br/>:8091"]
+        REP["cmd/fulfillment-reports<br/>:8092"]
+        OLTP[("OLTP Postgres<br/>tasks · outbox_events · ...")]
+        ADB[("Analytical Postgres<br/>throughput_rollup · ...")]
+    end
+
+    EX --> OLTP
+    MCP --> OLTP
+    MCP -- "REST /reports/..." --> REP
+    EX -- "outbox relay" --> FE["warehouse.fulfillment.events"]
+    EX -- "outbox relay" --> FA["warehouse.fulfillment.analytics"]
+    FA --> PROJ
+    PROJ --> ADB
+    REP --> ADB
+    EX -. "GET /locations/{code}<br/>LOCATION_ROLE_MODE=http" .-> FL["facility-layout"]
+    FE --> Down["wes-work-planning · order-management<br/>inventory-storage · labor-performance<br/>network-inventory-planning"]
+```
+
+Source: `cmd/execution/main.go`, `cmd/execution/classification.go`,
+`cmd/mcp/main.go`, `cmd/fulfillment-projector/main.go`,
+`cmd/fulfillment-reports/main.go`, `internal/composition/publisher.go`.
+Who consumes which event is on [Integration contracts](../ecosystem/integration-contracts.md).
 
 ## The dependency rule is executable, not aspirational
 
@@ -183,6 +242,11 @@ entirely from environment variables:
 - The `WorkReleased` Kafka consumer always starts, reading
   `warehouse.work-planning.events` from `KAFKA_BROKERS`; its dead-letter
   writer (`<topic>.dlq`) is wired only when `EVENT_PUBLISHER=kafka`.
+- `PRODUCT_CLASSIFICATION_MODE=kafka` adds the `ProductClassified` consumer
+  and the local classification copy (ADR-0039); `LOCATION_ROLE_MODE=http`
+  swaps the permissive location-role lookup for the facility-layout client
+  behind a circuit breaker (ADR-0024, ADR-0029). Every variable is on
+  [Configuration](../operations/configuration.md).
 
 Every use case receives its dependencies as struct fields — there is no DI
 container, no service locator, and no global state.

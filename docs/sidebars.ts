@@ -81,6 +81,23 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'Operations',
+      collapsed: false,
+      items: [
+        'operations/configuration',
+        'operations/runbook',
+        'operations/observability',
+        'operations/troubleshooting',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Development',
+      collapsed: false,
+      items: ['development/testing'],
+    },
+    {
+      type: 'category',
       label: 'Analytics',
       collapsed: false,
       items: ['analytics/throughput-report'],
@@ -89,7 +106,7 @@ const sidebars: SidebarsConfig = {
       type: 'category',
       label: 'AI Ecosystem (MCP)',
       collapsed: false,
-      items: ['mcp/governance-charter'],
+      items: ['mcp/tools', 'mcp/governance-charter'],
     },
     {
       type: 'category',
