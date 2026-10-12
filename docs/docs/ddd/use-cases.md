@@ -3,7 +3,7 @@ id: use-cases
 title: Use cases & ports
 sidebar_label: Use cases & ports
 sidebar_position: 4
-description: The seventeen application-layer use cases, the outbound ports they depend on, and the adapters that satisfy them.
+description: The nineteen application-layer use cases, the outbound ports they depend on, and the adapters that satisfy them.
 ---
 
 # Use cases & ports
@@ -12,7 +12,7 @@ The application layer is one struct per use case, each holding its
 dependencies as plain fields. There is no DI container and no base class. Each
 use case depends only on the domain and on `ports` — never on an adapter.
 
-## The seventeen use cases
+## The nineteen use cases
 
 One file each in `internal/application/usecases/`.
 
@@ -35,6 +35,14 @@ One file each in `internal/application/usecases/`.
 | 15 | `ArriveAtRebin` | `Execute(ctx, orderRef, lineId, requiredLineIds, packCPT, packRequired, packFragile, packGiftWrap) error` | `ItemArrivedAtRebin`; on completion also `TaskCreated` (via `CreateTask`) + `OrderConsolidated` | `POST /rebin/arrivals` |
 | 16 | `GetPackage` | `Execute(ctx, packageId) (*Package, error)` | — | `GET /packages/{id}` ([ADR-0033](../adr/0033-package-read-model.md)) |
 | 17 | `GetPackagesByOrderRef` | `Execute(ctx, orderRef) ([]*Package, error)` | — | `GET /packages?orderRef=` ([ADR-0033](../adr/0033-package-read-model.md)) |
+| 18 | `ApplyWorkReleased` | `Execute(ctx, WorkReleasedRequest) error` | `TaskCreated` (via `CreateTask`, once per CloudEvents `id`) | Kafka `WorkReleased` on `warehouse.work-planning.events`. Claims the event id in `processed_events`, resolves `path_id` through the catalogue (unknown path = error, retried then dead-lettered), saves the task, all in ONE `UnitOfWork` ([ADR-0036](../adr/0036-transfer-task-types-and-facts.md)) |
+| 19 | `ApplyProductClassified` | `Execute(ctx, ProductClassifiedRequest) error` | — | Kafka `ProductClassified` on `warehouse.product-master.events`, only with `PRODUCT_CLASSIFICATION_MODE=kafka`. Claims the event id and runs the version-guarded `UpsertIfNewer` into `product_classification_copy` in ONE `UnitOfWork` ([ADR-0039](../adr/0039-product-classification-local-copy.md)) |
+
+Source: `internal/application/usecases/` (one file per use case;
+`consume_work_released.go` holds `ApplyWorkReleased`). The scheduler for
+`ExpireLeases` and `SweepCPTMisses` is the chart's sweeps CronJob, which calls
+the two REST endpoints every 5 minutes
+([ADR-0037](../adr/0037-sweeps-scheduled-by-cronjob-default-on.md)).
 
 The MCP tools `find_claimable_work` and `diagnose_stuck_tasks` read
 `TaskRepo` directly through a narrow query port (`mcp.TaskQueries`) rather
