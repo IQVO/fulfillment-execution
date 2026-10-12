@@ -38,6 +38,7 @@ type world struct {
 	client    *http.Client
 	clock     *memory.FixedClock
 	publisher *events.BufferedPublisher
+	readiness *execmhttp.Readiness
 
 	// last response observed by a step that drives the API
 	status int
@@ -98,6 +99,8 @@ func (w *world) reset() {
 	}
 
 	w.wireWave2(h)
+	w.readiness = &execmhttp.Readiness{}
+	h.Readiness = w.readiness
 	w.server = httptest.NewServer(execmhttp.NewRouter(h, nil))
 	w.client = w.server.Client()
 	w.clock = clock
@@ -721,6 +724,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	sc.Step(`^exactly (\d+) "([^"]*)" domain events? (?:is|are) recorded$`, w.exactlyNDomainEventsAreRecorded)
 
 	w.registerWave2Steps(sc)
+	w.registerWave3Steps(sc)
 }
 
 // TestFeatures runs every Gherkin scenario under features/ as a Go test.
