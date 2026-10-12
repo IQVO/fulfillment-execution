@@ -28,9 +28,12 @@ It sits between its neighbours in the `warehouse-systems` platform:
   releases arrives here as a `WorkReleased` integration event and becomes a
   `Task` in this service's pool.
 - **Downstream (live):** `wes-work-planning` (completion feedback),
-  `labor-performance` and `order-management` consume the `TaskCompleted`,
-  `TaskCPTMissed` and `PackageManifested` events this service publishes on
-  `warehouse.fulfillment.events`.
+  `labor-performance` and `inventory-storage` consume `TaskCompleted`,
+  `order-management` consumes `TaskCPTMissed` and `PackageManifested`, and
+  `network-inventory-planning` consumes the transfer facts, all on
+  `warehouse.fulfillment.events`. `workforce-management` reads installed
+  station capacity over REST and `warehouse-ops-agent` uses the MCP server
+  ([Integration contracts](../ecosystem/integration-contracts.md#who-depends-on-this-service)).
 - **Downstream (strategic):** WCS / equipment (conveyors, print-and-apply
   labellers, check-weighers) would execute the physical steps. That edge
   is modelled as a deliberately empty port and is **not wired** — see
@@ -80,9 +83,22 @@ workforce planning.
   lease-expiry edge drawn explicitly.
 - **[Architecture](./architecture.md)** — hexagonal layering, the real package
   map, and the fitness tests that keep it honest.
-- **[Running locally](./running-locally.md)** — in-memory with just a
-  process-path catalogue file;
-  Postgres and Kafka when you want the real thing.
+- **[Running locally](./running-locally.md)** — prerequisites, make targets,
+  in-memory with just a process-path catalogue file, Postgres and the shared
+  Kafka broker when you want the real thing, and a first curl session.
+- **[Configuration](../operations/configuration.md)** — every environment
+  variable of the four binaries.
+- **[Runbook](../operations/runbook.md)**,
+  **[Observability](../operations/observability.md)** and
+  **[Troubleshooting](../operations/troubleshooting.md)** — deploying,
+  operating, watching and debugging it.
+- **[Testing](../development/testing.md)** — the test pyramid, make targets
+  and CI jobs.
+- **[MCP tools](../mcp/tools.md)** — the AI-agent surface.
+- **[Integration contracts](../ecosystem/integration-contracts.md)** — every
+  upstream and downstream edge.
+- **[Use cases & ports](../ddd/use-cases.md)** and
+  **[Subdomain classification](../ddd/subdomain-classification.md)**.
 - **[API Reference](../api-reference/index.md)** — every REST endpoint,
   generated from the real `apis/openapi.yaml`.
 - **[Architecture Decision Records](../adr/index.md)** — why it is built this

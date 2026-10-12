@@ -33,6 +33,24 @@ from `apis/asyncapi.yaml`, the ecosystem context map, and the Architecture
 Decision Records. Source lives in `docs/` and deploys via
 `.github/workflows/docs.yml`.
 
+Start here:
+
+| Page | What it answers |
+| --- | --- |
+| [Introduction](https://iqvo.github.io/fulfillment-execution/docs/overview/) | what this context owns and who it talks to |
+| [Architecture](https://iqvo.github.io/fulfillment-execution/docs/overview/architecture) | hexagonal layout, the four binaries, data stores |
+| [Running locally](https://iqvo.github.io/fulfillment-execution/docs/overview/running-locally) | prerequisites, make targets, first curl calls |
+| [Configuration](https://iqvo.github.io/fulfillment-execution/docs/operations/configuration) | every env var of every binary |
+| [Runbook](https://iqvo.github.io/fulfillment-execution/docs/operations/runbook) | Helm deployment, probes, migrations, Kafka, outbox, DLQ, sweeps, scaling, procedures |
+| [Observability](https://iqvo.github.io/fulfillment-execution/docs/operations/observability) | metrics, spans, logs, dashboard, alerts |
+| [Troubleshooting](https://iqvo.github.io/fulfillment-execution/docs/operations/troubleshooting) | symptom, cause, check, fix |
+| [Testing](https://iqvo.github.io/fulfillment-execution/docs/development/testing) | the test pyramid and every CI job |
+| [MCP tools](https://iqvo.github.io/fulfillment-execution/docs/mcp/tools) | every MCP tool, resource and prompt |
+| [Integration contracts](https://iqvo.github.io/fulfillment-execution/docs/ecosystem/integration-contracts) | every upstream and downstream edge |
+| [Use cases & ports](https://iqvo.github.io/fulfillment-execution/docs/ddd/use-cases) | the application use cases |
+| [Subdomain classification](https://iqvo.github.io/fulfillment-execution/docs/ddd/subdomain-classification) | Core / Supporting / Generic and why |
+| [ADR index](https://iqvo.github.io/fulfillment-execution/docs/adr/) | every architecture decision |
+
 ## Architecture
 
 Hexagonal / Ports & Adapters, with a strict dependency rule: **domain depends
