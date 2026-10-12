@@ -1,6 +1,7 @@
 package http
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/claudioed/fulfillment-execution/internal/domain/task"
@@ -65,10 +66,16 @@ type claimNextRequest struct {
 }
 
 func (r claimNextRequest) validate() string {
-	if r.TaskType == "" {
+	switch {
+	case r.TaskType == "":
 		return "taskType is required"
+	case !isValidTaskType(r.TaskType):
+		// apis/openapi.yaml claimNextTask: taskType is the TaskType enum, and
+		// a value outside it is a 400 (BadRequest), not an empty queue (409).
+		return "taskType must be one of PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL"
+	default:
+		return ""
 	}
-	return ""
 }
 
 type renewLeaseRequest struct {
@@ -119,8 +126,48 @@ type packageResponse struct {
 }
 
 type runSlamRequest struct {
-	ActualWeight   float64 `json:"actualWeight"`
-	ExpectedWeight float64 `json:"expectedWeight"`
+	ActualWeight   float64
+	ExpectedWeight float64
+
+	// hasActual / hasExpected record whether the JSON object carried the
+	// key at all. apis/openapi.yaml lists both weights as required, so an
+	// ABSENT weight is a 400; but it also documents that an explicit null
+	// is accepted and treated as 0, which a plain float64 (or *float64)
+	// cannot tell apart from absence. Tracking key presence keeps both
+	// documented behaviours.
+	hasActual   bool
+	hasExpected bool
+}
+
+// UnmarshalJSON decodes the weights and remembers which keys were present.
+func (r *runSlamRequest) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	var weights struct {
+		ActualWeight   float64 `json:"actualWeight"`
+		ExpectedWeight float64 `json:"expectedWeight"`
+	}
+	if err := json.Unmarshal(data, &weights); err != nil {
+		return err
+	}
+	r.ActualWeight, r.ExpectedWeight = weights.ActualWeight, weights.ExpectedWeight
+	_, r.hasActual = raw["actualWeight"]
+	_, r.hasExpected = raw["expectedWeight"]
+	return nil
+}
+
+// validate reports the first weight missing from the request, or "".
+func (r runSlamRequest) validate() string {
+	switch {
+	case !r.hasActual:
+		return "actualWeight is required"
+	case !r.hasExpected:
+		return "expectedWeight is required"
+	default:
+		return ""
+	}
 }
 
 type queueDepthResponse struct {
