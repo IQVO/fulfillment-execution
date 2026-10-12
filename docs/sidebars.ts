@@ -81,6 +81,12 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'Operations',
+      collapsed: false,
+      items: ['operations/configuration'],
+    },
+    {
+      type: 'category',
       label: 'Analytics',
       collapsed: false,
       items: ['analytics/throughput-report'],
