@@ -65,10 +65,16 @@ type claimNextRequest struct {
 }
 
 func (r claimNextRequest) validate() string {
-	if r.TaskType == "" {
+	switch {
+	case r.TaskType == "":
 		return "taskType is required"
+	case !isValidTaskType(r.TaskType):
+		// apis/openapi.yaml claimNextTask: taskType is the TaskType enum, and
+		// a value outside it is a 400 (BadRequest), not an empty queue (409).
+		return "taskType must be one of PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL"
+	default:
+		return ""
 	}
-	return ""
 }
 
 type renewLeaseRequest struct {
