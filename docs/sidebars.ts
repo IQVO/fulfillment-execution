@@ -92,6 +92,12 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'Development',
+      collapsed: false,
+      items: ['development/testing'],
+    },
+    {
+      type: 'category',
       label: 'Analytics',
       collapsed: false,
       items: ['analytics/throughput-report'],
