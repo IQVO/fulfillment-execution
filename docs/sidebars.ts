@@ -83,7 +83,7 @@ const sidebars: SidebarsConfig = {
       type: 'category',
       label: 'Operations',
       collapsed: false,
-      items: ['operations/configuration'],
+      items: ['operations/configuration', 'operations/runbook'],
     },
     {
       type: 'category',
