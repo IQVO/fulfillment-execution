@@ -10,7 +10,7 @@ description: ADR 0017 — load process-path definitions (id, required capabiliti
 
 ## Status
 
-Accepted.
+Accepted. The Kafka-source boot order of the addendum below is amended by [ADR-0044](./0044-listener-before-catalogue-replay.md) (listener before the replay, `/readyz` false until it catches up).
 
 ## Context
 

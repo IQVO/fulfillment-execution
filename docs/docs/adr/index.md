@@ -108,7 +108,7 @@ gets a "Supersedes ADR-NNNN" line in its Context, the old one gets
 | [0014](./0014-labor-performance-integration-hooks.md) | Labor-performance integration hooks — check-in/check-out wiring and `TaskCompleted` enrichment | Accepted |
 | [0015](./0015-wcs-equipment-anti-corruption-seam.md) | Structural anti-corruption-layer seam for the (unbuilt) WCS tier | Accepted |
 | [0016](./0016-rebin-and-order-consolidation.md) | REBIN task type and OrderConsolidation, kept inside fulfillment-execution | Accepted |
-| [0017](./0017-process-path-catalogue-as-configuration.md) | Process-path catalogue as configuration, replacing the path_id-prefix guess | Accepted |
+| [0017](./0017-process-path-catalogue-as-configuration.md) | Process-path catalogue as configuration, replacing the path_id-prefix guess | Accepted (Kafka-source boot order amended by [ADR-0044](./0044-listener-before-catalogue-replay.md)) |
 | [0018](./0018-installed-capacity-read-endpoint.md) | Installed-capacity read endpoint for workforce-management's capacity ceiling | Accepted |
 | [0019](./0019-standard-metrics-convention.md) | Standard metrics convention across the fleet (Tier 1 baseline, Tier 2 naming) | Accepted |
 | [0020](./0020-transactional-outbox.md) | Transactional outbox feeding both the integration and analytics topics from one table, with an in-process relay | Accepted (relay retry amended by [ADR-0042](./0042-outbox-relay-attempt-cap.md)) |
@@ -120,7 +120,7 @@ gets a "Supersedes ADR-NNNN" line in its Context, the old one gets
 | [0026](./0026-on-time-to-cpt-kpi.md) | On-time-to-CPT KPI on the throughput analytics data product (companion to order-management ADR 0014 §6) | Accepted |
 | [0027](./0027-cloudevents-envelope-migration.md) | Migrate `warehouse.fulfillment.events` to a CloudEvents 1.0 structured envelope via a dual-read/dual-write bake period; companion to wes-work-planning's own envelope-migration ADR-0021 | Superseded by [ADR-0032](./0032-cloudevents-mandatory-envelope.md) |
 | [0028](./0028-idempotency-key-middleware.md) | Transactional Idempotency-Key middleware for `POST /tasks`, direct port of order-management ADR-0023 | Accepted |
-| [0029](./0029-resilience-circuit-breakers-retry-dlq-shutdown.md) | Circuit breakers, jittered retry, dead-letter-queue hardening, and graceful shutdown for outbound dependencies, direct port of order-management ADR-0025 | Accepted |
+| [0029](./0029-resilience-circuit-breakers-retry-dlq-shutdown.md) | Circuit breakers, jittered retry, dead-letter-queue hardening, and graceful shutdown for outbound dependencies, direct port of order-management ADR-0025 | Accepted (readiness also covers the Kafka catalogue warm-up, [ADR-0044](./0044-listener-before-catalogue-replay.md)) |
 | [0030](./0030-horizontal-autoscaling-and-pgxpool-tuning.md) | Per-workload HorizontalPodAutoscaler and pgxpool MaxConns/statement_timeout tuning, direct port of order-management ADR-0026 | Accepted |
 | [0031](./0031-migrations-direct-postgres-connection.md) | Run golang-migrate against a direct Postgres connection, not PgBouncer — direct port of order-management ADR-0029 | Accepted |
 | [0032](./0032-cloudevents-mandatory-envelope.md) | CloudEvents 1.0 as the mandatory event envelope — every Kafka message (integration + analytics), SDK-built, no flat/dual modes | Accepted |
@@ -135,3 +135,4 @@ gets a "Supersedes ADR-NNNN" line in its Context, the old one gets
 | [0041](./0041-task-completed-carries-line-no.md) | `WorkReleased.line_no` is stamped on the Task (`source_line_no`, order work only) and `TaskCompleted` v1 (both topics) carries an optional `line_no`, so inventory-storage confirms the picked line (per-line confirm-pick) | Accepted |
 | [0042](./0042-outbox-relay-attempt-cap.md) | Outbox relay attempt cap: a row that failed `OUTBOX_MAX_ATTEMPTS` sends (default 20, 0 = unlimited) is excluded from claims, logged at ERROR and kept for inspection; later same-key rows overtake it | Accepted |
 | [0043](./0043-reports-api-openapi-contract.md) | The `cmd/fulfillment-reports` routes are specified in `apis/openapi-reports.yaml`, linted, rendered as a generated Reports API reference and contract-tested against the real router | Accepted |
+| [0044](./0044-listener-before-catalogue-replay.md) | With `PATH_CATALOGUE_SOURCE=kafka` the HTTP listener starts before the catalogue replay; `/healthz` answers at once, `/readyz` is 503 until the replay catches up, the `WorkReleased` consumer starts afterwards; a missed `WaitReadyTimeout` is still fatal | Accepted |

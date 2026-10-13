@@ -11,7 +11,7 @@ description: "ADR 0029 — a per-dependency sony/gobreaker circuit breaker plus 
 
 ## Status
 
-Accepted — implemented in the same change that introduced this record.
+Accepted — implemented in the same change that introduced this record. Readiness also reports not ready during the Kafka catalogue warm-up since [ADR-0044](./0044-listener-before-catalogue-replay.md).
 Direct port of order-management's ADR-0025 (PR #107) — the fleet
 reference implementation this change copies pattern-for-pattern,
 adapted to this repo's own two outbound HTTP clients and its one

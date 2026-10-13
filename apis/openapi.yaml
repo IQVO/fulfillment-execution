@@ -1218,6 +1218,9 @@ paths:
         the FIRST step of shutdown, before the HTTP server stops accepting
         connections, so a Kubernetes readinessProbe pointed here has a
         window to stop routing new traffic before the listener closes.
+        With `PATH_CATALOGUE_SOURCE=kafka` it also returns `503` from boot
+        until the process-path catalogue replay has caught up: the listener
+        starts before the replay so `/healthz` answers at once (ADR-0044).
         Distinct from `/healthz` (liveness, never flipped by shutdown).
       responses:
         "200":
