@@ -102,7 +102,7 @@ The full report contract is on [Throughput report](../analytics/throughput-repor
 
 | Database | Owner process | Migrations | Tables |
 | --- | --- | --- | --- |
-| OLTP (`DATABASE_URL`, `fulfillment_execution` in the kind cluster) | `cmd/execution` and `cmd/mcp` (both run migrations at boot) | `migrations/0001`–`0017` | `tasks`, `stations`, `packages`, `order_consolidations`, `processed_events`, `outbox_events`, `idempotency_keys`, `product_classification_copy`, `domain_events` (created by 0001, not written by any code today) |
+| OLTP (`DATABASE_URL`, `fulfillment_execution` in the kind cluster) | `cmd/execution` and `cmd/mcp` (both run migrations at boot) | `migrations/0001`–`0018` | `tasks`, `stations`, `packages`, `order_consolidations`, `processed_events`, `outbox_events`, `idempotency_keys`, `product_classification_copy` (`domain_events` from 0001 was dropped by 0018, [ADR-0045](../adr/0045-drop-legacy-domain-events-table.md)) |
 | Analytical (`ANALYTICS_DATABASE_URL`) | `cmd/fulfillment-projector` (only writer, runs migrations); `cmd/fulfillment-reports` reads | `migrations/analytics/0001`–`0002` | `analytics_processed_events`, `analytics_consumed_events`, `analytics_pending_claims`, `throughput_rollup` |
 
 Migrations are golang-migrate `up` runs at process start (`internal/adapters/outbound/postgres/migrate.go`),
