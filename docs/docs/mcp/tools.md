@@ -22,9 +22,11 @@ marks **every** field required, including the ones the descriptions call
 optional: send `""` for an unused filter.
 
 Server info: name `fulfillment-execution-mcp`, version `1.0.0`. Its
-`instructions` string says "Read-only access to the fulfillment-execution work
-backlog ... Start with the triage_backlog prompt."; note that `complete_task`
-below is a write tool.
+`instructions` string lists the read tools, names `complete_task` as the one
+WRITE tool (it publishes `TaskCompleted`; confirm before calling it) and
+points at the read-only `triage_backlog` prompt. It no longer says
+"Read-only access" (gap fix D17, pinned by
+`TestEvalConformance_InstructionsNameTheWriteTool`).
 
 ## Tools
 

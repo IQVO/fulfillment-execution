@@ -35,6 +35,27 @@ func TestEvalConformance_InitializeHandshake(t *testing.T) {
 	}
 }
 
+// TestEvalConformance_InstructionsNameTheWriteTool pins gap fix D17: the
+// server exposes a write tool (complete_task publishes TaskCompleted), so
+// the instructions a host shows the model must not describe the server as
+// read-only and must name the write tool, or an agent skips the
+// confirmation it would ask for before changing state.
+func TestEvalConformance_InstructionsNameTheWriteTool(t *testing.T) {
+	h := newEvalHarness(t)
+
+	init := h.session.InitializeResult()
+	if init == nil {
+		t.Fatal("no initialize result on the session")
+	}
+	lower := strings.ToLower(init.Instructions)
+	if strings.HasPrefix(lower, "read-only") {
+		t.Errorf("instructions claim the server is read-only, but complete_task writes: %q", init.Instructions)
+	}
+	if !strings.Contains(init.Instructions, "complete_task") {
+		t.Errorf("instructions must name the write tool complete_task: %q", init.Instructions)
+	}
+}
+
 // TestEvalConformance_UnknownToolIsAProtocolError pins that calling a tool
 // the server never advertised is rejected at the protocol layer (a
 // JSON-RPC error), not silently executed or returned as a tool result.
