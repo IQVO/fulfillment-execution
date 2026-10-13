@@ -5,6 +5,10 @@ metadata:
   name: {{ include "fulfillment-execution.fullname" . }}
   labels:
     {{- include "fulfillment-execution.labels" . | nindent 4 }}
+  {{- with include "fulfillment-execution.kongPluginNames" . }}
+  annotations:
+    konghq.com/plugins: {{ . | quote }}
+  {{- end }}
 spec:
   parentRefs:
     {{- range .Values.gatewayApi.parentRefs }}

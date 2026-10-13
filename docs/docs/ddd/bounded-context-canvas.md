@@ -14,6 +14,105 @@ Every message row maps to a real route in
 `internal/adapters/inbound/mcp/`, or a real Kafka topic and CloudEvents type
 in the consumers and publishers.
 
+## Canvas at a glance
+
+One picture of the sections below, laid out like the ddd-crew canvas:
+inbound collaborators on the left, this context in the middle (purpose,
+domain roles and the business decisions it enforces), outbound
+collaborators on the right. Arrows follow the message type: **solid blue**
+commands (`cmd`), **dotted green** queries (`qry`), **thick orange** events
+(`evt`); each arrow names its channel and the messages it carries. Box shapes
+mark the collaborator kind: rounded = people, UI or any client; blue =
+sibling bounded context; double border = external system or platform;
+grey = this context's own projector, reports or dead-letter path; dashed =
+published today with no consumer. Channel names on the arrows are
+abbreviated (REST, MCP, Kafka, HTTP, port); the Inbound and Outbound
+Communication tables carry the exact route, tool, topic and CloudEvents
+type for every message.
+
+```mermaid
+%%{init: {"flowchart": {"nodeSpacing": 18, "rankSpacing": 36, "padding": 8}}}%%
+flowchart LR
+    classDef bc fill:#fff3bf,stroke:#e67700,stroke-width:1.5px,color:#000
+    classDef card fill:#fff9db,stroke:#f08c00,color:#000,text-align:left
+    classDef ctx fill:#e7f5ff,stroke:#1c7ed6,color:#000
+    classDef actor fill:#fff4e6,stroke:#e8590c,color:#000
+    classDef ext fill:#ffe3e3,stroke:#c92a2a,color:#000
+    classDef self fill:#f1f3f5,stroke:#868e96,color:#000
+    classDef none fill:#f8f9fa,stroke:#adb5bd,stroke-dasharray:5 5,color:#495057
+    subgraph IN["Inbound - who commands, queries or feeds it"]
+        direction TB
+        in0(["Station clients, Pack, SLAM and Rebin stations, console"]):::actor
+        in1[["Scheduler (external)"]]:::ext
+        in2["wes-work-planning"]:::ctx
+        in3["process-path-management (opt-in)"]:::ctx
+        in4["product-master (opt-in)"]:::ctx
+        in5["workforce-management"]:::ctx
+        in6["warehouse-ops-agent / console BFF"]:::ctx
+        in7(["Any MCP host (no sibling caller in code)"]):::actor
+    end
+    subgraph BC["fulfillment-execution - Core subdomain - WES tier"]
+        direction TB
+        purpose["<b>Purpose</b><br/>Turn released work into physically<br/>completed work: each work unit<br/>becomes a Task a station pulls, held<br/>by at most one station under a<br/>lease, earliest CPT first; seal,<br/>SLAM-check and consolidate packages;<br/>report completions and missed CPTs."]:::card
+        roles["<b>Domain roles</b><br/>- Execution context (task lifecycle, claim and lease)<br/>- Enforcer<br/>- Gateway to the floor (empty WCS seam)<br/>- Analysis side role (own throughput read model)"]:::card
+        rules["<b>Business decisions it enforces</b><br/>- Dispatch is pull, never push<br/>- Priority is earliest CPT first,<br/>nothing else<br/>- A task is claimed at most once at a<br/>time; a lapsed lease returns it to<br/>the pool<br/>- Capabilities come from the<br/>registered station, not the request<br/>- Incompatible DOT hazard classes<br/>never share a package<br/>- A missed CPT is reported, not<br/>enforced"]:::card
+        purpose ~~~ roles ~~~ rules
+    end
+    subgraph OUT["Outbound - whom it calls or notifies"]
+        direction TB
+        out0["wes-work-planning"]:::ctx
+        out1["labor-performance"]:::ctx
+        out2["order-management"]:::ctx
+        out3["network-inventory-planning (transfer saga)"]:::ctx
+        out4["facility-layout (opt-in)"]:::ctx
+        out5["own analytics read side"]:::self
+        out6["wes-work-planning operators (DLQ)"]:::self
+        out7["WCS / equipment: no methods yet"]:::none
+    end
+    in0 -->|"cmd - REST<br/>Create task, Register station,<br/>Claim next task, Check in / out,<br/>Renew lease, Complete task, Seal<br/>package, Run SLAM weigh-check,<br/>Record arrival at Rebin"| BC
+    in0 -.->|"qry - REST<br/>Package by id, packages for an<br/>order, Queue depth"| BC
+    in1 -->|"cmd - REST<br/>Expire leases, Sweep CPT misses"| BC
+    in2 ==>|"evt - Kafka<br/>warehouse.work-planning.events<br/>WorkReleased"| BC
+    in3 ==>|"evt - Kafka<br/>warehouse.process-path-management.events<br/>ProcessPathCreated,<br/>ProcessPathUpdated,<br/>ProcessPathDeactivated"| BC
+    in4 ==>|"evt - Kafka<br/>warehouse.product-master.events<br/>ProductClassified into a local<br/>copy"| BC
+    in5 -.->|"qry - REST<br/>Installed capacity"| BC
+    in6 -.->|"qry - REST<br/>Tasks for an order"| BC
+    in6 -.->|"qry - MCP<br/>get_queue_status,<br/>find_claimable_work,<br/>diagnose_stuck_tasks, throughput<br/>and on-time-to-CPT reports"| BC
+    in7 -->|"cmd - MCP<br/>complete_task"| BC
+    BC ==>|"evt - Kafka<br/>warehouse.fulfillment.events<br/>TaskCompleted"| out0
+    BC ==>|"evt - Kafka<br/>warehouse.fulfillment.events<br/>TaskCompleted (associate,<br/>duration, task type)"| out1
+    BC ==>|"evt - Kafka<br/>warehouse.fulfillment.events<br/>TaskCPTMissed, PackageManifested"| out2
+    BC ==>|"evt - Kafka<br/>warehouse.fulfillment.events<br/>TransferPicked,<br/>TransferDispatched,<br/>TransferArrived"| out3
+    BC -.->|"qry - REST (http mode)<br/>Location role lookup"| out4
+    BC ==>|"evt - Kafka<br/>warehouse.fulfillment.analytics<br/>10 analytics events (TaskCreated<br/>... PackageManifested)"| out5
+    BC ==>|"evt - Kafka<br/>warehouse.work-planning.events.dlq<br/>poison or failed WorkReleased"| out6
+    linkStyle 0 stroke:#1971c2,stroke-width:1.5px
+    linkStyle 1 stroke:#2f9e44,stroke-width:1.5px
+    linkStyle 2 stroke:#1971c2,stroke-width:1.5px
+    linkStyle 3 stroke:#e8590c,stroke-width:2.5px
+    linkStyle 4 stroke:#e8590c,stroke-width:2.5px
+    linkStyle 5 stroke:#e8590c,stroke-width:2.5px
+    linkStyle 6 stroke:#2f9e44,stroke-width:1.5px
+    linkStyle 7 stroke:#2f9e44,stroke-width:1.5px
+    linkStyle 8 stroke:#2f9e44,stroke-width:1.5px
+    linkStyle 9 stroke:#1971c2,stroke-width:1.5px
+    linkStyle 10 stroke:#e8590c,stroke-width:2.5px
+    linkStyle 11 stroke:#e8590c,stroke-width:2.5px
+    linkStyle 12 stroke:#e8590c,stroke-width:2.5px
+    linkStyle 13 stroke:#e8590c,stroke-width:2.5px
+    linkStyle 14 stroke:#2f9e44,stroke-width:1.5px
+    linkStyle 15 stroke:#e8590c,stroke-width:2.5px
+    linkStyle 16 stroke:#e8590c,stroke-width:2.5px
+    class BC bc
+```
+
+Source: the Inbound Communication and Outbound Communication tables of this
+page, which map to `internal/adapters/inbound/{http,kafka,mcp}` and `internal/adapters/outbound/`. The diagram omits assumptions, verification metrics, open
+questions and the ubiquitous language (sections below), the relationship
+pattern per message (OHS, ACL, Conformist, Customer/Supplier - see the
+tables) and anything the tables mark as deprecated or platform-only
+(health probes).
+
 ## Name
 
 **Fulfillment Execution** (`fulfillment-execution`, CloudEvents subdomain
@@ -73,7 +172,7 @@ completions and missed CPTs back to planning, labour and order management.
 | Any client | Queue depth | Query | REST `GET /queues/{taskType}/depth` | OHS |
 | `workforce-management` | Installed capacity | Query | REST `GET /capacity/{capability}` | OHS |
 | `warehouse-ops-agent` | Queue status, claimable work, stuck tasks | Query | MCP `get_queue_status`, `find_claimable_work`, `diagnose_stuck_tasks`; resource `queue://fulfillment/{type}/status`; prompt `triage_backlog` | OHS |
-| `warehouse-ops-agent` | Complete task | Command | MCP `complete_task` | OHS |
+| Any MCP host (`warehouse-ops-agent` has no write path and never calls it) | Complete task | Command | MCP `complete_task` | OHS |
 | `warehouse-ops-agent` | Throughput / on-time-to-CPT report | Query | MCP `get_fulfillment_throughput_report`, `get_on_time_to_cpt` (when `REPORTS_BASE_URL` is set), served by REST `GET /reports/throughput` on `cmd/fulfillment-reports` | OHS |
 
 ## Outbound Communication
@@ -84,6 +183,7 @@ completions and missed CPTs back to planning, labour and order management.
 | `labor-performance` | `TaskCompleted` (with `associate_id`, `duration_seconds`, `task_type`) | Event | Kafka `warehouse.fulfillment.events`, `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` | Published Language |
 | `order-management` | `TaskCPTMissed` | Event | Kafka `warehouse.fulfillment.events`, `com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed` | Published Language |
 | `order-management` | `PackageManifested` | Event | Kafka `warehouse.fulfillment.events`, `com.warehouse.wes.fulfillment-execution.package.PackageManifested` | Published Language |
+| `network-inventory-planning` (transfer saga) | `TransferPicked`, `TransferDispatched`, `TransferArrived` | Event | Kafka `warehouse.fulfillment.events`, `com.warehouse.wes.fulfillment-execution.transfer.<Event>` (raised when a transfer-kind task completes, [ADR-0036](../adr/0036-transfer-task-types-and-facts.md)) | Published Language |
 | own analytics read side | 10 analytics events (`TaskCreated`, `TaskClaimed`, `LeaseExpired`, `TaskCompleted`, `ItemPicked`, `PackageSealed`, `WeightDiscrepancyDetected`, `PackageDiverted`, `LabelApplied`, `PackageManifested`) | Event | Kafka `warehouse.fulfillment.analytics`, `com.warehouse.wes.fulfillment-execution.<task or package>.<Event>` | internal (same context) |
 | `product-master` (opt-in) | `ProductClassified` into a local classification copy | Event | Kafka `warehouse.product-master.events`, `com.warehouse.wms.product-master.product.ProductClassified` (`PRODUCT_CLASSIFICATION_MODE=kafka`, ADR-0039) | Published Language, ACL on this side |
 | `facility-layout` (opt-in) | Location role lookup | Query | REST `GET /locations/{locationCode}` (`LOCATION_ROLE_MODE=http`) | Conformist behind ACL |
