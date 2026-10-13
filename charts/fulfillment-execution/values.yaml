@@ -280,7 +280,10 @@ sweeps:
 # retry (internal/adapters/outbound/bootretry: 5 attempts, 1+2+4+8 = 15s of
 # backoff plus the attempts' own duration) room to
 # finish before liveness/readiness probing (and any liveness-triggered
-# restart) begins.
+# restart) begins. With PATH_CATALOGUE_SOURCE=kafka the process-path
+# catalogue replay does NOT count against this budget: the listener (and so
+# /healthz) is up before the replay; /readyz stays 503 until it catches up
+# (ADR-0044).
 startupProbe:
   httpGet:
     path: /healthz

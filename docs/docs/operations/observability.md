@@ -121,6 +121,8 @@ Messages worth searching for or alerting on:
 | `outbox relay: row reached the attempt cap and is excluded from future claims; re-arm it with attempts = 0 after fixing the cause` | ERROR | A row failed `OUTBOX_MAX_ATTEMPTS` sends and is now skipped ([ADR-0042](../adr/0042-outbox-relay-attempt-cap.md)); fields `outbox_id`, `topic`, `event_type`, `key`, `attempts`, `max_attempts`, `error`. Alert on it. |
 | `outbox relay did not stop before the shutdown deadline` / `kafka consumer did not stop before the shutdown deadline` | WARN | Graceful shutdown hit its 10s bound. |
 | `retrying` (with `op`, `attempt`, `in`) | WARN | A boot-time dial (migrations, ping, catalogue) is being retried. |
+| `http listener up; /readyz stays not ready until the process-path catalogue has replayed its initial history` | INFO | `PATH_CATALOGUE_SOURCE=kafka`: the listener is serving and `/readyz` answers 503 while the catalogue replays ([ADR-0044](../adr/0044-listener-before-catalogue-replay.md)). |
+| `process-path catalogue is ready` (with `paths`) then `readiness: warm-up finished; /readyz now reports ready` | INFO | The replay reached the startup watermark; `/readyz` turns 200 and the Kafka consumers start. Missing 60s after the line above means the boot exits with `process-path catalogue did not become ready within 1m0s`. |
 | `domain event published` (with `event_name`, `occurred_at`) | INFO | The log publisher (`EVENT_PUBLISHER=log`): the event went nowhere else. |
 | `opentelemetry error` | WARN | An export to the Collector failed. |
 
