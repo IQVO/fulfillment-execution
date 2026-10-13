@@ -75,8 +75,12 @@ deadline.
 ## HTTP routes outside `apis/openapi.yaml`
 
 `apis/openapi.yaml` documents every `cmd/execution` route (including
-`/healthz` and `/readyz`); the generated [API Reference](../api-reference/index.md)
-covers them. The other binaries serve these, which are **not** in the spec:
+`/healthz` and `/readyz`); `apis/openapi-reports.yaml` documents every
+`cmd/fulfillment-reports` route ([ADR-0043](../adr/0043-reports-api-openapi-contract.md));
+the generated [API Reference](../api-reference/index.md) covers both. The
+other binaries serve these routes; the `cmd/fulfillment-reports` rows are
+the ones `apis/openapi-reports.yaml` specifies, the `cmd/mcp` and
+`cmd/fulfillment-projector` rows are in no spec:
 
 | Binary | Method and path | Response | Notes |
 | --- | --- | --- | --- |

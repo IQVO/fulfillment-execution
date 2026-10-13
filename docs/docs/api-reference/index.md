@@ -9,17 +9,18 @@ description: Every REST endpoint and the event contract — conventions, status-
 
 # API Reference
 
-This service exposes **two contracts**, both of which live in `apis/` in the
+This service exposes **three contracts**, all of which live in `apis/` in the
 repository and are linted by Spectral on every push:
 
 | Contract | File | Rendered here |
 | --- | --- | --- |
 | Synchronous REST | `apis/openapi.yaml` (OpenAPI 3.0.3) | [REST API](./rest/fulfillment-execution-api.info.mdx) — generated directly from the spec |
+| Reports REST (`cmd/fulfillment-reports`) | `apis/openapi-reports.yaml` (OpenAPI 3.0.3) | [Reports API](./rest-reports/fulfillment-execution-reports-api.info.mdx) — generated directly from the spec ([ADR-0043](../adr/0043-reports-api-openapi-contract.md)) |
 | Asynchronous events | `apis/asyncapi.yaml` (AsyncAPI 2.6.0) | [Events](./events.md) — hand-authored from the spec |
 
-The REST pages under **REST API** are generated from the real spec file by
-`docusaurus-plugin-openapi-docs` (`npm run gen-api-docs fulfillment`) and
-committed; `npm run build` does not regenerate them. They are not transcribed
+The REST pages under **REST API** and **Reports API** are generated from the
+real spec files by `docusaurus-plugin-openapi-docs`
+(`npm run clean-api-docs:all && npm run gen-api-docs:all`) and committed; `npm run build` does not regenerate them. They are not transcribed
 by hand, and the `docs-api-drift` CI job regenerates them on every push
 and pull request and fails on any diff, so they cannot silently drift from
 the contract.
@@ -59,8 +60,15 @@ the spec omits. `POST /rebin/arrivals` was that kind of drift until it was
 added to the spec under its own **Rebin** tag.
 
 The read-only analytics endpoints (`GET /reports/throughput`,
-`GET /reports/throughput/freshness`) are served by the separate
-`cmd/fulfillment-reports` process — see
+`GET /reports/throughput/freshness` and that process's `GET /healthz`) are
+served by the separate `cmd/fulfillment-reports` process and specified in
+`apis/openapi-reports.yaml` (gap fix D18,
+[ADR-0043](../adr/0043-reports-api-openapi-contract.md)). Schemathesis cannot
+boot that binary without an analytical database, so
+`internal/adapters/inbound/http/reports_contract_test.go` holds the spec and
+`NewReportsRouter` to each other: `TestReportsSpecAndRouterAgree` (routes,
+both directions) and `TestReportsResponsesConformToSpec` (every documented
+status, media type and property). See also
 [Throughput report](../analytics/throughput-report.md).
 
 No route or MCP tool is authenticated:

@@ -1,0 +1,61 @@
+---
+id: get-throughput-freshness
+title: "How far the read model trails the event stream"
+description: "Returns now minus the newest `occurred_at` in `analytics_processed_events`: the data product's freshness signal (target p95 under 30 s). A growing lag means the projector is falling behind or has stopped. An empty read model reports 0, which looks the same as a perfectly fresh one, so read it alongside the report's own counts."
+sidebar_label: "How far the read model trails the event stream"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "get api-method"
+info_path: docs/api-reference/rest-reports/fulfillment-execution-reports-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"How far the read model trails the event stream"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"get"}
+  path={"/reports/throughput/freshness"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+Returns now minus the newest `occurred_at` in `analytics_processed_events`: the data product's freshness signal (target p95 under 30 s). A growing lag means the projector is falling behind or has stopped. An empty read model reports 0, which looks the same as a perfectly fresh one, so read it alongside the report's own counts.
+
+
+<ParamsDetails>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./get-throughput-freshness.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./get-throughput-freshness.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

@@ -1,0 +1,71 @@
+---
+id: get-throughput-report
+title: "Throughput & Lease-Health report, keyed by task type, station and UTC hour"
+description: "Returns the rows whose hour bucket falls in the half-open window [from, to). The on-time-to-CPT counts (ADR-0026) are populated on SLAM rows only; they are raw counts, so the rate is packagesOnTimeToCPT / packagesManifested, computed by the caller."
+sidebar_label: "Throughput & Lease-Health report, keyed by task type, station and UTC hour"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "get api-method"
+info_path: docs/api-reference/rest-reports/fulfillment-execution-reports-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Throughput & Lease-Health report, keyed by task type, station and UTC hour"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"get"}
+  path={"/reports/throughput"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+Returns the rows whose hour bucket falls in the half-open window [from, to). The on-time-to-CPT counts (ADR-0026) are populated on SLAM rows only; they are raw counts, so the rate is packagesOnTimeToCPT / packagesManifested, computed by the caller.
+
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./get-throughput-report.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./get-throughput-report.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./get-throughput-report.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

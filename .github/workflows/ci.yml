@@ -332,6 +332,11 @@ jobs:
           echo "$PWD/apis/tooling/node_modules/.bin" >> "$GITHUB_PATH"
       - name: Lint OpenAPI spec
         run: spectral lint apis/openapi.yaml --ruleset .spectral.yaml --fail-severity=warn
+      - name: Lint OpenAPI spec (reports API)
+        # cmd/fulfillment-reports is a separate binary on a separate port
+        # against the analytical database, so its routes have their own spec
+        # (gap fix D18, ADR-0043).
+        run: spectral lint apis/openapi-reports.yaml --ruleset .spectral.yaml --fail-severity=warn
       - name: Lint AsyncAPI spec
         run: spectral lint apis/asyncapi.yaml --ruleset .spectral.asyncapi.yaml --fail-severity=warn
 
@@ -364,14 +369,20 @@ jobs:
           cache: npm
           cache-dependency-path: docs/package-lock.json
       - run: npm ci
-      - name: Regenerate REST API docs from apis/openapi.yaml
-        run: npm run clean-api-docs fulfillment && npm run gen-api-docs fulfillment
+      - name: Regenerate REST API docs from apis/openapi.yaml and apis/openapi-reports.yaml
+        run: npm run clean-api-docs:all && npm run gen-api-docs:all
       - name: Fail if generated docs differ from what's committed
+        # Runs with working-directory: docs, so the pathspecs are relative to
+        # docs/. `git status --porcelain` also catches an untracked page for a
+        # newly documented operation.
         run: |
           set -euo pipefail
-          if ! git diff --exit-code -- docs/api-reference/rest; then
-            echo "::error::docs/api-reference/rest is out of sync with apis/openapi.yaml." \
-                 "Run 'npm run gen-api-docs fulfillment' inside docs/ and commit the result."
+          drift="$(git status --porcelain -- docs/api-reference/rest docs/api-reference/rest-reports)"
+          if [ -n "$drift" ]; then
+            echo "$drift"
+            git --no-pager diff -- docs/api-reference/rest docs/api-reference/rest-reports | head -n 200
+            echo "::error::docs/api-reference/rest or rest-reports is out of sync with apis/openapi.yaml / apis/openapi-reports.yaml." \
+                 "Run 'npm run clean-api-docs:all && npm run gen-api-docs:all' inside docs/ and commit the result."
             exit 1
           fi
 

@@ -143,6 +143,7 @@ Gap-fix wave (2026-10-12) tests outside `internal/architecture`:
 | `TestReportTools_OptionalFiltersAreOptionalOnTheWire` | both report tools advertise `required: [from, to]` and a call without filters reaches the handler (D16) |
 | `TestNewLoggerLevels` (one per `cmd/*`) | `LOG_LEVEL` `warn`/`warning`, case-insensitive, in every binary (D22) |
 | `TestOutboxRelay_MaxAttempts_PoisonRowExcludedThenGoodRowPublishes`, `TestOutboxRelay_MaxAttempts_ReArmedRowIsClaimedAgain`, `TestOutboxRelay_NoCap_PoisonRowBlocksLaterRows` (integration, testcontainers) | the relay attempt cap: a poison row is excluded after N failures and logged at ERROR, the same-key row behind it publishes, the re-arm SQL works, `0` keeps the old blocking behaviour (D12) |
+| `TestReportsSpecAndRouterAgree`, `TestReportsResponsesConformToSpec` | `apis/openapi-reports.yaml` and `NewReportsRouter` agree on routes (both directions), statuses, media types and properties (D18, [ADR-0043](../adr/0043-reports-api-openapi-contract.md)) |
 | `TestOutboxMaxAttempts`, `TestBuildEventPublisher_KafkaWithPoolUsesOutbox` | `OUTBOX_MAX_ATTEMPTS` parsing (default 20, 0 unlimited, bad value falls back) and the cap reaching the relay (D12) |
 
 ## Local gates and hooks
@@ -176,8 +177,8 @@ Triggers: push and pull request to `main` and `develop`, a weekly schedule
 | `integration` | `go test -tags=integration ./... -race -count=1` | every push/PR |
 | `mutation-fast` | `gremlins unleash ./internal/domain/task` | every push/PR |
 | `vuln` | govulncheck v1.8.0 | every push/PR |
-| `api-lint` | Spectral on `apis/openapi.yaml` and `apis/asyncapi.yaml` | every push/PR |
-| `docs-api-drift` | `npm run clean-api-docs fulfillment && npm run gen-api-docs fulfillment` in `docs/`, fail on a diff under `docs/api-reference/rest` | every push/PR |
+| `api-lint` | Spectral on `apis/openapi.yaml`, `apis/openapi-reports.yaml` and `apis/asyncapi.yaml` | every push/PR |
+| `docs-api-drift` | `npm run clean-api-docs:all && npm run gen-api-docs:all` in `docs/`, fail on a diff or an untracked page under `docs/api-reference/rest` or `docs/api-reference/rest-reports` | every push/PR |
 | `arch-test` | `go test ./internal/architecture/... -v` | every push/PR |
 | `web` | builds warehouse-ui-kit `develop`, then lint, `tsc -b`, `npm test`, build of `web/` | every push/PR |
 | `mutation` | full domain mutation run; opens/closes a `harness:red` issue | schedule and dispatch only |

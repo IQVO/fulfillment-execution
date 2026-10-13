@@ -1,0 +1,1 @@
+{"schema":{"type":"object","required":["lagSeconds"],"properties":{"lagSeconds":{"type":"number","format":"double","minimum":0,"description":"Seconds between now and the newest projected event's occurred_at. 0 when the read model is empty.","example":4.2}},"title":"Freshness"},"schemaType":"response"}

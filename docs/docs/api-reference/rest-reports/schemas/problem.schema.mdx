@@ -1,0 +1,32 @@
+---
+id: problem
+title: "Problem"
+description: "RFC 7807 problem detail (ADR-0005), identical in shape to the OLTP API's."
+sidebar_label: "Problem"
+hide_title: true
+hide_table_of_contents: true
+schema: true
+sample: {"type":"https://errors.fulfillment-execution.warehouse-systems.dev/invalid-report-query","title":"The report query is malformed or missing a required parameter","status":400,"detail":"query parameter 'from' is required (RFC3339)","instance":"/reports/throughput"}
+custom_edit_url: null
+---
+
+import Schema from "@theme/Schema";
+import Heading from "@theme/Heading";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Problem"}
+>
+</Heading>
+
+
+
+RFC 7807 problem detail (ADR-0005), identical in shape to the OLTP API's.
+
+<Schema
+  {...require("./problem.Schema.json")}
+>
+  
+</Schema>
+            
