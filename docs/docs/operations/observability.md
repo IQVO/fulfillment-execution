@@ -75,6 +75,19 @@ The outbox relay, the process-path catalogue consumer and the sweeps'
 CronJob pods create no spans of their own (the sweep requests are traced
 server-side as `POST /tasks/expire-leases` and `POST /tasks/sweep-cpt-misses`).
 
+**Trace continuity across the outbox (gap fix D27).** Both encoders inject
+the W3C `traceparent`/`tracestate` of the writing use case's context into the
+message headers at encode time (`observability.InjectKafkaTrace`); the
+`OutboxPublisher` stores them in `outbox_events.headers` (JSONB, migration
+`0009`) in the same transaction; the relay sends the stored headers unchanged,
+even though its own pass runs without the request's context; and every
+consumer that starts a span extracts first (`observability.ExtractKafkaTrace`).
+A row written without an active span has no `traceparent` and relays with
+exactly its stored headers. Pinned by the integration tests
+`TestOutboxTrace_TraceparentCrossesTheOutboxToKafka` and
+`TestOutboxTrace_RowWithoutTraceHeadersRelaysUnchanged`
+(`internal/adapters/outbound/postgres/outbox_trace_integration_test.go`).
+
 ## Logs
 
 JSON lines on stdout (`log/slog` JSON handler), level from `LOG_LEVEL`.
