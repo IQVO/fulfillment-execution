@@ -51,11 +51,19 @@ an operator that the process was alive and replaying.
    shuts the listener down and fails the boot with
    `process-path catalogue did not become ready within 1m0s`.
 5. **Shutdown wins.** The gate has two independent conditions: warm-up
-   (cleared by `FinishWarmUp`) and shutdown (`SetNotReady`, never cleared).
-   A SIGTERM during warm-up keeps the pod not ready even if the replay then
-   finishes.
+   (cleared by `FinishWarmUp`) and shutdown (`SetNotReady`, never cleared),
+   so finishing the warm-up can never undo a shutdown flip. In the current
+   wiring the SIGTERM handler (`waitForShutdown`) is installed only after
+   the warm-up, so a SIGTERM during the replay terminates the process with
+   Go's default signal behaviour, exactly as it did before this ADR when no
+   listener was up yet.
 6. **File mode is unchanged**: no warm-up, ready as soon as the listener
    starts.
+7. **The timeout clock starts at the wait.** The 60 s `WaitReadyTimeout`
+   now counts from the moment the listener is up (after migrations and the
+   pool), not from process start; the replay has been running in the
+   background since `loadCatalogue`, so its effective budget is slightly
+   longer than before.
 
 ## Consequences
 
