@@ -15,6 +15,28 @@ type messageReader interface {
 	ReadMessage(ctx context.Context) (kafkago.Message, error)
 }
 
+// fetchCommitReader is the slice of *kafkago.Reader an at-least-once
+// consumer uses: FetchMessage does NOT commit, so the caller commits only
+// once the message is settled (and never when a shutdown interrupted it).
+type fetchCommitReader interface {
+	FetchMessage(ctx context.Context) (kafkago.Message, error)
+	CommitMessages(ctx context.Context, msgs ...kafkago.Message) error
+}
+
+// fetchAsRead adapts a fetchCommitReader to readRecovering's messageReader:
+// the "read" is a fetch, so the offset is left for the caller to commit.
+type fetchAsRead struct{ r fetchCommitReader }
+
+func (f fetchAsRead) ReadMessage(ctx context.Context) (kafkago.Message, error) {
+	return f.r.FetchMessage(ctx)
+}
+
+// fetchRecovering is readRecovering over FetchMessage: same broker-outage
+// recovery, but the returned message is NOT committed yet.
+func fetchRecovering(ctx context.Context, r fetchCommitReader, policy backoff.BackOff, logger *slog.Logger, topic string) (kafkago.Message, bool) {
+	return readRecovering(ctx, fetchAsRead{r: r}, policy, logger, topic)
+}
+
 // Broker-outage recovery bounds for readRecovering.
 const (
 	recoverInitialInterval = 250 * time.Millisecond
