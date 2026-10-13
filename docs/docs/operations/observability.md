@@ -104,6 +104,8 @@ Messages worth searching for or alerting on:
 | `skipping ProductClassified with an invalid payload` | WARN | Contract violation from product-master; committed past. |
 | `analytics message handling failed` | ERROR | Projector could not apply an event; it moves on. |
 | `outbox relay pass failed` | ERROR | A send or SQL failure in the relay; the row keeps `published_at` NULL and is retried. |
+| `outbox relay: send failed, stopping this pass at the failed row` | WARN | One failed send below the attempt cap (`outbox_id`, `topic`, `attempts`). |
+| `outbox relay: row reached the attempt cap and is excluded from future claims; re-arm it with attempts = 0 after fixing the cause` | ERROR | A row failed `OUTBOX_MAX_ATTEMPTS` sends and is now skipped ([ADR-0042](../adr/0042-outbox-relay-attempt-cap.md)); fields `outbox_id`, `topic`, `event_type`, `key`, `attempts`, `max_attempts`, `error`. Alert on it. |
 | `outbox relay did not stop before the shutdown deadline` / `kafka consumer did not stop before the shutdown deadline` | WARN | Graceful shutdown hit its 10s bound. |
 | `retrying` (with `op`, `attempt`, `in`) | WARN | A boot-time dial (migrations, ping, catalogue) is being retried. |
 | `domain event published` (with `event_name`, `occurred_at`) | INFO | The log publisher (`EVENT_PUBLISHER=log`): the event went nowhere else. |

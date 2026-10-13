@@ -10,7 +10,7 @@ description: ADR 0020 — why the OLTP use cases stopped publishing to Kafka fro
 
 ## Status
 
-Accepted — implemented in the same change that introduced this record.
+Accepted — implemented in the same change that introduced this record. Relay retry amended by [ADR-0042](./0042-outbox-relay-attempt-cap.md) (attempt cap).
 Fleet-wide rollout of the pattern; the single-topic reference
 implementation is process-path-management's ADR 0003.
 

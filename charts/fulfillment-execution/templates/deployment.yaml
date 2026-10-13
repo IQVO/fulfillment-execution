@@ -52,6 +52,9 @@ spec:
               value: {{ .Values.config.httpAddr | quote }}
             - name: EVENT_PUBLISHER
               value: {{ .Values.config.eventPublisher | quote }}
+            # Outbox relay attempt cap (gap fix D12, ADR-0042).
+            - name: OUTBOX_MAX_ATTEMPTS
+              value: {{ .Values.config.outboxMaxAttempts | quote }}
             # KAFKA_BROKERS is always set: the inbound WorkReleased consumer
             # in this service starts unconditionally at boot, unlike the
             # other three services where it's gated by kafka.enabled.

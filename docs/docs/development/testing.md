@@ -133,6 +133,7 @@ The thresholds live in `.gremlins.yaml` (`threshold.efficacy: 90.0`,
 | `TestKafkaConsumerGroupNeverHardcodedInline` | no Kafka `GroupID` is assigned from an inline string literal (it must come from a named constant, an env lookup or a function) |
 | `TestKafkaIntegrationTestsUseTestcontainers`, `TestPostgresIntegrationTestsUseTestcontainers`, `TestPostgresIntegrationDetector` | integration tests start their own containers |
 | `TestMCPOptionalToolInputsCarryOmitempty`, `TestMCPOptionalToolInputsSensorFailsOnBadFixtures` | an MCP tool input field whose `jsonschema` description says "optional" carries `omitempty`, or the SDK marks it required (gap fix D16; the twin proves the sensor fails on a bad fixture) |
+| `TestOutboxRelaysPassAttemptCap`, `TestOutboxRelayCapSensorFailsOnBadFixtures` | every `NewOutboxRelay` call under `cmd/` or `internal/composition/` passes `WithMaxAttempts` ([ADR-0042](../adr/0042-outbox-relay-attempt-cap.md), gap fix D12) |
 
 Gap-fix wave (2026-10-12) tests outside `internal/architecture`:
 
@@ -141,6 +142,8 @@ Gap-fix wave (2026-10-12) tests outside `internal/architecture`:
 | `TestEvalConformance_InstructionsNameTheWriteTool` | the MCP `instructions` do not call the server read-only and name `complete_task` (D17) |
 | `TestReportTools_OptionalFiltersAreOptionalOnTheWire` | both report tools advertise `required: [from, to]` and a call without filters reaches the handler (D16) |
 | `TestNewLoggerLevels` (one per `cmd/*`) | `LOG_LEVEL` `warn`/`warning`, case-insensitive, in every binary (D22) |
+| `TestOutboxRelay_MaxAttempts_PoisonRowExcludedThenGoodRowPublishes`, `TestOutboxRelay_MaxAttempts_ReArmedRowIsClaimedAgain`, `TestOutboxRelay_NoCap_PoisonRowBlocksLaterRows` (integration, testcontainers) | the relay attempt cap: a poison row is excluded after N failures and logged at ERROR, the same-key row behind it publishes, the re-arm SQL works, `0` keeps the old blocking behaviour (D12) |
+| `TestOutboxMaxAttempts`, `TestBuildEventPublisher_KafkaWithPoolUsesOutbox` | `OUTBOX_MAX_ATTEMPTS` parsing (default 20, 0 unlimited, bad value falls back) and the cap reaching the relay (D12) |
 
 ## Local gates and hooks
 

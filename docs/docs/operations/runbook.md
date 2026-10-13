@@ -136,7 +136,16 @@ runs **only** in `cmd/execution` (`cmd/mcp` inserts rows but never drains):
 - A full batch is followed immediately by another pass; otherwise it sleeps
   `OUTBOX_RELAY_INTERVAL` (1s).
 - The first send failure stops the pass at that row (per-key order is kept),
-  increments `attempts`, stores `last_error`, and commits what was sent.
+  increments `attempts`, stores `last_error`, logs a WARN and commits what was
+  sent.
+- **Attempt cap** ([ADR-0042](../adr/0042-outbox-relay-attempt-cap.md)): once
+  a row has failed `OUTBOX_MAX_ATTEMPTS` sends (default `20`, chart value
+  `config.outboxMaxAttempts`, `0` = unlimited) the claim query adds
+  `AND attempts < $max`, so the row is excluded and later rows, **including
+  rows with the same key**, overtake it. The failure that reaches the cap is
+  logged once at ERROR (`outbox relay: row reached the attempt cap ...`, with
+  `outbox_id`, `topic`, `event_type`, `key`, `attempts`). The row stays in
+  `outbox_events` until re-armed (below).
 - Delivery is at least once; the CloudEvents `id` is stored in the row, so a
   re-send carries the same id and consumers dedupe on it.
 - `SKIP LOCKED` lets two api replicas (or a rolling deploy) relay
@@ -193,7 +202,12 @@ CloudEvents `id`.
 
 **Find and re-send outbox rows.** Stuck rows:
 `SELECT id, topic, event_type, attempts, last_error FROM outbox_events WHERE published_at IS NULL ORDER BY id LIMIT 20;`
-The relay retries them every interval by itself. To publish an
+The relay retries them every interval by itself, up to `OUTBOX_MAX_ATTEMPTS`.
+Rows the cap excluded (`attempts >= 20` with the default) are no longer
+retried: find the cause in `last_error` (a message over the broker's size
+limit, a missing topic), fix it, then re-arm the row with
+`UPDATE outbox_events SET attempts = 0 WHERE id = ...;` and the next pass
+publishes it (after the rows that overtook it). To publish an
 already-published row again, set its `published_at` back to `NULL`; the same
 CloudEvents `id` goes out and consumers dedupe on it.
 

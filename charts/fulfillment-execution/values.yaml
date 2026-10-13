@@ -153,6 +153,12 @@ config:
   # topic) and the WorkReleased consumer's dead-letter (<topic>.dlq) writer.
   # "log" only logs events; no event reaches a broker and no DLQ is wired.
   eventPublisher: "log"
+  # Outbox relay attempt cap (gap fix D12, ADR-0042); OUTBOX_MAX_ATTEMPTS. A row
+  # that has failed this many sends is excluded from the relay's claims (it
+  # stays in outbox_events with attempts/last_error, logged at ERROR) so one
+  # poison row cannot stop the relay forever. 0 = unlimited. Re-arm a row with
+  # UPDATE outbox_events SET attempts = 0 WHERE id = ... (runbook).
+  outboxMaxAttempts: 20
 
 database:
   url: ""
