@@ -38,6 +38,7 @@ transactional-outbox relay.
 | `KAFKA_BROKERS` | `localhost:9092` | no (but always used) | Comma-separated broker list. The `WorkReleased` consumer starts **unconditionally**, so this must point at a reachable broker in any real environment. Also used by the publishers, the outbox relay, the DLQ writer, the classification consumer and the catalogue consumer. | `cmd/execution/main.go` |
 | `EVENT_PUBLISHER` | `log` | no | `kafka` publishes domain events (through `outbox_events` when `DATABASE_URL` is set, straight to the broker otherwise) **and** wires the `WorkReleased` dead-letter writer. Any other value selects the log publisher: events are only logged and no DLQ exists. | `cmd/execution/main.go`, `internal/composition/publisher.go` |
 | `OUTBOX_RELAY_INTERVAL` | `1s` | no | Go duration the outbox relay sleeps after a pass that found fewer than 100 rows. A malformed or non-positive value silently falls back to `1s`. Only used when `EVENT_PUBLISHER=kafka` and `DATABASE_URL` is set. | `cmd/execution/main.go` (`durationEnv`) |
+| `OUTBOX_MAX_ATTEMPTS` | `20` | no | Outbox relay attempt cap ([ADR-0042](../adr/0042-outbox-relay-attempt-cap.md)): a row that has failed this many sends is excluded from the relay's claims, logged once at ERROR (`outbox_id`, `topic`, `event_type`, `key`) and left in `outbox_events` for inspection; later rows, including rows with the same key, overtake it. `0` = unlimited (a poison row then blocks the relay forever). A malformed or negative value falls back to `20` with a WARN. Re-arm a row with `UPDATE outbox_events SET attempts = 0 WHERE id = ...` (see the [runbook](./runbook.md)). Chart value `config.outboxMaxAttempts`. | `cmd/execution/main.go` (`outboxMaxAttempts`) |
 | `WORK_RELEASED_CONSUMER_GROUP` | `fulfillment-execution` | no | Consumer group of the `warehouse.work-planning.events` consumer. A **brand-new** group starts at the **latest** offset (`NewConsumerWithGroup`), so events published before its first join are not read. | `cmd/execution/main.go`, `internal/adapters/inbound/kafka/consumer.go` |
 | `PATH_CATALOGUE_SOURCE` | `file` | no | `kafka` replays `warehouse.process-path-management.events` into memory under a per-process consumer group and blocks boot until the replay reaches the startup watermark (60s timeout, then exit). Any other value means `file`. See [ADR-0017](../adr/0017-process-path-catalogue-as-configuration.md). | `cmd/execution/main.go` |
 | `PATH_CATALOGUE_FILE` | `/etc/fulfillment-execution/process-paths.yaml` | **yes in `file` mode** | Process-path catalogue YAML. A missing or invalid file is a fatal boot error. Ignored in `kafka` mode. | `cmd/execution/main.go`, `internal/adapters/outbound/filecatalog/loader.go` |
@@ -112,11 +113,18 @@ a read-only pool (`default_transaction_read_only=on`, `MaxConns` 5,
 ## Helm values that set these variables
 
 From `charts/fulfillment-execution/values.yaml` and the Deployment templates.
+The api Deployment also mounts the chart ConfigMap (`templates/configmap.yaml`:
+`HTTP_ADDR`, `EVENT_PUBLISHER`, `OUTBOX_MAX_ATTEMPTS`, `KAFKA_BROKERS`, and the
+`OTEL_*`/`ENVIRONMENT` keys when `otel.enabled`) with `envFrom`; an explicit
+`env` entry wins over the ConfigMap for the same key. Before gap fix D14 the
+ConfigMap was rendered but mounted by nothing. The mcp, projector, reports
+and frontend Deployments do not mount it.
 
 | Helm value | Sets | On which Deployment |
 | --- | --- | --- |
 | `config.httpAddr` (`:8080`) | `HTTP_ADDR` | api (`cmd/execution`) |
 | `config.eventPublisher` (`log`) | `EVENT_PUBLISHER` | api; mcp unless `mcp.eventPublisher` is set |
+| `config.outboxMaxAttempts` (`20`) | `OUTBOX_MAX_ATTEMPTS` | api |
 | `kafka.brokers` (`kafka:9092`) | `KAFKA_BROKERS` | api, mcp, projector |
 | `database.url` / `database.existingSecret` + `existingSecretKey` | `DATABASE_URL` | api, mcp |
 | `database.migrationsExistingSecretKey` (`MIGRATIONS_DATABASE_URL`, `optional: true`) | `MIGRATIONS_DATABASE_URL` | api, mcp |

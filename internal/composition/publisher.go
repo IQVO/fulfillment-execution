@@ -5,8 +5,9 @@
 // adapter is stored in the transactional outbox exactly like one raised
 // through REST (ADR-0008, ADR-0020).
 //
-// It reads NO environment: the roots resolve EVENT_PUBLISHER, KAFKA_BROKERS
-// and OUTBOX_RELAY_INTERVAL and pass them in via PublisherConfig. Only the
+// It reads NO environment: the roots resolve EVENT_PUBLISHER, KAFKA_BROKERS,
+// OUTBOX_RELAY_INTERVAL and OUTBOX_MAX_ATTEMPTS and pass them in via
+// PublisherConfig. Only the
 // cmd/** roots may import this package.
 package composition
 
@@ -39,6 +40,11 @@ type PublisherConfig struct {
 	RunRelay bool
 	// RelayInterval is the relay poll interval (OUTBOX_RELAY_INTERVAL).
 	RelayInterval time.Duration
+	// RelayMaxAttempts is the relay's attempt cap (OUTBOX_MAX_ATTEMPTS,
+	// default postgres.DefaultOutboxMaxAttempts, 0 = unlimited; ADR 0042): a
+	// row that failed this many times is excluded from claims so one poison
+	// row cannot stop the relay forever.
+	RelayMaxAttempts int
 }
 
 // BuildEventPublisher wires the outbound event publisher, returning it, the
@@ -91,8 +97,11 @@ func BuildEventPublisher(cfg PublisherConfig, pool *pgxpool.Pool, tasks ports.Ta
 	// The relay's topic-less sink is the single Kafka connection this
 	// process holds for publishing.
 	sink := outboundkafka.NewRelaySink(cfg.Brokers)
-	relay := postgres.NewOutboxRelay(pool, sink, logger, postgres.WithInterval(cfg.RelayInterval))
+	relay := postgres.NewOutboxRelay(pool, sink, logger,
+		postgres.WithInterval(cfg.RelayInterval),
+		postgres.WithMaxAttempts(cfg.RelayMaxAttempts))
 	logger.Info("event publisher configured", "publisher", "kafka", "mode", "outbox",
-		"topic", outboundkafka.Topic, "analytics_topic", outboundkafka.AnalyticsTopic, "brokers", cfg.Brokers)
+		"topic", outboundkafka.Topic, "analytics_topic", outboundkafka.AnalyticsTopic, "brokers", cfg.Brokers,
+		"outbox_max_attempts", cfg.RelayMaxAttempts)
 	return outbox, relay, func() { _ = sink.Close() }
 }

@@ -1,0 +1,52 @@
+---
+id: fulfillment-execution-reports-api
+title: "Fulfillment Execution Reports API"
+description: "The READ-ONLY analytical surface of the fulfillment-execution 'Throughput & Lease-Health' data product (ADR-0012), served by the separate `cmd/fulfillment-reports` binary over a read-only pool (`default_transaction_read_only=on`) against the analytical database. It is NOT served by the OLTP `cmd/execution` binary documented in apis/openapi.yaml."
+sidebar_label: Introduction
+sidebar_position: 0
+hide_title: true
+custom_edit_url: null
+---
+
+import ApiLogo from "@theme/ApiLogo";
+import Heading from "@theme/Heading";
+import SchemaTabs from "@theme/SchemaTabs";
+import TabItem from "@theme/TabItem";
+import Export from "@theme/ApiExplorer/Export";
+
+<span
+  className={"theme-doc-version-badge badge badge--secondary"}
+  children={"Version: 1.0.0"}
+>
+</span>
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Fulfillment Execution Reports API"}
+>
+</Heading>
+
+
+
+The READ-ONLY analytical surface of the fulfillment-execution "Throughput & Lease-Health" data product (ADR-0012), served by the separate `cmd/fulfillment-reports` binary over a read-only pool (`default_transaction_read_only=on`) against the analytical database. It is NOT served by the OLTP `cmd/execution` binary documented in apis/openapi.yaml.
+
+The report is a projection over this service's own domain events (TaskClaimed, TaskCompleted, LeaseExpired, WeightDiscrepancyDetected, PackageManifested), delivered on the `warehouse.fulfillment.analytics` topic and applied by `cmd/fulfillment-projector`, the single writer. It is therefore EVENTUALLY CONSISTENT: GET /reports/throughput/freshness tells how far the read model trails the event stream.
+
+Rows are bucketed by UTC HOUR. There is no identity layer (ADR-0022).
+
+
+<div
+  style={{"display":"flex","flexDirection":"column","marginBottom":"var(--ifm-paragraph-margin-bottom)"}}
+>
+  <h3
+    style={{"marginBottom":"0.25rem"}}
+  >
+    Contact
+  </h3><span>
+    Fulfillment Execution: 
+  </span><span>
+    URL: [https://github.com/IQVO/fulfillment-execution](https://github.com/IQVO/fulfillment-execution)
+  </span>
+</div>
+      

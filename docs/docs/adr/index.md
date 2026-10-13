@@ -111,7 +111,7 @@ gets a "Supersedes ADR-NNNN" line in its Context, the old one gets
 | [0017](./0017-process-path-catalogue-as-configuration.md) | Process-path catalogue as configuration, replacing the path_id-prefix guess | Accepted |
 | [0018](./0018-installed-capacity-read-endpoint.md) | Installed-capacity read endpoint for workforce-management's capacity ceiling | Accepted |
 | [0019](./0019-standard-metrics-convention.md) | Standard metrics convention across the fleet (Tier 1 baseline, Tier 2 naming) | Accepted |
-| [0020](./0020-transactional-outbox.md) | Transactional outbox feeding both the integration and analytics topics from one table, with an in-process relay | Accepted |
+| [0020](./0020-transactional-outbox.md) | Transactional outbox feeding both the integration and analytics topics from one table, with an in-process relay | Accepted (relay retry amended by [ADR-0042](./0042-outbox-relay-attempt-cap.md)) |
 | [0021](./0021-rest-identity-static-bearer-scopes.md) | Adopt the fleet REST identity — static bearer keys with read/read-write scopes, `AUTH_MODE` rollout gate | Superseded by [ADR-0022](./0022-remove-rest-mcp-auth.md) |
 | [0022](./0022-remove-rest-mcp-auth.md) | Remove the REST + MCP static-bearer auth layer (fleet-wide auth removal) | Accepted |
 | [0023](./0023-task-type-on-wire.md) | Put the completed task's own type on `TaskCompleted`'s wire payload, closing labor-performance's documented per-task-type gap | Accepted |
@@ -133,3 +133,5 @@ gets a "Supersedes ADR-NNNN" line in its Context, the old one gets
 | [0039](./0039-product-classification-local-copy.md) | Product classification from a local copy of product-master's `ProductClassified` events; `PRODUCT_CLASSIFICATION_MODE=kafka\|permissive`, `http` rejected at boot | Accepted |
 | [0040](./0040-task-completed-carries-order-ref.md) | `TaskCompleted` v1 (both topics) carries an optional `order_ref` so inventory-storage confirms picks per order; short picks not modelled | Accepted |
 | [0041](./0041-task-completed-carries-line-no.md) | `WorkReleased.line_no` is stamped on the Task (`source_line_no`, order work only) and `TaskCompleted` v1 (both topics) carries an optional `line_no`, so inventory-storage confirms the picked line (per-line confirm-pick) | Accepted |
+| [0042](./0042-outbox-relay-attempt-cap.md) | Outbox relay attempt cap: a row that failed `OUTBOX_MAX_ATTEMPTS` sends (default 20, 0 = unlimited) is excluded from claims, logged at ERROR and kept for inspection; later same-key rows overtake it | Accepted |
+| [0043](./0043-reports-api-openapi-contract.md) | The `cmd/fulfillment-reports` routes are specified in `apis/openapi-reports.yaml`, linted, rendered as a generated Reports API reference and contract-tested against the real router | Accepted |

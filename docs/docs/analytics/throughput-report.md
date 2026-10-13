@@ -71,6 +71,11 @@ analytics topic at all.
 
 ### REST (served by `cmd/fulfillment-reports`, read-only)
 
+The contract is `apis/openapi-reports.yaml`, rendered as the generated
+[Reports API](../api-reference/rest-reports/fulfillment-execution-reports-api.info.mdx)
+and contract-tested against the router
+([ADR-0043](../adr/0043-reports-api-openapi-contract.md)). Summary:
+
 ```
 GET /reports/throughput?from=<RFC3339>&to=<RFC3339>&taskType=&stationId=&granularity=hour
 GET /reports/throughput/freshness

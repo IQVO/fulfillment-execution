@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -568,17 +569,41 @@ func waitForShutdown(logger *slog.Logger, srv *http.Server, readiness *inboundht
 }
 
 // buildEventPublisher resolves the publisher env config (EVENT_PUBLISHER,
-// OUTBOX_RELAY_INTERVAL) and delegates to the wiring shared with cmd/mcp
+// OUTBOX_RELAY_INTERVAL, OUTBOX_MAX_ATTEMPTS) and delegates to the wiring shared with cmd/mcp
 // (composition.BuildEventPublisher), so both deployables publish through
 // the SAME transactional outbox (ADR-0008, ADR-0020). This is the one
 // process that also runs the outbox relay (RunRelay).
 func buildEventPublisher(pool *pgxpool.Pool, brokers []string, tasks ports.TaskRepo, stations ports.StationRepo, logger *slog.Logger) (ports.EventPublisher, *postgres.OutboxRelay, func()) {
 	return composition.BuildEventPublisher(composition.PublisherConfig{
-		Kind:          getenv("EVENT_PUBLISHER", "log"),
-		Brokers:       brokers,
-		RunRelay:      true,
-		RelayInterval: durationEnv("OUTBOX_RELAY_INTERVAL", time.Second),
+		Kind:             getenv("EVENT_PUBLISHER", "log"),
+		Brokers:          brokers,
+		RunRelay:         true,
+		RelayInterval:    durationEnv("OUTBOX_RELAY_INTERVAL", time.Second),
+		RelayMaxAttempts: outboxMaxAttempts(logger),
 	}, pool, tasks, stations, logger)
+}
+
+// outboxMaxAttempts parses OUTBOX_MAX_ATTEMPTS (gap fix D12, ADR 0042): how
+// many failed sends exclude an outbox row from the relay's claims. Unset
+// means postgres.DefaultOutboxMaxAttempts (20); 0 means unlimited.
+func outboxMaxAttempts(logger *slog.Logger) int {
+	return intEnv(logger, "OUTBOX_MAX_ATTEMPTS", postgres.DefaultOutboxMaxAttempts)
+}
+
+// intEnv parses key as a non-negative integer, falling back (with a WARN) on
+// a malformed or negative value: like the relay interval, the cap is a
+// tuning knob that never fails the boot.
+func intEnv(logger *slog.Logger, key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n < 0 {
+		logger.Warn("ignoring invalid integer env value", "key", key, "value", v, "default", fallback)
+		return fallback
+	}
+	return n
 }
 
 // durationEnv parses key as a time.Duration, falling back on absence or a
