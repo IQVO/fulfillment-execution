@@ -494,7 +494,7 @@ pass, so `TaskCPTMissed` volume scales with that cadence — keep it coarse.
 
 ```sh
 curl -s localhost:8080/healthz
-curl -s localhost:8080/readyz     # 503 {"status":"not_ready"} once graceful shutdown starts (ADR-0029)
+curl -s localhost:8080/readyz     # 503 {"status":"not_ready"} during the kafka catalogue replay (ADR-0044) and once graceful shutdown starts (ADR-0029)
 ```
 
 ### Every route

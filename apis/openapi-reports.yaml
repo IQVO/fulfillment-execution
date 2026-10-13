@@ -1,0 +1,277 @@
+openapi: 3.0.3
+info:
+  title: Fulfillment Execution Reports API
+  version: "1.0.0"
+  description: >
+    The READ-ONLY analytical surface of the fulfillment-execution
+    "Throughput & Lease-Health" data product (ADR-0012), served by the
+    separate `cmd/fulfillment-reports` binary over a read-only pool
+    (`default_transaction_read_only=on`) against the analytical database.
+    It is NOT served by the OLTP `cmd/execution` binary documented in
+    apis/openapi.yaml.
+
+
+    The report is a projection over this service's own domain events
+    (TaskClaimed, TaskCompleted, LeaseExpired, WeightDiscrepancyDetected,
+    PackageManifested), delivered on the `warehouse.fulfillment.analytics`
+    topic and applied by `cmd/fulfillment-projector`, the single writer. It
+    is therefore EVENTUALLY CONSISTENT: GET /reports/throughput/freshness
+    tells how far the read model trails the event stream.
+
+
+    Rows are bucketed by UTC HOUR. There is no identity layer (ADR-0022).
+  contact:
+    name: Fulfillment Execution
+    url: https://github.com/IQVO/fulfillment-execution
+servers:
+  - url: http://localhost:8092
+    description: Local development (cmd/fulfillment-reports, HTTP_ADDR default :8092; the chart sets :8080)
+
+tags:
+  - name: Reports
+    description: The Throughput & Lease-Health analytical read model.
+  - name: System
+    description: Liveness probe of the reports process.
+
+paths:
+  /healthz:
+    get:
+      tags: [System]
+      operationId: getReportsHealthz
+      summary: Liveness probe
+      description: >
+        Reports whether the reports process is up. It does not touch the
+        analytical database. The reports process has no `/readyz`.
+      responses:
+        "200":
+          description: Process is up
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+              example:
+                status: ok
+
+  /reports/throughput:
+    get:
+      tags: [Reports]
+      operationId: getThroughputReport
+      summary: Throughput & Lease-Health report, keyed by task type, station and UTC hour
+      description: >
+        Returns the rows whose hour bucket falls in the half-open window
+        [from, to). The on-time-to-CPT counts (ADR-0026) are populated on
+        SLAM rows only; they are raw counts, so the rate is
+        packagesOnTimeToCPT / packagesManifested, computed by the caller.
+      parameters:
+        - name: from
+          in: query
+          required: true
+          description: Inclusive start of the window, RFC 3339. Compared against each row's hour bucket.
+          schema:
+            type: string
+            format: date-time
+          example: "2026-08-26T00:00:00Z"
+        - name: to
+          in: query
+          required: true
+          description: Exclusive end of the window, RFC 3339.
+          schema:
+            type: string
+            format: date-time
+          example: "2026-08-27T00:00:00Z"
+        - name: taskType
+          in: query
+          required: false
+          description: >
+            Optional exact-match filter on the task type (for example PICK,
+            PACK, SLAM). Omit it, or send it empty, for every task type. The
+            value is not validated: an unknown type matches no rows.
+          schema:
+            type: string
+          example: PICK
+        - name: stationId
+          in: query
+          required: false
+          description: Optional exact-match filter on the station id. Omit it, or send it empty, for every station.
+          schema:
+            type: string
+          example: S-7
+        - name: granularity
+          in: query
+          required: false
+          description: Bucket resolution. Only hourly buckets are modelled; any other value is a 400.
+          schema:
+            type: string
+            enum: [hour]
+            default: hour
+      responses:
+        "200":
+          description: >
+            The report for the requested window. An empty window is a 200
+            with an empty `rows` array, not a 404.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ThroughputReport"
+        "400":
+          description: >
+            `from` or `to` is missing or not RFC 3339, or `granularity` is
+            not `hour` (problem type `invalid-report-query`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          description: The report could not be served (problem type `report-store-error`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /reports/throughput/freshness:
+    get:
+      tags: [Reports]
+      operationId: getThroughputFreshness
+      summary: How far the read model trails the event stream
+      description: >
+        Returns now minus the newest `occurred_at` in
+        `analytics_processed_events`: the data product's freshness signal
+        (target p95 under 30 s). A growing lag means the projector is
+        falling behind or has stopped. An empty read model reports 0, which
+        looks the same as a perfectly fresh one, so read it alongside the
+        report's own counts.
+      responses:
+        "200":
+          description: The current projection lag.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Freshness"
+        "500":
+          description: The freshness signal could not be read (problem type `report-store-error`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+components:
+  schemas:
+    ThroughputReport:
+      type: object
+      required: [rows]
+      properties:
+        rows:
+          type: array
+          description: One row per (task type, station, hour bucket). Always present; empty for a window with no data.
+          items:
+            $ref: "#/components/schemas/ThroughputRow"
+
+    ThroughputRow:
+      type: object
+      required:
+        - taskType
+        - stationId
+        - hourBucket
+        - completions
+        - avgClaimToCompleteSeconds
+        - leaseExpiries
+        - weighCheckDiverts
+        - packagesManifested
+        - packagesOnTimeToCPT
+        - packagesLateToCPT
+      properties:
+        taskType:
+          type: string
+          description: Task type of the row.
+          example: PICK
+        stationId:
+          type: string
+          description: Station of the row.
+          example: S-7
+        hourBucket:
+          type: string
+          format: date-time
+          description: Start of the UTC hour this row aggregates.
+          example: "2026-08-26T14:00:00Z"
+        completions:
+          type: integer
+          minimum: 0
+          description: TaskCompleted events in the bucket.
+          example: 42
+        avgClaimToCompleteSeconds:
+          type: number
+          format: double
+          minimum: 0
+          description: Mean seconds from claim to completion, over completions that had a recorded claim.
+          example: 73.5
+        leaseExpiries:
+          type: integer
+          minimum: 0
+          description: LeaseExpired events in the bucket.
+          example: 1
+        weighCheckDiverts:
+          type: integer
+          minimum: 0
+          description: WeightDiscrepancyDetected events in the bucket.
+          example: 0
+        packagesManifested:
+          type: integer
+          minimum: 0
+          description: PackageManifested events attributed to the bucket (SLAM rows only, ADR-0026).
+          example: 0
+        packagesOnTimeToCPT:
+          type: integer
+          minimum: 0
+          description: Of those, manifested at or before the originating SLAM task's CPT.
+          example: 0
+        packagesLateToCPT:
+          type: integer
+          minimum: 0
+          description: Of those, manifested after the CPT.
+          example: 0
+
+    Freshness:
+      type: object
+      required: [lagSeconds]
+      properties:
+        lagSeconds:
+          type: number
+          format: double
+          minimum: 0
+          description: Seconds between now and the newest projected event's occurred_at. 0 when the read model is empty.
+          example: 4.2
+
+    Status:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          example: ok
+
+    Problem:
+      type: object
+      description: RFC 7807 problem detail (ADR-0005), identical in shape to the OLTP API's.
+      required: [type, title, status, detail]
+      properties:
+        type:
+          type: string
+          format: uri
+          description: Stable identifier for the error category.
+          example: https://errors.fulfillment-execution.warehouse-systems.dev/invalid-report-query
+        title:
+          type: string
+          description: Fixed human-readable summary of the error category.
+          example: The report query is malformed or missing a required parameter
+        status:
+          type: integer
+          description: The HTTP status code, repeated in the body.
+          example: 400
+        detail:
+          type: string
+          description: Human-readable explanation specific to this occurrence.
+          example: "query parameter 'from' is required (RFC3339)"
+        instance:
+          type: string
+          description: The request path this problem occurred on.
+          example: /reports/throughput

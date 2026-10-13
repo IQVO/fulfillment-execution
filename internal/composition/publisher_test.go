@@ -66,7 +66,7 @@ func TestBuildEventPublisher_KafkaWithPoolUsesOutbox(t *testing.T) {
 
 	t.Run("relay requested (cmd/execution)", func(t *testing.T) {
 		pub, relay, closeFn := composition.BuildEventPublisher(
-			composition.PublisherConfig{Kind: composition.KafkaPublisher, Brokers: []string{"127.0.0.1:1"}, RunRelay: true, RelayInterval: time.Second},
+			composition.PublisherConfig{Kind: composition.KafkaPublisher, Brokers: []string{"127.0.0.1:1"}, RunRelay: true, RelayInterval: time.Second, RelayMaxAttempts: 7},
 			pool, postgres.NewTaskRepo(pool), postgres.NewStationRepo(pool), quietLogger())
 		defer closeFn()
 
@@ -74,7 +74,11 @@ func TestBuildEventPublisher_KafkaWithPoolUsesOutbox(t *testing.T) {
 			t.Errorf("publisher = %T, want *postgres.OutboxPublisher", pub)
 		}
 		if relay == nil {
-			t.Error("RunRelay=true must build the outbox relay")
+			t.Fatal("RunRelay=true must build the outbox relay")
+		}
+		// Gap fix D12 (ADR 0042): the configured cap reaches the relay.
+		if got := relay.MaxAttempts(); got != 7 {
+			t.Errorf("relay MaxAttempts = %d, want 7 (PublisherConfig.RelayMaxAttempts)", got)
 		}
 	})
 

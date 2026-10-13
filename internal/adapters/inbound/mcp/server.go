@@ -7,12 +7,15 @@ import (
 )
 
 // NewServer builds the MCP server for this bounded context with every read
-// tool, scoped resource, and workflow prompt registered.
+// tool, the complete_task write tool, scoped resource, and workflow prompt
+// registered.
 func NewServer(deps Deps) *mcp.Server {
 	server := mcp.NewServer(
 		&mcp.Implementation{Name: "fulfillment-execution-mcp", Version: "1.0.0"},
 		&mcp.ServerOptions{
-			Instructions: "Read-only access to the fulfillment-execution work backlog: queue depth by process path (PICK/PACK/SLAM), the most urgent claimable task, and lapsing leases. Start with the triage_backlog prompt.",
+			// Gap fix D17: the server is NOT read-only. complete_task changes
+			// state (and publishes TaskCompleted), so the instructions say so.
+			Instructions: "Access to the fulfillment-execution work backlog. Read tools: queue depth by process path (PICK/PACK/SLAM), the most urgent claimable task, lapsing leases and the curated reports. One WRITE tool: complete_task completes a claimed task for the station holding the claim and publishes TaskCompleted; confirm before calling it. Start with the triage_backlog prompt, which is read-only.",
 		},
 	)
 

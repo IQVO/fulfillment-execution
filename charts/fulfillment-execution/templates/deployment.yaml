@@ -47,11 +47,26 @@ spec:
             - name: http
               containerPort: {{ .Values.service.targetPort }}
               protocol: TCP
+          # D14 (2026-10-12): the chart ConfigMap (HTTP_ADDR, EVENT_PUBLISHER,
+          # OUTBOX_MAX_ATTEMPTS, KAFKA_BROKERS and, with otel.enabled, the
+          # OTEL_*/ENVIRONMENT keys) was rendered but mounted by no Deployment.
+          # Every key in it is read by cmd/execution, so this Deployment mounts
+          # it with envFrom. The explicit `env` entries below win over envFrom
+          # for the same key and carry the same values; the checksum/config
+          # annotation rolls the pods when the ConfigMap changes. Only this
+          # Deployment mounts it: HTTP_ADDR is the API's listen address and
+          # OTEL_SERVICE_NAME is the API's service name.
+          envFrom:
+            - configMapRef:
+                name: {{ include "fulfillment-execution.fullname" . }}
           env:
             - name: HTTP_ADDR
               value: {{ .Values.config.httpAddr | quote }}
             - name: EVENT_PUBLISHER
               value: {{ .Values.config.eventPublisher | quote }}
+            # Outbox relay attempt cap (gap fix D12, ADR-0042).
+            - name: OUTBOX_MAX_ATTEMPTS
+              value: {{ .Values.config.outboxMaxAttempts | quote }}
             # KAFKA_BROKERS is always set: the inbound WorkReleased consumer
             # in this service starts unconditionally at boot, unlike the
             # other three services where it's gated by kafka.enabled.

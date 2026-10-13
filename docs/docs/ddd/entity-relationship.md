@@ -99,12 +99,6 @@ erDiagram
         timestamptz created_at "indexed"
         timestamptz completed_at
     }
-    domain_events {
-        bigserial id PK
-        text event_name
-        timestamptz occurred_at
-        jsonb payload
-    }
     schema_migrations {
         bigint version PK
         boolean dirty
@@ -113,8 +107,9 @@ erDiagram
 
 Source: `migrations/0001_init.up.sql` to `migrations/0013_package_order_ref_index.up.sql`,
 plus `0016_task_source_order_id` and `0017_task_source_line_no` for the two
-`tasks` columns above (`0015`'s product-classification copy table is not drawn)
-applied in order; `schema_migrations` is golang-migrate's own table
+`tasks` columns above (`0015`'s product-classification copy table is not drawn),
+and `0018_drop_domain_events`, which removed the legacy `domain_events` table
+([ADR-0045](../adr/0045-drop-legacy-domain-events-table.md)), applied in order; `schema_migrations` is golang-migrate's own table
 (`internal/adapters/outbound/postgres/migrate.go`). Array columns are shown
 as `text_array` / `integer_array` (Postgres `TEXT[]` / `INTEGER[]`).
 Omits indexes other than the ones noted (`idx_tasks_type_status_cpt` on
@@ -182,7 +177,6 @@ Source: `migrations/analytics/0001_report.up.sql`,
 | `outbox_events` | transactional outbox, drained by the relay in `cmd/execution` ([ADR-0020](../adr/0020-transactional-outbox.md)) | infrastructure |
 | `processed_events` | inbox dedupe for the `WorkReleased` consumer (`ports.ProcessedEvents`) | infrastructure |
 | `idempotency_keys` | `Idempotency-Key` replay store for `POST /tasks` ([ADR-0028](../adr/0028-idempotency-key-middleware.md)) | infrastructure |
-| `domain_events` | created by `0001_init`; **Decided 2026-10-06: KEEP — legacy, unused; retained (additive migrations only).** Not read or written by any code; dropping is destructive and needs explicit approval, dead schema is harmless | legacy infrastructure |
 | `schema_migrations` | golang-migrate version table (one per database) | infrastructure |
 | `throughput_rollup` | throughput and on-time-to-CPT projection ([ADR-0026](../adr/0026-on-time-to-cpt-kpi.md)) | analytics projection |
 | `analytics_pending_claims` | claim times waiting for a completion | analytics projection state |

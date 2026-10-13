@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -90,25 +91,23 @@ func run() error {
 		}()
 	}
 
-	metrics, err := observability.NewMetrics()
-	if err != nil {
-		// A missing counter must not stop the service from doing work.
-		logger.Error("task metrics unavailable", "error", err)
-		metrics = nil
-	}
+	metrics := buildMetrics(logger)
 
 	// consumerCtx/cancelConsumer are declared here because the Kafka
-	// catalogue source needs its consumer loop RUNNING before WaitReady is
-	// called inside loadCatalogue -- WaitReady blocks on messages actually
-	// being read, so starting the goroutine after the wait would deadlock
-	// until WaitReadyTimeout on every single boot.
+	// catalogue source starts its consumer loop inside loadCatalogue: the
+	// loop must be RUNNING before the replay wait below, which blocks on
+	// messages actually being read.
 	consumerCtx, cancelConsumer := context.WithCancel(context.Background())
 	defer cancelConsumer()
 
-	catalogue, kafkaCatalogue, err := loadCatalogue(rootCtx, consumerCtx, kafkaBrokers, logger)
+	// In Kafka mode the replay runs in the background from here on; the
+	// wait for it (waitCatalogue) happens only after the HTTP listener is
+	// up (gap fix D24, ADR-0044). File mode returns a nil waitCatalogue.
+	catalogue, kafkaCatalogue, waitCatalogue, err := loadCatalogue(rootCtx, consumerCtx, kafkaBrokers, logger)
 	if err != nil {
 		return err
 	}
+	defer closeCatalogue(kafkaCatalogue)
 
 	storage, err := openStorage(rootCtx, logger, databaseURL, migrationsDatabaseURL, "migrations")
 	if err != nil {
@@ -153,9 +152,14 @@ func run() error {
 		UnitOfWork: storage.uow,
 	}, logger)
 	defer closeConsumer()
-	defer closeCatalogue(kafkaCatalogue)
 
-	go serveHTTP(srv, logger, httpAddr)
+	// The listener starts BEFORE the catalogue replay has caught up, so the
+	// startup/liveness probes (/healthz) see a live process while /readyz
+	// stays 503 until the replay is done; the WorkReleased consumer, which
+	// needs the complete catalogue, starts only afterwards (ADR-0044).
+	if err := serveWhileWarmingUp(srv, readiness, waitCatalogue, kafkacatalog.WaitReadyTimeout, logger); err != nil {
+		return err
+	}
 	consumerDone := joinDone(
 		startWorkReleasedConsumer(consumer, consumerCtx, logger, kafkaBrokers),
 		startProductClassifiedConsumer(classification.consumer, consumerCtx, logger),
@@ -168,6 +172,46 @@ func run() error {
 	defer stopRelay()
 
 	return waitForShutdown(logger, srv, readiness, stopRelay, relayDone, cancelConsumer, consumerDone)
+}
+
+// buildMetrics creates the task counters. A failure is logged, never
+// returned: a missing counter must not stop the service from doing work.
+func buildMetrics(logger *slog.Logger) *observability.Metrics {
+	metrics, err := observability.NewMetrics()
+	if err != nil {
+		logger.Error("task metrics unavailable", "error", err)
+		return nil
+	}
+	return metrics
+}
+
+// serveWhileWarmingUp starts the HTTP listener and, when waitReady is not
+// nil (Kafka catalogue mode), holds readiness not-ready until waitReady
+// returns within timeout (gap fix D24, ADR-0044). /healthz answers from
+// the start, so the startup probe no longer has to cover the catalogue
+// replay; /readyz answers 503 {"status":"not_ready"} until the replay has
+// caught up, so no Service routes traffic to the pod before then. A replay
+// that fails or times out is still a fatal boot error: the listener is shut
+// down and the error returned.
+func serveWhileWarmingUp(srv *http.Server, readiness *inboundhttp.Readiness, waitReady func(context.Context) error, timeout time.Duration, logger *slog.Logger) error {
+	if waitReady != nil {
+		readiness.StartWarmUp()
+	}
+	go serveHTTP(srv, logger, srv.Addr)
+	if waitReady == nil {
+		return nil
+	}
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), timeout)
+	defer cancelWait()
+	if err := waitReady(waitCtx); err != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+		return fmt.Errorf("process-path catalogue did not become ready within %s: %w", timeout, err)
+	}
+	readiness.FinishWarmUp()
+	logger.Info("readiness: warm-up finished; /readyz now reports ready")
+	return nil
 }
 
 // closeCatalogue closes the Kafka process-path catalogue when one is wired.
@@ -279,10 +323,12 @@ func setupTelemetry(rootCtx context.Context, logger *slog.Logger) func(context.C
 // internal/adapters/outbound/kafkacatalog's package doc comment for
 // the full rationale and how it preserves the same "never serve
 // traffic against an incomplete catalogue" guarantee via a
-// readiness gate rather than a boot-time file read). consumerCtx must
-// already be live: the catalogue's consumer loop has to be RUNNING
-// before WaitReady is called, or the readiness wait deadlocks.
-func loadCatalogue(rootCtx, consumerCtx context.Context, brokers []string, logger *slog.Logger) (ports.PathCatalogue, *kafkacatalog.Consumer, error) {
+// readiness gate rather than a boot-time file read). The consumer loop
+// is started here on consumerCtx, and the returned waitReady blocks
+// until the replay reaches the startup watermark; the caller runs it
+// only after the HTTP listener is up, with /readyz false meanwhile
+// (gap fix D24, ADR-0044). waitReady is nil in file mode.
+func loadCatalogue(rootCtx, consumerCtx context.Context, brokers []string, logger *slog.Logger) (ports.PathCatalogue, *kafkacatalog.Consumer, func(context.Context) error, error) {
 	switch getenv("PATH_CATALOGUE_SOURCE", "file") {
 	case "kafka":
 		var kafkaCatalogue *kafkacatalog.Consumer
@@ -301,9 +347,8 @@ func loadCatalogue(rootCtx, consumerCtx context.Context, brokers []string, logge
 			kafkaCatalogue = c
 			return nil
 		}); err != nil {
-			return nil, nil, fmt.Errorf("failed to start the process-path Kafka catalogue: %w", err)
+			return nil, nil, nil, fmt.Errorf("failed to start the process-path Kafka catalogue: %w", err)
 		}
-		catalogue := ports.PathCatalogue(kafkaCatalogue)
 		logger.Info("process-path catalogue source configured", "source", "kafka", "topic", kafkacatalog.Topic)
 
 		go func() {
@@ -312,23 +357,27 @@ func loadCatalogue(rootCtx, consumerCtx context.Context, brokers []string, logge
 				logger.Error("process-path catalogue consumer stopped", "error", err)
 			}
 		}()
-
-		waitCtx, cancelWait := context.WithTimeout(rootCtx, kafkacatalog.WaitReadyTimeout)
-		logger.Info("waiting for the process-path catalogue to replay its initial history before accepting traffic")
-		waitErr := kafkaCatalogue.WaitReady(waitCtx)
-		cancelWait()
-		if waitErr != nil {
-			return nil, nil, fmt.Errorf("process-path catalogue did not become ready within %s: %w", kafkacatalog.WaitReadyTimeout, waitErr)
-		}
-		logger.Info("process-path catalogue is ready", "paths", kafkaCatalogue.Ids())
-		return catalogue, kafkaCatalogue, nil
+		return kafkaCatalogue, kafkaCatalogue, catalogueWaiter(kafkaCatalogue, logger), nil
 	default:
 		catalogue, err := filecatalog.Load(getenv("PATH_CATALOGUE_FILE", "/etc/fulfillment-execution/process-paths.yaml"))
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to load the process-path catalogue: %w", err)
+			return nil, nil, nil, fmt.Errorf("failed to load the process-path catalogue: %w", err)
 		}
 		logger.Info("process-path catalogue source configured", "source", "file", "paths", catalogue.Ids())
-		return catalogue, nil, nil
+		return catalogue, nil, nil, nil
+	}
+}
+
+// catalogueWaiter returns the replay wait for the Kafka catalogue: it
+// blocks until every partition has reached the offset captured at startup.
+func catalogueWaiter(c *kafkacatalog.Consumer, logger *slog.Logger) func(context.Context) error {
+	return func(ctx context.Context) error {
+		logger.Info("http listener up; /readyz stays not ready until the process-path catalogue has replayed its initial history")
+		if err := c.WaitReady(ctx); err != nil {
+			return err
+		}
+		logger.Info("process-path catalogue is ready", "paths", c.Ids())
+		return nil
 	}
 }
 
@@ -568,17 +617,41 @@ func waitForShutdown(logger *slog.Logger, srv *http.Server, readiness *inboundht
 }
 
 // buildEventPublisher resolves the publisher env config (EVENT_PUBLISHER,
-// OUTBOX_RELAY_INTERVAL) and delegates to the wiring shared with cmd/mcp
+// OUTBOX_RELAY_INTERVAL, OUTBOX_MAX_ATTEMPTS) and delegates to the wiring shared with cmd/mcp
 // (composition.BuildEventPublisher), so both deployables publish through
 // the SAME transactional outbox (ADR-0008, ADR-0020). This is the one
 // process that also runs the outbox relay (RunRelay).
 func buildEventPublisher(pool *pgxpool.Pool, brokers []string, tasks ports.TaskRepo, stations ports.StationRepo, logger *slog.Logger) (ports.EventPublisher, *postgres.OutboxRelay, func()) {
 	return composition.BuildEventPublisher(composition.PublisherConfig{
-		Kind:          getenv("EVENT_PUBLISHER", "log"),
-		Brokers:       brokers,
-		RunRelay:      true,
-		RelayInterval: durationEnv("OUTBOX_RELAY_INTERVAL", time.Second),
+		Kind:             getenv("EVENT_PUBLISHER", "log"),
+		Brokers:          brokers,
+		RunRelay:         true,
+		RelayInterval:    durationEnv("OUTBOX_RELAY_INTERVAL", time.Second),
+		RelayMaxAttempts: outboxMaxAttempts(logger),
 	}, pool, tasks, stations, logger)
+}
+
+// outboxMaxAttempts parses OUTBOX_MAX_ATTEMPTS (gap fix D12, ADR 0042): how
+// many failed sends exclude an outbox row from the relay's claims. Unset
+// means postgres.DefaultOutboxMaxAttempts (20); 0 means unlimited.
+func outboxMaxAttempts(logger *slog.Logger) int {
+	return intEnv(logger, "OUTBOX_MAX_ATTEMPTS", postgres.DefaultOutboxMaxAttempts)
+}
+
+// intEnv parses key as a non-negative integer, falling back (with a WARN) on
+// a malformed or negative value: like the relay interval, the cap is a
+// tuning knob that never fails the boot.
+func intEnv(logger *slog.Logger, key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n < 0 {
+		logger.Warn("ignoring invalid integer env value", "key", key, "value", v, "default", fallback)
+		return fallback
+	}
+	return n
 }
 
 // durationEnv parses key as a time.Duration, falling back on absence or a

@@ -74,8 +74,22 @@ const config: Config = {
             },
             hideSendButton: true,
             showSchemas: true,
-          } satisfies OpenApiPlugin.Options,
-        },
+          },
+          fulfillmentReports: {
+            // The read-only analytical surface served by
+            // cmd/fulfillment-reports (ADR-0012, ADR-0043): a SEPARATE spec
+            // from the OLTP API above, generated into its own output dir so
+            // the two never collide (gap fix D18).
+            specPath: '../apis/openapi-reports.yaml',
+            outputDir: 'docs/api-reference/rest-reports',
+            sidebarOptions: {
+              groupPathsBy: 'tag',
+              categoryLinkSource: 'tag',
+            },
+            hideSendButton: true,
+            showSchemas: true,
+          },
+        } satisfies Record<string, OpenApiPlugin.Options>,
       },
     ],
   ],
@@ -103,6 +117,11 @@ const config: Config = {
         {
           to: '/docs/api-reference/rest/fulfillment-execution-api',
           label: 'API Reference',
+          position: 'left',
+        },
+        {
+          to: '/docs/api-reference/rest-reports/fulfillment-execution-reports-api',
+          label: 'Reports API',
           position: 'left',
         },
         {
@@ -161,6 +180,10 @@ const config: Config = {
             {
               label: 'OpenAPI spec',
               href: 'https://github.com/IQVO/fulfillment-execution/blob/main/apis/openapi.yaml',
+            },
+            {
+              label: 'Reports OpenAPI spec',
+              href: 'https://github.com/IQVO/fulfillment-execution/blob/main/apis/openapi-reports.yaml',
             },
             {
               label: 'AsyncAPI spec',

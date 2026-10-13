@@ -37,18 +37,22 @@ func outboxDB(t *testing.T) *pgxpool.Pool {
 }
 
 // recordingSink records what the relay hands it, optionally failing on
-// a given (topic, key) so the stop-at-failed-row behaviour can be
-// exercised.
+// a given (topic, key) or on a given event type so the stop-at-failed-row
+// and attempt-cap behaviours can be exercised.
 type recordingSink struct {
-	sent      []outboundkafka.Encoded
-	failTopic string
-	failKey   string
-	failErr   error
+	sent          []outboundkafka.Encoded
+	failTopic     string
+	failKey       string
+	failEventType string
+	failErr       error
 }
 
 func (s *recordingSink) Send(_ context.Context, msgs ...outboundkafka.Encoded) error {
 	for _, m := range msgs {
-		if s.failErr != nil && m.Topic == s.failTopic && string(m.Key) == s.failKey {
+		if s.failErr != nil && s.failEventType != "" && m.EventType == s.failEventType {
+			return s.failErr
+		}
+		if s.failErr != nil && s.failEventType == "" && m.Topic == s.failTopic && string(m.Key) == s.failKey {
 			return s.failErr
 		}
 		s.sent = append(s.sent, m)

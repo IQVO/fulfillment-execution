@@ -75,6 +75,19 @@ The outbox relay, the process-path catalogue consumer and the sweeps'
 CronJob pods create no spans of their own (the sweep requests are traced
 server-side as `POST /tasks/expire-leases` and `POST /tasks/sweep-cpt-misses`).
 
+**Trace continuity across the outbox (gap fix D27).** Both encoders inject
+the W3C `traceparent`/`tracestate` of the writing use case's context into the
+message headers at encode time (`observability.InjectKafkaTrace`); the
+`OutboxPublisher` stores them in `outbox_events.headers` (JSONB, migration
+`0009`) in the same transaction; the relay sends the stored headers unchanged,
+even though its own pass runs without the request's context; and every
+consumer that starts a span extracts first (`observability.ExtractKafkaTrace`).
+A row written without an active span has no `traceparent` and relays with
+exactly its stored headers. Pinned by the integration tests
+`TestOutboxTrace_TraceparentCrossesTheOutboxToKafka` and
+`TestOutboxTrace_RowWithoutTraceHeadersRelaysUnchanged`
+(`internal/adapters/outbound/postgres/outbox_trace_integration_test.go`).
+
 ## Logs
 
 JSON lines on stdout (`log/slog` JSON handler), level from `LOG_LEVEL`.
@@ -104,8 +117,12 @@ Messages worth searching for or alerting on:
 | `skipping ProductClassified with an invalid payload` | WARN | Contract violation from product-master; committed past. |
 | `analytics message handling failed` | ERROR | Projector could not apply an event; it moves on. |
 | `outbox relay pass failed` | ERROR | A send or SQL failure in the relay; the row keeps `published_at` NULL and is retried. |
+| `outbox relay: send failed, stopping this pass at the failed row` | WARN | One failed send below the attempt cap (`outbox_id`, `topic`, `attempts`). |
+| `outbox relay: row reached the attempt cap and is excluded from future claims; re-arm it with attempts = 0 after fixing the cause` | ERROR | A row failed `OUTBOX_MAX_ATTEMPTS` sends and is now skipped ([ADR-0042](../adr/0042-outbox-relay-attempt-cap.md)); fields `outbox_id`, `topic`, `event_type`, `key`, `attempts`, `max_attempts`, `error`. Alert on it. |
 | `outbox relay did not stop before the shutdown deadline` / `kafka consumer did not stop before the shutdown deadline` | WARN | Graceful shutdown hit its 10s bound. |
 | `retrying` (with `op`, `attempt`, `in`) | WARN | A boot-time dial (migrations, ping, catalogue) is being retried. |
+| `http listener up; /readyz stays not ready until the process-path catalogue has replayed its initial history` | INFO | `PATH_CATALOGUE_SOURCE=kafka`: the listener is serving and `/readyz` answers 503 while the catalogue replays ([ADR-0044](../adr/0044-listener-before-catalogue-replay.md)). |
+| `process-path catalogue is ready` (with `paths`) then `readiness: warm-up finished; /readyz now reports ready` | INFO | The replay reached the startup watermark; `/readyz` turns 200 and the Kafka consumers start. Missing 60s after the line above means the boot exits with `process-path catalogue did not become ready within 1m0s`. |
 | `domain event published` (with `event_name`, `occurred_at`) | INFO | The log publisher (`EVENT_PUBLISHER=log`): the event went nowhere else. |
 | `opentelemetry error` | WARN | An export to the Collector failed. |
 
