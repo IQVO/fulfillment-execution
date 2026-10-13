@@ -31,6 +31,13 @@ the image tag and the chart as `oci://ghcr.io/iqvo/fulfillment-execution`.
 | expire-leases sweep | CronJob `<release>-expire-leases` | busybox `wget` from the service image | `sweeps.enabled` + `sweeps.expireLeases.enabled` (default on) | – | – | – |
 | CPT-miss sweep | CronJob `<release>-sweep-cpt-misses` | same | `sweeps.enabled` + `sweeps.cptMisses.enabled` (default on) | – | – | – |
 
+The api Deployment mounts the chart ConfigMap `<release>` with `envFrom`
+(`HTTP_ADDR`, `EVENT_PUBLISHER`, `OUTBOX_MAX_ATTEMPTS`, `KAFKA_BROKERS` and,
+with `otel.enabled`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`,
+`ENVIRONMENT`); its explicit `env` entries win for the same key. No other
+workload mounts it (gap fix D14; `charts/fulfillment-execution/tests/render_test.sh`
+asserts both).
+
 In the platform, Kong (`:8000`) routes `/api/fulfillment-execution` to the api
 Service (warehouse-infra `terraform/locals.tf`, `path =
 "${var.api_path_prefix}/fulfillment-execution"`); the frontend is reached

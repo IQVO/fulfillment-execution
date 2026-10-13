@@ -113,6 +113,12 @@ a read-only pool (`default_transaction_read_only=on`, `MaxConns` 5,
 ## Helm values that set these variables
 
 From `charts/fulfillment-execution/values.yaml` and the Deployment templates.
+The api Deployment also mounts the chart ConfigMap (`templates/configmap.yaml`:
+`HTTP_ADDR`, `EVENT_PUBLISHER`, `OUTBOX_MAX_ATTEMPTS`, `KAFKA_BROKERS`, and the
+`OTEL_*`/`ENVIRONMENT` keys when `otel.enabled`) with `envFrom`; an explicit
+`env` entry wins over the ConfigMap for the same key. Before gap fix D14 the
+ConfigMap was rendered but mounted by nothing. The mcp, projector, reports
+and frontend Deployments do not mount it.
 
 | Helm value | Sets | On which Deployment |
 | --- | --- | --- |

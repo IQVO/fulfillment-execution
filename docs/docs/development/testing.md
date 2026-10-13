@@ -24,7 +24,7 @@ page were counted from the repository at the time of writing.
 | Mutation | Do the tests assert, not just execute? gremlins v0.6.0 with thresholds from `.gremlins.yaml`. | `.gremlins.yaml` | `gremlins` | `make mutation-fast`, `make mutation` |
 | Architecture fitness | The hexagonal dependency rule and fleet rules as Go tests ([ADR-0006](../adr/0006-arch-go-architecture-fitness-tests.md)). | `internal/architecture/` | Go | `make arch-test` |
 | MCP evals | E1 schema/metadata, E2 wire conformance, E3 behavioural Gherkin over the Streamable HTTP handler. | `internal/adapters/inbound/mcp/eval_*_test.go`, `evalsuite_test.go`, `testdata/features/mcp_tools.feature` | Go | `go test ./internal/adapters/inbound/mcp/... -race -run '^TestEval\|^TestMCPEvalSuite' -v` |
-| Chart render tests | Probes, MCP env, Service selectors and sweep CronJobs render as intended. | `charts/fulfillment-execution/tests/*.py` | Python, `helm` | `python3 charts/fulfillment-execution/tests/test_sweeps_cronjob.py` (one script per file; not run in CI) |
+| Chart render tests | Probes, MCP env, Service selectors and sweep CronJobs render as intended; the api Deployment mounts the env ConfigMap with `envFrom` (D14) and `OUTBOX_MAX_ATTEMPTS` defaults to 20 (D12), no other workload mounts it. | `charts/fulfillment-execution/tests/*.py`, `charts/fulfillment-execution/tests/render_test.sh` | Python (PyYAML), bash, `helm` | `bash charts/fulfillment-execution/tests/render_test.sh`, `python3 charts/fulfillment-execution/tests/test_sweeps_cronjob.py` (one script per file); all four run in the `chart-tests` CI job |
 | Frontend | The `web/` micro-frontend: lint, type check, unit tests, build. | `web/` | Node 22 | `npm test` in `web/` |
 
 ### Integration suites
@@ -183,6 +183,7 @@ Triggers: push and pull request to `main` and `develop`, a weekly schedule
 | `mutation` | full domain mutation run; opens/closes a `harness:red` issue | schedule and dispatch only |
 | `drift` | deadcode, `go mod tidy -diff`, knip on `web/`, coverage-quality report (advisory) | schedule and dispatch only |
 | `helm-lint` | chart-testing lint | pull requests into `main` only |
+| `chart-tests` | `bash charts/fulfillment-execution/tests/render_test.sh`, then the three Python chart tests with PyYAML 6.0.3 pinned (so they cannot `SKIP`) | every push/PR (gap fix D25) |
 | `trivy-scan` | image build plus Trivy (blocks on fixable CRITICAL/HIGH) | pull requests into `main` only |
 | `docker-publish` | build, push, cosign sign, SBOM attest | push to `main` only |
 | `release` | version tag, Helm chart push to `oci://ghcr.io/iqvo`, GitHub release | push to `main` only |
@@ -190,9 +191,10 @@ Triggers: push and pull request to `main` and `develop`, a weekly schedule
 Other workflows: `codeql.yml` (push/PR to `main` and `develop`, weekly),
 `scorecard.yml` (push to `develop`, weekly), `ai-review.yml` (PRs into
 `develop` touching domain, application, `apis/` or `charts/`), and
-`docs.yml`, which builds and deploys this site **only on push to `main`**:
-no pull request builds the docs site, so run `npm run build` in `docs/`
-before merging a docs change.
+`docs.yml`, which builds the site (`npm run typecheck`, `npm run build`) on
+every pull request touching `docs/**` and deploys it **only on push to
+`main`** (the PR trigger is gap fix D25; before it, a broken sidebar id or
+link was found only after release).
 
 ```mermaid
 flowchart LR

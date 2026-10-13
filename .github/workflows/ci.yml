@@ -394,6 +394,38 @@ jobs:
       - name: Run chart-testing (lint)
         run: ct lint --charts charts/fulfillment-execution --validate-maintainers=false --check-version-increment=false
 
+  # Chart behaviour tests (gap fix D25): the render assertions (D14 envFrom
+  # mount, D12 OUTBOX_MAX_ATTEMPTS value) and the three Python chart tests
+  # (Service selectors, probes + MCP env, sweep CronJobs). They were run by
+  # hand only; running them here catches a broken selector, probe or an
+  # unmounted ConfigMap before release.
+  # ============================================================
+  # CLASSIFICATION: PACKAGING (Helm chart tests)
+  # ============================================================
+  chart-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
+        with:
+          version: v3.16.4
+      - name: Chart render assertions
+        run: bash charts/fulfillment-execution/tests/render_test.sh
+      # The Python chart tests exit 0 with "SKIP" when PyYAML is missing, so
+      # install it explicitly: the checks must never pass vacuously.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.13"
+      - name: Install PyYAML
+        run: python3 -m pip install "pyyaml==6.0.3"
+      - name: Service selector test
+        run: python3 charts/fulfillment-execution/tests/test_service_selectors.py
+      - name: Probes and MCP env test
+        run: python3 charts/fulfillment-execution/tests/test_probes_and_mcp_env.py
+      - name: Sweep CronJob test
+        run: python3 charts/fulfillment-execution/tests/test_sweeps_cronjob.py
+
   # ============================================================
   # CLASSIFICATION: LINTERS & STATIC ANALYSIS (architecture fitness)
   # ============================================================
