@@ -166,6 +166,8 @@ const sidebars: SidebarsConfig = {
         'adr/0041-task-completed-carries-line-no',
         'adr/0042-outbox-relay-attempt-cap',
         'adr/0043-reports-api-openapi-contract',
+        'adr/0044-listener-before-catalogue-replay',
+        'adr/0045-drop-legacy-domain-events-table',
       ],
     },
   ],

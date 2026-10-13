@@ -51,21 +51,26 @@ succeeded, in this order (`cmd/execution/main.go`):
 
 1. Validate `PRODUCT_CLASSIFICATION_MODE` (bad value: exit).
 2. Telemetry setup (never fatal).
-3. Load the process-path catalogue: the file (`file` mode), or replay
-   `warehouse.process-path-management.events` until every partition reaches
-   the offset captured at startup (`kafka` mode, `WaitReadyTimeout` 60s, then
-   exit).
+3. Load the process-path catalogue: the file (`file` mode), or start the
+   replay of `warehouse.process-path-management.events` in the background
+   (`kafka` mode).
 4. With `DATABASE_URL`: run migrations, open the pool, ping it — each under
    boot retry (5 attempts, 1s doubling delay, 15s of waiting in total).
-5. Build publishers, the outbox relay and the Kafka consumers, then listen.
+5. Build publishers and the outbox relay, then listen.
+6. `kafka` mode only: wait until every catalogue partition reaches the offset
+   captured at startup (`WaitReadyTimeout` 60s, then exit). Meanwhile
+   `/healthz` answers 200 and `/readyz` answers 503
+   ([ADR-0044](../adr/0044-listener-before-catalogue-replay.md)).
+7. Start the Kafka consumers.
 
-So `/healthz` and `/readyz` start answering only once the process can serve.
+So `/healthz` and `/readyz` start answering once storage is ready; in `kafka`
+mode `/readyz` turns ready only after step 6.
 After that `/readyz` returns `200 {"status":"ready"}` until SIGTERM, when it
 flips to `503 {"status":"not_ready"}` **before** the server stops accepting
 connections, so the pod leaves the Service endpoints during the drain
 ([ADR-0029](../adr/0029-resilience-circuit-breakers-retry-dlq-shutdown.md)).
 Neither probe checks Postgres or Kafka after boot. The startup probe allows
-60s (2s × 30) for steps 3–4.
+60s (2s × 30) for step 4; the catalogue replay (step 6) no longer counts against it.
 
 Shutdown order: readiness off, `http.Server.Shutdown`, stop the outbox relay
 and wait for its in-flight pass, cancel the consumers and wait for in-flight
@@ -97,7 +102,7 @@ The full report contract is on [Throughput report](../analytics/throughput-repor
 
 | Database | Owner process | Migrations | Tables |
 | --- | --- | --- | --- |
-| OLTP (`DATABASE_URL`, `fulfillment_execution` in the kind cluster) | `cmd/execution` and `cmd/mcp` (both run migrations at boot) | `migrations/0001`–`0017` | `tasks`, `stations`, `packages`, `order_consolidations`, `processed_events`, `outbox_events`, `idempotency_keys`, `product_classification_copy`, `domain_events` (created by 0001, not written by any code today) |
+| OLTP (`DATABASE_URL`, `fulfillment_execution` in the kind cluster) | `cmd/execution` and `cmd/mcp` (both run migrations at boot) | `migrations/0001`–`0018` | `tasks`, `stations`, `packages`, `order_consolidations`, `processed_events`, `outbox_events`, `idempotency_keys`, `product_classification_copy` (`domain_events` from 0001 was dropped by 0018, [ADR-0045](../adr/0045-drop-legacy-domain-events-table.md)) |
 | Analytical (`ANALYTICS_DATABASE_URL`) | `cmd/fulfillment-projector` (only writer, runs migrations); `cmd/fulfillment-reports` reads | `migrations/analytics/0001`–`0002` | `analytics_processed_events`, `analytics_consumed_events`, `analytics_pending_claims`, `throughput_rollup` |
 
 Migrations are golang-migrate `up` runs at process start (`internal/adapters/outbound/postgres/migrate.go`),

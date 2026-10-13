@@ -141,8 +141,9 @@ Kubernetes Deployment ([Runbook](../operations/runbook.md#deployment-shape)).
 
 Data stores: one **OLTP** Postgres database (`tasks`, `stations`,
 `packages`, `order_consolidations`, `processed_events`, `outbox_events`,
-`idempotency_keys`, `product_classification_copy`, plus the unused
-`domain_events` from migration 0001) and one separate **analytical**
+`idempotency_keys`, `product_classification_copy`; the unused
+`domain_events` from migration 0001 was dropped by 0018,
+[ADR-0045](../adr/0045-drop-legacy-domain-events-table.md)) and one separate **analytical**
 Postgres database (`throughput_rollup`, `analytics_pending_claims`,
 `analytics_processed_events`, `analytics_consumed_events`). Without
 `DATABASE_URL`, `cmd/execution` and `cmd/mcp` each keep their state in
