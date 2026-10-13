@@ -271,7 +271,8 @@ sweeps:
 # startupProbe covers this fleet's known ~10s post-start first-outbound-dial
 # reset (Istio native sidecars; holdApplicationUntilProxyStarts is a no-op
 # for them): failureThreshold * periodSeconds = 60s gives the app-side boot
-# retry (internal/adapters/outbound/bootretry, ~31s worst case) room to
+# retry (internal/adapters/outbound/bootretry: 5 attempts, 1+2+4+8 = 15s of
+# backoff plus the attempts' own duration) room to
 # finish before liveness/readiness probing (and any liveness-triggered
 # restart) begins.
 startupProbe:

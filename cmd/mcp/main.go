@@ -125,9 +125,12 @@ func run() error {
 	return srv.Shutdown(ctx)
 }
 
+// newLogger builds the process-wide structured logger, mirroring
+// cmd/execution: LOG_LEVEL debug|info|warn|warning|error (case-insensitive,
+// default info), JSON to stdout (gap fix D22: it was case-sensitive here).
 func newLogger(level string) *slog.Logger {
 	var lvl slog.Level
-	switch level {
+	switch strings.ToLower(level) {
 	case "debug":
 		lvl = slog.LevelDebug
 	case "warn", "warning":

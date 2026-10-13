@@ -27,8 +27,8 @@ import (
 type OnTimeToCPTToolInput struct {
 	From      string `json:"from" jsonschema:"start of the window, inclusive, RFC3339 (required)"`
 	To        string `json:"to" jsonschema:"end of the window, exclusive, RFC3339 (required)"`
-	TaskType  string `json:"taskType" jsonschema:"optional process-path filter; on-time-to-CPT data only exists on SLAM rows"`
-	StationId string `json:"stationId" jsonschema:"optional station filter"`
+	TaskType  string `json:"taskType,omitempty" jsonschema:"optional process-path filter; on-time-to-CPT data only exists on SLAM rows"`
+	StationId string `json:"stationId,omitempty" jsonschema:"optional station filter"`
 }
 
 // OnTimeToCPTView is the tool's aggregated result: the on-time-to-CPT KPI
