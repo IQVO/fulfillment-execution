@@ -109,7 +109,8 @@ Messages worth searching for or alerting on:
 
 | `msg` | Level | Meaning |
 | --- | --- | --- |
-| `kafka message handling failed after retries` | ERROR | A `WorkReleased` failed 3 attempts and went to the DLQ (`topic`, `attempts`, `error`). |
+| `kafka message handling failed after retries` | ERROR | A `WorkReleased` failed 3 attempts and went to the DLQ (`topic`, `attempts`, `error`). Never logged for a message a shutdown interrupted ([ADR-0046](../adr/0046-workreleased-consumer-commits-after-settle.md)). |
+| `kafka commit failed; the message will be redelivered and deduplicated` | WARN | The `WorkReleased` offset commit failed after the message was settled (`topic`, `partition`, `offset`, `error`); the redelivery is absorbed by the processed-events claim. |
 | `kafka message is not a valid CloudEvent; dead-lettering` | WARN | Poison message on `warehouse.work-planning.events`. |
 | `failed to publish message to dead-letter topic` | ERROR | The DLQ write itself failed; the message is now only in this log. |
 | `kafka read failed; retrying` / `kafka fetch failed; retrying` | WARN | Broker unreachable; the consumer backs off (up to 30s) and keeps trying. |

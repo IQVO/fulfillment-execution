@@ -10,6 +10,8 @@ import (
 	"time"
 
 	kafkago "github.com/segmentio/kafka-go"
+
+	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
 )
 
 // flakyReader fails ReadMessage `failures` times (a broker restart), then
@@ -19,6 +21,7 @@ type flakyReader struct {
 	failures int
 	msgs     []kafkago.Message
 	calls    int
+	commits  []kafkago.Message
 }
 
 func (r *flakyReader) ReadMessage(ctx context.Context) (kafkago.Message, error) {
@@ -38,6 +41,20 @@ func (r *flakyReader) ReadMessage(ctx context.Context) (kafkago.Message, error) 
 	r.mu.Unlock()
 	<-ctx.Done()
 	return kafkago.Message{}, ctx.Err()
+}
+
+// FetchMessage serves the same script as ReadMessage: the WorkReleased
+// consumer fetches and commits explicitly.
+func (r *flakyReader) FetchMessage(ctx context.Context) (kafkago.Message, error) {
+	return r.ReadMessage(ctx)
+}
+
+// CommitMessages records the committed offsets.
+func (r *flakyReader) CommitMessages(_ context.Context, msgs ...kafkago.Message) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.commits = append(r.commits, msgs...)
+	return nil
 }
 
 type capturingDLQ struct {
@@ -96,5 +113,50 @@ func TestReadRecovering_ResetsBackoffAfterSuccess(t *testing.T) {
 	}
 	if first := policy.NextBackOff(); first > 2*recoverInitialInterval {
 		t.Fatalf("backoff after success = %v, want reset to ~%v", first, recoverInitialInterval)
+	}
+}
+
+// cancellingUnitOfWork simulates a shutdown landing inside the use case: it
+// cancels the consumer's context and reports the cancellation, as the
+// Postgres UnitOfWork does when its transaction is interrupted.
+type cancellingUnitOfWork struct{ cancel context.CancelFunc }
+
+func (u cancellingUnitOfWork) Execute(ctx context.Context, _ func(context.Context) error) error {
+	u.cancel()
+	return ctx.Err()
+}
+
+// A shutdown that interrupts a healthy WorkReleased is a clean stop: the
+// message is neither dead-lettered (it is not poison) nor committed (so it is
+// redelivered), and Run returns nil.
+func TestConsumer_Run_ShutdownMidHandleNeitherDeadLettersNorCommits(t *testing.T) {
+	raw := []byte(`{"specversion":"1.0","id":"evt-1","source":"/warehouse/wes-work-planning","type":"` + TypeWorkReleased +
+		`","subject":"order-1","time":"2026-01-01T11:00:00Z","datacontenttype":"application/json",` +
+		`"data":{"path_id":"PICK","work_unit_id":"order-1","cpt":"2026-01-01T12:00:00Z"}}`)
+	r := &flakyReader{msgs: []kafkago.Message{{Topic: "warehouse.work-planning.events", Offset: 3, Value: raw}}}
+	dlq := &capturingDLQ{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := &Consumer{
+		testReader: r,
+		DeadLetter: dlq,
+		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Apply:      &usecases.ApplyWorkReleased{UnitOfWork: cancellingUnitOfWork{cancel: cancel}},
+	}
+
+	if err := c.Run(ctx); err != nil {
+		t.Fatalf("Run returned %v, want nil (a shutdown mid-handle is a clean stop)", err)
+	}
+	dlq.mu.Lock()
+	dead := len(dlq.msgs)
+	dlq.mu.Unlock()
+	if dead != 0 {
+		t.Fatalf("dead-lettered %d message(s) on shutdown, want 0", dead)
+	}
+	r.mu.Lock()
+	committed := len(r.commits)
+	r.mu.Unlock()
+	if committed != 0 {
+		t.Fatalf("committed %d message(s) on shutdown, want 0 (it must be redelivered)", committed)
 	}
 }
