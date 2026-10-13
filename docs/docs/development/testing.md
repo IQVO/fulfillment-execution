@@ -134,6 +134,7 @@ The thresholds live in `.gremlins.yaml` (`threshold.efficacy: 90.0`,
 | `TestKafkaIntegrationTestsUseTestcontainers`, `TestPostgresIntegrationTestsUseTestcontainers`, `TestPostgresIntegrationDetector` | integration tests start their own containers |
 | `TestMCPOptionalToolInputsCarryOmitempty`, `TestMCPOptionalToolInputsSensorFailsOnBadFixtures` | an MCP tool input field whose `jsonschema` description says "optional" carries `omitempty`, or the SDK marks it required (gap fix D16; the twin proves the sensor fails on a bad fixture) |
 | `TestOutboxRelaysPassAttemptCap`, `TestOutboxRelayCapSensorFailsOnBadFixtures` | every `NewOutboxRelay` call under `cmd/` or `internal/composition/` passes `WithMaxAttempts` ([ADR-0042](../adr/0042-outbox-relay-attempt-cap.md), gap fix D12) |
+| `TestKafkaWritersSetRequiredAcks`, `TestKafkaWriterAcksSensorBites` | Every kafka-go `Writer` composite literal in a non-test file under `internal/` or `cmd/` sets `RequiredAcks` (the import alias is resolved per file). kafka-go defaults it to `RequireNone` (acks=0): the broker never confirms the write, so a broker blip silently drops the message while `WriteMessages` returns nil. The twin proves the sensor flags a bad fixture under any alias. |
 
 Gap-fix wave (2026-10-12) tests outside `internal/architecture`:
 
