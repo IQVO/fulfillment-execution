@@ -429,7 +429,7 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install PyYAML
-        run: python3 -m pip install "pyyaml==6.0.3"
+        run: python3 -m pip install --require-hashes -r .github/requirements/chart-tests.txt
       - name: Service selector test
         run: python3 charts/fulfillment-execution/tests/test_service_selectors.py
       - name: Probes and MCP env test
