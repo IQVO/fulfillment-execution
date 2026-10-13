@@ -132,6 +132,15 @@ The thresholds live in `.gremlins.yaml` (`threshold.efficacy: 90.0`,
 | `TestNoAuthMiddlewareReintroduced` | REST/MCP stay unauthenticated ([ADR-0022](../adr/0022-remove-rest-mcp-auth.md)) |
 | `TestKafkaConsumerGroupNeverHardcodedInline` | no Kafka `GroupID` is assigned from an inline string literal (it must come from a named constant, an env lookup or a function) |
 | `TestKafkaIntegrationTestsUseTestcontainers`, `TestPostgresIntegrationTestsUseTestcontainers`, `TestPostgresIntegrationDetector` | integration tests start their own containers |
+| `TestMCPOptionalToolInputsCarryOmitempty`, `TestMCPOptionalToolInputsSensorFailsOnBadFixtures` | an MCP tool input field whose `jsonschema` description says "optional" carries `omitempty`, or the SDK marks it required (gap fix D16; the twin proves the sensor fails on a bad fixture) |
+
+Gap-fix wave (2026-10-12) tests outside `internal/architecture`:
+
+| Test | Guards |
+| --- | --- |
+| `TestEvalConformance_InstructionsNameTheWriteTool` | the MCP `instructions` do not call the server read-only and name `complete_task` (D17) |
+| `TestReportTools_OptionalFiltersAreOptionalOnTheWire` | both report tools advertise `required: [from, to]` and a call without filters reaches the handler (D16) |
+| `TestNewLoggerLevels` (one per `cmd/*`) | `LOG_LEVEL` `warn`/`warning`, case-insensitive, in every binary (D22) |
 
 ## Local gates and hooks
 

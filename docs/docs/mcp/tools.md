@@ -17,9 +17,11 @@ are on the [Governance Charter](./governance-charter.md).
 
 The schemas below were captured from `tools/list` against a locally built
 `cmd/mcp` (go-sdk v1.8.0, protocol version `2025-06-18`), not written from
-memory. Every schema is strict (`additionalProperties: false`), and the SDK
-marks **every** field required, including the ones the descriptions call
-optional: send `""` for an unused filter.
+memory. Every schema is strict (`additionalProperties: false`). Optional
+filters carry `omitempty`, so the SDK lists only the truly required fields in
+`required` (gap fix D16; before it, every field was required and a call that
+left an optional filter out was rejected). The sensor
+`TestMCPOptionalToolInputsCarryOmitempty` keeps it that way.
 
 Server info: name `fulfillment-execution-mcp`, version `1.0.0`. Its
 `instructions` string lists the read tools, names `complete_task` as the one
@@ -30,14 +32,14 @@ points at the read-only `triage_backlog` prompt. It no longer says
 
 ## Tools
 
-| Tool | Annotation | Registered | Input (all required) | Output |
+| Tool | Annotation | Registered | Input (required unless marked optional) | Output |
 | --- | --- | --- | --- | --- |
 | `get_queue_status` | read-only | always | `processPath` (string): `PICK`, `PACK` or `SLAM` | `{"processPath","depth"}`: number of Pending tasks (same as REST `GET /queues/{taskType}/depth`) |
 | `find_claimable_work` | read-only | always | `processPath` (string): `PICK`, `PACK` or `SLAM` | `{"processPath","candidateCount","best"}`; `best` is the earliest-CPT claimable task or `null` when nothing is claimable (not an error) |
 | `diagnose_stuck_tasks` | read-only | always | `withinSeconds` (integer): flag claimed tasks whose lease expires within this many seconds; `0` = only already expired | `{"count","tasks":[{taskId,type,leaseStationId,leaseExpiry,reason}]}` |
 | `complete_task` | **write**: `readOnlyHint: false`, `destructiveHint: true`, `idempotentHint: false` | always | `taskId` (string), `stationId` (string): the station holding the active claim | `{"taskId","stationId","completed":true}`. Runs `CompleteTask` exactly like `POST /tasks/{id}/complete`: publishes `TaskCompleted` (through `outbox_events` with Postgres and `EVENT_PUBLISHER=kafka`) and increments `fulfillment.tasks.completed`. |
-| `get_fulfillment_throughput_report` | read-only | only when `REPORTS_BASE_URL` is set | `from`, `to` (RFC 3339, `[from, to)`), `taskType` (`PICK`, `PACK`, `SLAM` or `""`), `stationId` (or `""`), `granularity` (`hour` or `""`) | `{"rows":[...]}`, the body of `GET /reports/throughput` on `cmd/fulfillment-reports` |
-| `get_on_time_to_cpt` | read-only | only when `REPORTS_BASE_URL` is set | `from`, `to` (RFC 3339), `taskType`, `stationId` (or `""`) | `{"from","to","packagesManifested","packagesOnTimeToCPT","packagesLateToCPT","onTimeRate"}` summed over the window; `onTimeRate` is `0` when nothing was manifested ([ADR-0026](../adr/0026-on-time-to-cpt-kpi.md)) |
+| `get_fulfillment_throughput_report` | read-only | only when `REPORTS_BASE_URL` is set | `from`, `to` (RFC 3339, `[from, to)`); optional: `taskType` (`PICK`, `PACK`, `SLAM`), `stationId`, `granularity` (`hour`, the default) | `{"rows":[...]}`, the body of `GET /reports/throughput` on `cmd/fulfillment-reports` |
+| `get_on_time_to_cpt` | read-only | only when `REPORTS_BASE_URL` is set | `from`, `to` (RFC 3339); optional: `taskType`, `stationId` | `{"from","to","packagesManifested","packagesOnTimeToCPT","packagesLateToCPT","onTimeRate"}` summed over the window; `onTimeRate` is `0` when nothing was manifested ([ADR-0026](../adr/0026-on-time-to-cpt-kpi.md)) |
 
 Read-only tools carry `readOnlyHint: true`. No tool takes a station
 capability set, and no tool can claim, release or create work.

@@ -54,7 +54,11 @@ transactional-outbox relay.
 Not configurable, but worth knowing: migrations are read from the relative
 directory `migrations` (the repo root under `go run`, `/app/migrations` in the
 image); the lease is 5 minutes (`usecases.DefaultLeaseDuration`); the outbox
-relay claims at most 100 rows per pass; graceful shutdown is bounded by 10s.
+relay claims at most 100 rows per pass; graceful shutdown is bounded by 10s;
+boot-time dials (migrations, DB ping, the catalogue broker dial) retry 5
+times with waits of 1, 2, 4 and 8 s, i.e. 15 s of backoff plus the attempts'
+own duration (`internal/adapters/outbound/bootretry`; the code comment said
+"~31s" until gap fix D22).
 
 ## `cmd/mcp` (the MCP server)
 
@@ -65,7 +69,7 @@ never runs the outbox relay (only `cmd/execution` drains `outbox_events`).
 | Variable | Default | Required? | Meaning | Read in |
 | --- | --- | --- | --- | --- |
 | `MCP_ADDR` | `:8090` | no | Listen address. MCP Streamable HTTP is served at `/` and `/mcp`, plus `GET /healthz`. | `cmd/mcp/main.go` |
-| `LOG_LEVEL` | `info` | no | Same levels as `cmd/execution`, but matched **case-sensitively** here (`DEBUG` means `info`). | `cmd/mcp/main.go` |
+| `LOG_LEVEL` | `info` | no | Same levels as `cmd/execution`: `debug`, `info`, `warn`/`warning`, `error`, case-insensitive (it was case-sensitive here until gap fix D22). | `cmd/mcp/main.go` |
 | `DATABASE_URL` | *(unset)* | no | OLTP Postgres DSN. Unset gives this process its **own** in-memory stores, which are not shared with a separately running `cmd/execution`. | `cmd/mcp/main.go` |
 | `MIGRATIONS_DATABASE_URL` | value of `DATABASE_URL` | no | Same split as `cmd/execution` ([ADR-0031](../adr/0031-migrations-direct-postgres-connection.md)). | `cmd/mcp/main.go` |
 | `EVENT_PUBLISHER` | `log` | no | With `kafka` and `DATABASE_URL`, `complete_task` writes `outbox_events` rows in its transaction for `cmd/execution`'s relay to publish. With `kafka` and no database it publishes straight to the broker. | `cmd/mcp/main.go` |

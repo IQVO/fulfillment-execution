@@ -137,12 +137,15 @@ var _ ReportsClient = (*ReportsRESTClient)(nil)
 // --- get_fulfillment_throughput_report tool -----------------------------------
 
 // ThroughputToolInput is the tool's argument set (untrusted, from a model).
+// Only from/to are required: the filters carry omitempty so the SDK leaves
+// them out of the schema's required list (gap fix D16, pinned by
+// internal/architecture TestMCPOptionalToolInputsCarryOmitempty).
 type ThroughputToolInput struct {
 	From        string `json:"from" jsonschema:"start of the window, inclusive, RFC3339 (required)"`
 	To          string `json:"to" jsonschema:"end of the window, exclusive, RFC3339 (required)"`
-	TaskType    string `json:"taskType" jsonschema:"optional process-path filter: PICK, PACK or SLAM"`
-	StationId   string `json:"stationId" jsonschema:"optional station filter"`
-	Granularity string `json:"granularity" jsonschema:"time bucket granularity; only 'hour' is supported"`
+	TaskType    string `json:"taskType,omitempty" jsonschema:"optional process-path filter: PICK, PACK or SLAM"`
+	StationId   string `json:"stationId,omitempty" jsonschema:"optional station filter"`
+	Granularity string `json:"granularity,omitempty" jsonschema:"optional time bucket granularity; only 'hour' is supported and it is the default"`
 }
 
 // getThroughputReport is the tool handler: it validates the required window,
