@@ -149,9 +149,9 @@ type Consumer struct {
 	Catalogue  ports.PathCatalogue
 	Logger     *slog.Logger
 	DeadLetter DeadLetterSink
-	// testReader, when set, replaces Reader for ReadMessage (unit tests of
-	// the broker-outage recovery in Run).
-	testReader messageReader
+	// testReader, when set, replaces Reader for FetchMessage/CommitMessages
+	// (unit tests of the broker-outage recovery in Run).
+	testReader fetchCommitReader
 }
 
 // DeadLetterSink publishes one or more messages, matching the subset of
@@ -193,39 +193,63 @@ func newConsumer(brokers []string, topic, groupID string, startOffset int64, app
 	return &Consumer{Reader: reader, Apply: apply, Logger: logger}
 }
 
-// Run reads and handles messages until ctx is cancelled or the reader
-// returns a fatal error. A message that fails Handle (which itself
-// retries in-process — see Handle's doc comment) is published to
-// DeadLetter (when configured — see the Consumer type doc comment) with
-// the failure's error message attached, then the loop continues; Kafka's
-// consumer-group offset is already advanced by the time Handle returns
-// (ReadMessage auto-commits), so a message that is ultimately
-// dead-lettered is never redelivered — this is a durable record for
-// alerting/replay, not a mechanism to avoid losing the offset. A failure
-// to publish to DeadLetter itself is logged separately and does NOT stop
-// the loop — a broker blip on the DLQ publish must not wedge the main
-// consumer, which is the whole point of this feature.
+// Run reads and handles messages until ctx is cancelled. Each message is
+// FETCHED (not read-and-auto-committed) and its offset is committed only once
+// it is settled: applied, or published to DeadLetter (when configured — see
+// the Consumer type doc comment) with the failure's error message attached
+// after Handle's in-process retries are exhausted. A failure to publish to
+// DeadLetter itself is logged separately and does NOT stop the loop — a
+// broker blip on the DLQ publish must not wedge the main consumer, which is
+// the whole point of this feature.
+//
+// Cancelling ctx while a message is mid-handle is a clean stop (nil): the
+// message is neither dead-lettered (only cancellation interrupted it) nor
+// committed, so it is redelivered on the next start and ApplyWorkReleased's
+// CloudEvents-id claim makes the replay safe. A commit failure is logged and
+// the loop continues: the message is redelivered and deduplicated.
 func (c *Consumer) Run(ctx context.Context) error {
 	policy := newRecoverBackoff()
 	for {
-		msg, ok := readRecovering(ctx, c.reader(), policy, c.Logger, c.topic())
+		msg, ok := fetchRecovering(ctx, c.reader(), policy, c.Logger, c.topic())
 		if !ok {
 			return nil
 		}
-		if err := c.Handle(ctx, msg); err != nil {
-			if errors.Is(err, cloudevents.ErrNotCloudEvent) {
-				// Deterministic poison message (not a valid CloudEvents
-				// 1.0 event, e.g. the retired flat envelope): never
-				// retried, never parsed any other way — dead-lettered.
-				c.Logger.WarnContext(ctx, "kafka message is not a valid CloudEvent; dead-lettering",
-					"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset, "error", err)
-			} else {
-				c.Logger.ErrorContext(ctx, "kafka message handling failed after retries",
-					"topic", msg.Topic, "attempts", maxHandlerAttempts, "error", err)
+		if !c.settle(ctx, msg) {
+			return nil
+		}
+		if err := c.reader().CommitMessages(ctx, msg); err != nil {
+			if ctx.Err() != nil {
+				return nil
 			}
-			c.SendToDeadLetter(ctx, msg, err)
+			c.Logger.WarnContext(ctx, "kafka commit failed; the message will be redelivered and deduplicated",
+				"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset, "error", err)
 		}
 	}
+}
+
+// settle handles msg and, when Handle fails for good, dead-letters it. It
+// reports false -- nothing dead-lettered, nothing to commit -- when ctx was
+// cancelled mid-handle: a message only shutdown interrupted is not poison.
+func (c *Consumer) settle(ctx context.Context, msg kafkago.Message) bool {
+	err := c.Handle(ctx, msg)
+	if err == nil {
+		return true
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	if errors.Is(err, cloudevents.ErrNotCloudEvent) {
+		// Deterministic poison message (not a valid CloudEvents
+		// 1.0 event, e.g. the retired flat envelope): never
+		// retried, never parsed any other way — dead-lettered.
+		c.Logger.WarnContext(ctx, "kafka message is not a valid CloudEvent; dead-lettering",
+			"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset, "error", err)
+	} else {
+		c.Logger.ErrorContext(ctx, "kafka message handling failed after retries",
+			"topic", msg.Topic, "attempts", maxHandlerAttempts, "error", err)
+	}
+	c.SendToDeadLetter(ctx, msg, err)
+	return true
 }
 
 // sendToDeadLetter publishes msg to DeadLetterTopic(msg.Topic), preserving
@@ -418,8 +442,8 @@ func (c *Consumer) HandleMessage(ctx context.Context, raw []byte) error {
 	})
 }
 
-// reader returns the read seam: the test hook when set, else Reader.
-func (c *Consumer) reader() messageReader {
+// reader returns the fetch/commit seam: the test hook when set, else Reader.
+func (c *Consumer) reader() fetchCommitReader {
 	if c.testReader != nil {
 		return c.testReader
 	}
