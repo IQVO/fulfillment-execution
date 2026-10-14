@@ -52,7 +52,10 @@ func statusFor(err error) int {
 		errors.Is(err, pack.ErrNoScannedContents),
 		errors.Is(err, consolidation.ErrUnknownLine),
 		errors.Is(err, usecases.ErrWrongTaskType),
-		errors.Is(err, usecases.ErrStationLocationNotWorkCenter):
+		errors.Is(err, usecases.ErrStationLocationNotWorkCenter),
+		errors.Is(err, task.ErrRelocationConfirmationRequired),
+		errors.Is(err, task.ErrInvalidRelocationConfirmation),
+		errors.Is(err, task.ErrNotRelocationTask):
 		return http.StatusUnprocessableEntity
 
 	default:
@@ -93,6 +96,9 @@ var problemCatalog = []struct {
 	{consolidation.ErrUnknownLine, "rebin-unknown-line", "Line is not part of this order's required consolidation set"},
 	{usecases.ErrWrongTaskType, "wrong-task-type", "Wrong task type for this operation"},
 	{usecases.ErrStationLocationNotWorkCenter, "station-location-not-workcenter", "Station's locationCode does not resolve to a facility-layout WorkCenter"},
+	{task.ErrRelocationConfirmationRequired, "relocation-confirmation-required", "A RELOCATE task completes only with the confirmed quantity and the bins the move left open"},
+	{task.ErrInvalidRelocationConfirmation, "invalid-relocation-confirmation", "The relocation confirmation does not match the planned move"},
+	{task.ErrNotRelocationTask, "not-relocation-task", "quantity, fromBin and toBin apply only to RELOCATE tasks"},
 }
 
 // problemTypeAndTitle maps a typed domain/application error to its RFC 7807

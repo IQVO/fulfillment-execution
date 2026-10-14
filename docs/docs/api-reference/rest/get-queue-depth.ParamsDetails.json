@@ -1,1 +1,1 @@
-{"parameters":[{"name":"taskType","in":"path","required":true,"description":"The process path to count (conventionally PICK, PACK, or SLAM).","schema":{"type":"string","example":"PICK"}}]}
+{"parameters":[{"name":"taskType","in":"path","required":true,"description":"The process path to count (conventionally PICK, PACK, SLAM or RELOCATE).","schema":{"type":"string","example":"PICK"}}]}

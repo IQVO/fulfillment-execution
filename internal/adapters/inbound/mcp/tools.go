@@ -50,7 +50,7 @@ func (d Deps) now() time.Time {
 // --- get_queue_status ---------------------------------------------------------
 
 type queueStatusInput struct {
-	ProcessPath string `json:"processPath" jsonschema:"the process path queue to inspect: PICK, PACK or SLAM"`
+	ProcessPath string `json:"processPath" jsonschema:"the process path queue to inspect: PICK, PACK, SLAM or RELOCATE"`
 }
 
 type queueStatusOutput struct {
@@ -73,7 +73,7 @@ func (d Deps) getQueueStatus(ctx context.Context, in queueStatusInput) (queueSta
 // --- find_claimable_work ------------------------------------------------------
 
 type findClaimableInput struct {
-	ProcessPath string `json:"processPath" jsonschema:"the process path to search: PICK, PACK or SLAM"`
+	ProcessPath string `json:"processPath" jsonschema:"the process path to search: PICK, PACK, SLAM or RELOCATE"`
 }
 
 type findClaimableOutput struct {
@@ -152,6 +152,12 @@ func (d Deps) diagnoseStuckTasks(ctx context.Context, in diagnoseInput) (diagnos
 type completeTaskInput struct {
 	TaskId    string `json:"taskId" jsonschema:"the id of the task to complete"`
 	StationId string `json:"stationId" jsonschema:"the id of the station that holds the active claim and is completing the task"`
+	// Quantity, FromBin and ToBin are the RELOCATE confirmation (ADR 0047):
+	// optional in the schema, required by the domain for a RELOCATE task
+	// and rejected for any other task type.
+	Quantity int    `json:"quantity,omitempty" jsonschema:"optional, RELOCATE tasks only (required for them): the units the operator counted and moved, at least 1"`
+	FromBin  string `json:"fromBin,omitempty" jsonschema:"optional, RELOCATE tasks only: the source bin the operator scanned; required when the move left the source open (an Assign)"`
+	ToBin    string `json:"toBin,omitempty" jsonschema:"optional, RELOCATE tasks only: the destination bin the operator scanned; required when the move left the destination open (a Vacate)"`
 }
 
 type completeTaskOutput struct {
@@ -164,10 +170,15 @@ func (d Deps) completeTask(ctx context.Context, in completeTaskInput) (completeT
 	if in.TaskId == "" || in.StationId == "" {
 		return completeTaskOutput{}, fmt.Errorf("taskId and stationId are required")
 	}
-	err := d.CompleteTask.Execute(ctx, shared.TaskId(in.TaskId), shared.StationId(in.StationId))
+	if in.Quantity < 0 {
+		return completeTaskOutput{}, fmt.Errorf("quantity must be at least 1, got %d", in.Quantity)
+	}
+	confirmation := task.RelocationConfirmation{Quantity: in.Quantity, FromBin: in.FromBin, ToBin: in.ToBin}
+	err := d.CompleteTask.ExecuteWith(ctx, shared.TaskId(in.TaskId), shared.StationId(in.StationId), confirmation)
 	if err != nil {
 		// The use case's domain errors (task not found, not owner, already
-		// completed, not claimed) surface unchanged as the tool error; the
+		// completed, not claimed, a missing or mismatched RELOCATE
+		// confirmation) surface unchanged as the tool error; the
 		// at-most-once and ownership invariants make a mistaken model call safe.
 		return completeTaskOutput{}, err
 	}
@@ -183,13 +194,13 @@ func (d Deps) registerTools(server *mcp.Server) {
 
 	addTool(server, &mcp.Tool{
 		Name:        "get_queue_status",
-		Description: "Return the number of Pending tasks in a process-path queue (PICK, PACK, or SLAM).",
+		Description: "Return the number of Pending tasks in a process-path queue (PICK, PACK, SLAM, or RELOCATE).",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly},
 	}, d.getQueueStatus)
 
 	addTool(server, &mcp.Tool{
 		Name:        "find_claimable_work",
-		Description: "Return the highest-priority (earliest-CPT) task a station could claim now in a given process path, plus how many candidates exist.",
+		Description: "Return the highest-priority (earliest-CPT) task a station could claim now in a given process path, plus how many candidates exist. A RELOCATE candidate carries its slot-plan move (sku, bins, kind).",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly},
 	}, d.findClaimableWork)
 
@@ -207,7 +218,7 @@ func (d Deps) registerTools(server *mcp.Server) {
 	notIdempotent := false
 	addTool(server, &mcp.Tool{
 		Name:        "complete_task",
-		Description: "Complete a claimed task on behalf of the station that holds its active claim. Rejected if the task is not found, not claimed, already completed, or the station does not own the claim.",
+		Description: "Complete a claimed task on behalf of the station that holds its active claim. Rejected if the task is not found, not claimed, already completed, or the station does not own the claim. A RELOCATE task also needs the operator's confirmation: quantity (counted, at least 1) and the scanned fromBin (Assign) or toBin (Vacate) the move left open; never invent these values, ask the operator.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &destructive, IdempotentHint: notIdempotent},
 	}, d.completeTask)
 
@@ -248,9 +259,9 @@ func addTool[In, Out any](
 // untrusted, so an unknown value is rejected rather than silently defaulted.
 func parseProcessPath(s string) (task.Type, error) {
 	switch task.Type(s) {
-	case task.Pick, task.Pack, task.Slam:
+	case task.Pick, task.Pack, task.Slam, task.Relocate:
 		return task.Type(s), nil
 	default:
-		return "", fmt.Errorf("unknown process path %q: must be PICK, PACK or SLAM", s)
+		return "", fmt.Errorf("unknown process path %q: must be PICK, PACK, SLAM or RELOCATE", s)
 	}
 }

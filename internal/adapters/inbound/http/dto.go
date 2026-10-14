@@ -2,6 +2,7 @@ package http
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/claudioed/fulfillment-execution/internal/domain/task"
@@ -19,7 +20,9 @@ type createTaskRequest struct {
 // the published contract (apis/openapi.yaml's TaskType enum) defines. The
 // HTTP surface must not mint tasks carrying free-form type strings every
 // spec-generated client would reject (found by Schemathesis contract
-// testing — scripts/contract-test.sh).
+// testing — scripts/contract-test.sh). RELOCATE is not creatable: a
+// RELOCATE task needs the slot-plan move only WorkReleased carries
+// (ADR 0047).
 func isValidTaskType(v string) bool {
 	switch task.Type(v) {
 	case task.Pick, task.Pack, task.Slam, task.Rebin, task.Dispatch, task.Arrival:
@@ -27,6 +30,12 @@ func isValidTaskType(v string) bool {
 	default:
 		return false
 	}
+}
+
+// isClaimableTaskType is isValidTaskType plus RELOCATE (apis/openapi.yaml's
+// AnyTaskType enum): every task type a station may claim.
+func isClaimableTaskType(v string) bool {
+	return isValidTaskType(v) || task.Type(v) == task.Relocate
 }
 
 // validate reports the first missing required field, or "" if the request
@@ -59,6 +68,42 @@ type taskResponse struct {
 	GiftWrap             bool       `json:"giftWrap"`
 	LeaseStationId       *string    `json:"leaseStationId,omitempty"`
 	LeaseExpiry          *time.Time `json:"leaseExpiry,omitempty"`
+	// Relocation is the slot-plan move of a RELOCATE task (ADR 0047),
+	// omitted for every other task type.
+	Relocation *relocationResponse `json:"relocation,omitempty"`
+}
+
+// relocationResponse is a RELOCATE task's planned move, plus the executed
+// move once the task is completed. An open side (fromBin of an Assign,
+// toBin of a Vacate) is omitted: the operator scans it at completion.
+type relocationResponse struct {
+	PlanId   string                      `json:"planId"`
+	MoveSeq  int                         `json:"moveSeq"`
+	Kind     string                      `json:"kind"`
+	SKU      string                      `json:"sku"`
+	FromBin  string                      `json:"fromBin,omitempty"`
+	ToBin    string                      `json:"toBin,omitempty"`
+	Ref      string                      `json:"ref"`
+	Executed *executedRelocationResponse `json:"executed,omitempty"`
+}
+
+// executedRelocationResponse is the move recorded at completion.
+type executedRelocationResponse struct {
+	Quantity int    `json:"quantity"`
+	FromBin  string `json:"fromBin"`
+	ToBin    string `json:"toBin"`
+}
+
+func toRelocationResponse(t *task.Task) *relocationResponse {
+	m := t.Relocation()
+	if m == nil {
+		return nil
+	}
+	resp := &relocationResponse{PlanId: m.PlanId, MoveSeq: m.MoveSeq, Kind: string(m.Kind), SKU: m.SKU, FromBin: m.FromBin, ToBin: m.ToBin, Ref: m.Ref()}
+	if r := t.RelocationResult(); r != nil {
+		resp.Executed = &executedRelocationResponse{Quantity: r.Quantity, FromBin: r.FromBin, ToBin: r.ToBin}
+	}
+	return resp
 }
 
 type claimNextRequest struct {
@@ -69,10 +114,10 @@ func (r claimNextRequest) validate() string {
 	switch {
 	case r.TaskType == "":
 		return "taskType is required"
-	case !isValidTaskType(r.TaskType):
-		// apis/openapi.yaml claimNextTask: taskType is the TaskType enum, and
-		// a value outside it is a 400 (BadRequest), not an empty queue (409).
-		return "taskType must be one of PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL"
+	case !isClaimableTaskType(r.TaskType):
+		// apis/openapi.yaml claimNextTask: taskType is the AnyTaskType enum,
+		// and a value outside it is a 400 (BadRequest), not an empty queue (409).
+		return "taskType must be one of PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL, RELOCATE"
 	default:
 		return ""
 	}
@@ -89,15 +134,47 @@ func (r renewLeaseRequest) validate() string {
 	return ""
 }
 
+// completeTaskRequest is POST /tasks/{id}/complete. Quantity, FromBin and
+// ToBin are the RELOCATE confirmation (ADR 0047): optional on the wire,
+// required by the domain for a RELOCATE task (the bins only where the move
+// left them open) and rejected for any other task. Pointers tell an absent
+// field from an explicit 0 / "", which the contract forbids.
 type completeTaskRequest struct {
-	StationId string `json:"stationId"`
+	StationId string  `json:"stationId"`
+	Quantity  *int    `json:"quantity,omitempty"`
+	FromBin   *string `json:"fromBin,omitempty"`
+	ToBin     *string `json:"toBin,omitempty"`
 }
 
 func (r completeTaskRequest) validate() string {
-	if r.StationId == "" {
+	switch {
+	case r.StationId == "":
 		return "stationId is required"
+	case r.Quantity != nil && *r.Quantity < 1:
+		return "quantity must be at least 1"
+	case r.FromBin != nil && strings.TrimSpace(*r.FromBin) == "":
+		return "fromBin must not be blank"
+	case r.ToBin != nil && strings.TrimSpace(*r.ToBin) == "":
+		return "toBin must not be blank"
+	default:
+		return ""
 	}
-	return ""
+}
+
+// confirmation maps the optional RELOCATE inputs onto the domain's
+// confirmation; all absent is the zero value (no relocation input).
+func (r completeTaskRequest) confirmation() task.RelocationConfirmation {
+	var c task.RelocationConfirmation
+	if r.Quantity != nil {
+		c.Quantity = *r.Quantity
+	}
+	if r.FromBin != nil {
+		c.FromBin = *r.FromBin
+	}
+	if r.ToBin != nil {
+		c.ToBin = *r.ToBin
+	}
+	return c
 }
 
 type sealPackageRequest struct {

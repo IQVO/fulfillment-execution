@@ -64,6 +64,7 @@ func toTaskResponse(t *task.Task) taskResponse {
 		expiry := lease.Expiry
 		resp.LeaseExpiry = &expiry
 	}
+	resp.Relocation = toRelocationResponse(t)
 	return resp
 }
 
@@ -175,7 +176,7 @@ func (h *Handlers) PostCompleteTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.CompleteTask.Execute(r.Context(), shared.TaskId(taskId), shared.StationId(req.StationId)); err != nil {
+	if err := h.CompleteTask.ExecuteWith(r.Context(), shared.TaskId(taskId), shared.StationId(req.StationId), req.confirmation()); err != nil {
 		writeError(w, r, err)
 		return
 	}
