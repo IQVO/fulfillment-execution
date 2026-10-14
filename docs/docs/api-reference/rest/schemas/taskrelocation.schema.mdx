@@ -1,0 +1,33 @@
+---
+id: taskrelocation
+title: "TaskRelocation"
+description: "The slot-plan move a RELOCATE task executes (ADR-0047), from WorkReleased.data.relocation. An open side is omitted: `fromBin` of an Assign and `toBin` of a Vacate are scanned by the operator at completion."
+sidebar_label: "TaskRelocation"
+hide_title: true
+hide_table_of_contents: true
+schema: true
+sample: {"planId":"plan-7","moveSeq":3,"kind":"Vacate","sku":"SKU-1","fromBin":"WH1-FWD-A01-01-03-A","toBin":"WH1-FWD-A01-01-02-A","ref":"plan-7:3","executed":{"quantity":12,"fromBin":"WH1-FWD-A01-01-03-A","toBin":"WH1-RSV-B02-01-01-A"}}
+custom_edit_url: null
+---
+
+import Schema from "@theme/Schema";
+import Heading from "@theme/Heading";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"TaskRelocation"}
+>
+</Heading>
+
+
+
+The slot-plan move a RELOCATE task executes (ADR-0047), from WorkReleased.data.relocation. An open side is omitted: `fromBin` of an Assign and `toBin` of a Vacate are scanned by the operator at completion.
+
+
+<Schema
+  {...require("./taskrelocation.Schema.json")}
+>
+  
+</Schema>
+            

@@ -29,6 +29,9 @@ type WorkReleasedRequest struct {
 	Fragile  bool
 	GiftWrap bool
 	Transfer *task.TransferDetails
+	// Relocation is the slot-plan move of work released on the RELOCATE
+	// path (WorkReleased.relocation, ADR 0047); nil for every other release.
+	Relocation *task.RelocationMove
 }
 
 // ApplyWorkReleased applies one WorkReleased occurrence exactly once
@@ -114,6 +117,15 @@ func (uc *ApplyWorkReleased) Execute(ctx context.Context, req WorkReleasedReques
 
 		required := shared.NewCapabilitySet(capabilitiesOf(pathDef)...)
 		orderRef := shared.OrderRef(req.WorkUnitId)
+		taskType := task.Type(pathDef.Id)
+		if err := checkRelocation(taskType, req); err != nil {
+			return err
+		}
+		if req.Relocation != nil {
+			// Relocation work is not order work: no source order or line.
+			_, err = uc.CreateTask.ExecuteRelocation(ctx, shared.NewCPT(req.CPT), orderRef, required, *req.Relocation)
+			return err
+		}
 		// The release ref is the ORDER id only for order-originated work;
 		// for transfer work it is a demand id, so nothing is stamped.
 		sourceOrderId := req.Ref
@@ -124,7 +136,7 @@ func (uc *ApplyWorkReleased) Execute(ctx context.Context, req WorkReleasedReques
 			sourceOrderId = ""
 			sourceLineNo = 0
 		}
-		_, err = uc.CreateTask.ExecuteRelease(ctx, task.Type(pathDef.Id), shared.NewCPT(req.CPT), orderRef, required, req.Fragile, req.GiftWrap, sourceOrderId, sourceLineNo, req.Transfer)
+		_, err = uc.CreateTask.ExecuteRelease(ctx, taskType, shared.NewCPT(req.CPT), orderRef, required, req.Fragile, req.GiftWrap, sourceOrderId, sourceLineNo, req.Transfer)
 		return err
 	})
 	if err == nil {
@@ -142,6 +154,20 @@ func (uc *ApplyWorkReleased) Execute(ctx context.Context, req WorkReleasedReques
 		}
 	}
 	return err
+}
+
+// checkRelocation enforces ADR 0047's pairing: work on the RELOCATE path
+// must carry a relocation move (its completion publishes the move), and a
+// move is accepted only on the RELOCATE path. Both violations are
+// deterministic: retrying can not fix them.
+func checkRelocation(taskType task.Type, req WorkReleasedRequest) error {
+	if taskType == task.Relocate && req.Relocation == nil {
+		return fmt.Errorf("%w (event %s)", ErrRelocationMoveMissing, req.EventId)
+	}
+	if taskType != task.Relocate && req.Relocation != nil {
+		return fmt.Errorf("%w: path %s (event %s)", ErrRelocationMoveOnOtherPath, taskType, req.EventId)
+	}
+	return nil
 }
 
 // capabilitiesOf converts a catalogue path definition's declared

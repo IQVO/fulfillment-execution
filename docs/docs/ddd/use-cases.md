@@ -18,10 +18,10 @@ One file each in `internal/application/usecases/`.
 
 | # | Use case | Signature (abridged) | Raises | Endpoint |
 | --- | --- | --- | --- | --- |
-| 1 | `CreateTask` | `Execute(ctx, taskType, cpt, orderRef, required, fragile, giftWrap) (*Task, error)` | `TaskCreated` | `POST /tasks` (behind the `Idempotency-Key` middleware when Postgres is wired, ADR-0028); also the `WorkReleased` consumer and `ArriveAtRebin` |
+| 1 | `CreateTask` | `Execute(ctx, taskType, cpt, orderRef, required, fragile, giftWrap) (*Task, error)`; `ExecuteRelocation(ctx, cpt, orderRef, required, RelocationMove)` for RELOCATE work | `TaskCreated` | `POST /tasks` (behind the `Idempotency-Key` middleware when Postgres is wired, ADR-0028; RELOCATE is not creatable there); also the `WorkReleased` consumer and `ArriveAtRebin` |
 | 2 | `ClaimNext` | `Execute(ctx, stationId, taskType) (*Task, error)` | `TaskClaimed` | `POST /stations/{stationId}/claim-next` |
 | 3 | `RenewLease` | `Execute(ctx, taskId, stationId) error` | — | `POST /tasks/{id}/renew-lease` |
-| 4 | `CompleteTask` | `Execute(ctx, taskId, stationId) error` | `TaskCompleted` | `POST /tasks/{id}/complete`; MCP `complete_task` |
+| 4 | `CompleteTask` | `Execute(ctx, taskId, stationId) error`; `ExecuteWith(ctx, taskId, stationId, RelocationConfirmation) error` for a RELOCATE task ([ADR-0047](../adr/0047-relocate-tasks-execute-slot-plan-moves.md)) | `TaskCompleted` (a RELOCATE task's carries the executed move: `sku`, `from_bin`, `to_bin`, `quantity`, `relocation_ref`) | `POST /tasks/{id}/complete` (optional `quantity`, `fromBin`, `toBin`); MCP `complete_task` (same optional inputs) |
 | 5 | `SealPackage` | `Execute(ctx, taskId, stationId, contents) (*Package, error)` | `PackageSealed` | `POST /tasks/{id}/seal-package` |
 | 6 | `RunSlam` | `Execute(ctx, packageId, actualWeight, expectedWeight) error` | `LabelApplied` + `PackageManifested` **or** `WeightDiscrepancyDetected` + `PackageDiverted` | `POST /packages/{id}/slam` |
 | 7 | `GetQueueDepth` | `Execute(ctx, taskType) (int, error)` | — | `GET /queues/{taskType}/depth`; MCP `get_queue_status` and the `queue://fulfillment/...` resources |
@@ -35,7 +35,7 @@ One file each in `internal/application/usecases/`.
 | 15 | `ArriveAtRebin` | `Execute(ctx, orderRef, lineId, requiredLineIds, packCPT, packRequired, packFragile, packGiftWrap) error` | `ItemArrivedAtRebin`; on completion also `TaskCreated` (via `CreateTask`) + `OrderConsolidated` | `POST /rebin/arrivals` |
 | 16 | `GetPackage` | `Execute(ctx, packageId) (*Package, error)` | — | `GET /packages/{id}` ([ADR-0033](../adr/0033-package-read-model.md)) |
 | 17 | `GetPackagesByOrderRef` | `Execute(ctx, orderRef) ([]*Package, error)` | — | `GET /packages?orderRef=` ([ADR-0033](../adr/0033-package-read-model.md)) |
-| 18 | `ApplyWorkReleased` | `Execute(ctx, WorkReleasedRequest) error` | `TaskCreated` (via `CreateTask`, once per CloudEvents `id`) | Kafka `WorkReleased` on `warehouse.work-planning.events`. Claims the event id in `processed_events`, resolves `path_id` through the catalogue (unknown path = error, retried then dead-lettered), saves the task, all in ONE `UnitOfWork` ([ADR-0036](../adr/0036-transfer-task-types-and-facts.md)) |
+| 18 | `ApplyWorkReleased` | `Execute(ctx, WorkReleasedRequest) error` | `TaskCreated` (via `CreateTask`, once per CloudEvents `id`) | Kafka `WorkReleased` on `warehouse.work-planning.events`. Claims the event id in `processed_events`, resolves `path_id` through the catalogue (unknown path = error, retried then dead-lettered), saves the task, all in ONE `UnitOfWork` ([ADR-0036](../adr/0036-transfer-task-types-and-facts.md)). RELOCATE-path work must carry `data.relocation` and nothing else may; a violation is `ErrRelocationMoveMissing` / `ErrRelocationMoveOnOtherPath` ([ADR-0047](../adr/0047-relocate-tasks-execute-slot-plan-moves.md)) |
 | 19 | `ApplyProductClassified` | `Execute(ctx, ProductClassifiedRequest) error` | — | Kafka `ProductClassified` on `warehouse.product-master.events`, only with `PRODUCT_CLASSIFICATION_MODE=kafka`. Claims the event id and runs the version-guarded `UpsertIfNewer` into `product_classification_copy` in ONE `UnitOfWork` ([ADR-0039](../adr/0039-product-classification-local-copy.md)) |
 
 Source: `internal/application/usecases/` (one file per use case;
@@ -177,6 +177,22 @@ UPDATE` in Postgres, so two lines arriving at once are serialized and none
 is lost ([ADR-0034](../adr/0034-concurrency-control-for-consolidation-and-claim.md)).
 The PACK task is created exactly once — on the arrival that first completes
 the set; later arrivals for a complete order are no-ops.
+
+### `CompleteTask` on a RELOCATE task — the operator confirms the move
+
+A RELOCATE task executes one move of an approved slot plan
+([ADR-0047](../adr/0047-relocate-tasks-execute-slot-plan-moves.md)). It
+completes only through `ExecuteWith` with a `task.RelocationConfirmation`:
+the counted `Quantity` (at least 1) and the bins the move left open (the
+source of an `Assign`, the destination of a `Vacate`). The claim rules run
+first, exactly as for any task. Then `Task.CompleteRelocation` checks the
+confirmation against the planned move and records the executed move. The
+`TaskCompleted` built for it (`shared.NewRelocationTaskCompleted`) carries
+that move, and the Kafka encoder publishes it as the additive `sku`,
+`from_bin`, `to_bin`, `quantity` and `relocation_ref` fields.
+`Execute` (no inputs) on a RELOCATE task returns
+`ErrRelocationConfirmationRequired`. Inputs on any other task return
+`ErrNotRelocationTask`. Both are `422`, and nothing is saved or published.
 
 ## The outbound ports
 

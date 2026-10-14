@@ -1,0 +1,33 @@
+---
+id: anytasktype
+title: "AnyTaskType"
+description: "Every task type a task can have and a station can claim: the creatable TaskType values plus `RELOCATE` (a slot-plan move, ADR-0047). RELOCATE tasks are created only from WorkReleased on the RELOCATE process path, never through `POST /tasks`, because they need the planned move."
+sidebar_label: "AnyTaskType"
+hide_title: true
+hide_table_of_contents: true
+schema: true
+sample: "PICK"
+custom_edit_url: null
+---
+
+import Schema from "@theme/Schema";
+import Heading from "@theme/Heading";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"AnyTaskType"}
+>
+</Heading>
+
+
+
+Every task type a task can have and a station can claim: the creatable TaskType values plus `RELOCATE` (a slot-plan move, ADR-0047). RELOCATE tasks are created only from WorkReleased on the RELOCATE process path, never through `POST /tasks`, because they need the planned move.
+
+
+<Schema
+  {...require("./anytasktype.Schema.json")}
+>
+  
+</Schema>
+            

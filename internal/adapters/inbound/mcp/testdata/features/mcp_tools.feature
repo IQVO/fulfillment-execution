@@ -46,7 +46,7 @@ Feature: MCP tool behavioral evals
 
   Scenario: An unknown process path is a clean tool error
     When I call the tool "get_queue_status" with argument "processPath" = "FLYING"
-    Then the tool call reports a problem mentioning "must be PICK, PACK or SLAM"
+    Then the tool call reports a problem mentioning "must be PICK, PACK, SLAM or RELOCATE"
 
   Scenario: Model chatter in the arguments is rejected, not ignored
     The typed tool schemas are strict (additionalProperties: false, the

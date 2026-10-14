@@ -34,10 +34,10 @@ points at the read-only `triage_backlog` prompt. It no longer says
 
 | Tool | Annotation | Registered | Input (required unless marked optional) | Output |
 | --- | --- | --- | --- | --- |
-| `get_queue_status` | read-only | always | `processPath` (string): `PICK`, `PACK` or `SLAM` | `{"processPath","depth"}`: number of Pending tasks (same as REST `GET /queues/{taskType}/depth`) |
-| `find_claimable_work` | read-only | always | `processPath` (string): `PICK`, `PACK` or `SLAM` | `{"processPath","candidateCount","best"}`; `best` is the earliest-CPT claimable task or `null` when nothing is claimable (not an error) |
+| `get_queue_status` | read-only | always | `processPath` (string): `PICK`, `PACK`, `SLAM` or `RELOCATE` | `{"processPath","depth"}`: number of Pending tasks (same as REST `GET /queues/{taskType}/depth`) |
+| `find_claimable_work` | read-only | always | `processPath` (string): `PICK`, `PACK`, `SLAM` or `RELOCATE` | `{"processPath","candidateCount","best"}`; `best` is the earliest-CPT claimable task or `null` when nothing is claimable (not an error). A RELOCATE `best` carries `relocation` `{planId, moveSeq, kind, sku, fromBin?, toBin?, ref}` ([ADR-0047](../adr/0047-relocate-tasks-execute-slot-plan-moves.md)) |
 | `diagnose_stuck_tasks` | read-only | always | `withinSeconds` (integer): flag claimed tasks whose lease expires within this many seconds; `0` = only already expired | `{"count","tasks":[{taskId,type,leaseStationId,leaseExpiry,reason}]}` |
-| `complete_task` | **write**: `readOnlyHint: false`, `destructiveHint: true`, `idempotentHint: false` | always | `taskId` (string), `stationId` (string): the station holding the active claim | `{"taskId","stationId","completed":true}`. Runs `CompleteTask` exactly like `POST /tasks/{id}/complete`: publishes `TaskCompleted` (through `outbox_events` with Postgres and `EVENT_PUBLISHER=kafka`) and increments `fulfillment.tasks.completed`. |
+| `complete_task` | **write**: `readOnlyHint: false`, `destructiveHint: true`, `idempotentHint: false` | always | `taskId` (string), `stationId` (string): the station holding the active claim; optional, RELOCATE tasks only: `quantity` (integer, at least 1), `fromBin`, `toBin` (strings): the operator's count and the scanned bin the move left open ([ADR-0047](../adr/0047-relocate-tasks-execute-slot-plan-moves.md)) | `{"taskId","stationId","completed":true}`. Runs `CompleteTask` exactly like `POST /tasks/{id}/complete`: publishes `TaskCompleted` (through `outbox_events` with Postgres and `EVENT_PUBLISHER=kafka`) and increments `fulfillment.tasks.completed`. |
 | `get_fulfillment_throughput_report` | read-only | only when `REPORTS_BASE_URL` is set | `from`, `to` (RFC 3339, `[from, to)`); optional: `taskType` (`PICK`, `PACK`, `SLAM`), `stationId`, `granularity` (`hour`, the default) | `{"rows":[...]}`, the body of `GET /reports/throughput` on `cmd/fulfillment-reports` |
 | `get_on_time_to_cpt` | read-only | only when `REPORTS_BASE_URL` is set | `from`, `to` (RFC 3339); optional: `taskType`, `stationId` | `{"from","to","packagesManifested","packagesOnTimeToCPT","packagesLateToCPT","onTimeRate"}` summed over the window; `onTimeRate` is `0` when nothing was manifested ([ADR-0026](../adr/0026-on-time-to-cpt-kpi.md)) |
 
@@ -50,14 +50,19 @@ Failures come back as a tool result with `isError: true` and the error text,
 not as a JSON-RPC error. Examples from the local run:
 
 - `get_queue_status` with `REBIN`:
-  `unknown process path "REBIN": must be PICK, PACK or SLAM` (the three MCP
-  queue tools accept only those paths).
+  `unknown process path "REBIN": must be PICK, PACK, SLAM or RELOCATE` (the
+  MCP queue tools accept only those paths).
 - `get_on_time_to_cpt` with the reports service down:
   `reports client: request: Get "http://127.0.0.1:1/reports/throughput?...": dial tcp 127.0.0.1:1: connect: connection refused`.
 - `complete_task` surfaces the domain error verbatim: `task: already completed`,
   `task: station does not own the claim`, `task: not claimed`,
   `usecases: task not found`; an empty `taskId` or `stationId` gives
-  `taskId and stationId are required`.
+  `taskId and stationId are required`. A RELOCATE task without the
+  confirmation gives `task: a RELOCATE task completes only with the confirmed
+  quantity and the bins the move left open`; a bad scan gives `task: invalid
+  relocation confirmation: ...`; relocation inputs on another task give
+  `task: quantity, from_bin and to_bin apply only to RELOCATE tasks`. The tool
+  description tells the model never to invent these values.
 
 Each call runs inside an OTel span `mcp.tool <name>` with attribute
 `mcp.tool.name` (see [Observability](../operations/observability.md#traces)).

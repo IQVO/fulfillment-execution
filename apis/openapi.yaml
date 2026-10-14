@@ -625,6 +625,13 @@ paths:
         and a completed task can never be completed again — this endpoint
         enforces the no-double-complete invariant, returning `409` on a
         repeat call rather than silently succeeding twice.
+        A `RELOCATE` task (a slot-plan move, ADR-0047) completes only with
+        the operator's confirmation: `quantity` (counted, at least 1) and the
+        bins the move left open — `fromBin` for an Assign, `toBin` for a
+        Vacate (see the task's `relocation`). A scan of a side the plan fixed
+        must equal the planned bin. The confirmed move is published on
+        `TaskCompleted` (`sku`, `from_bin`, `to_bin`, `quantity`,
+        `relocation_ref`). Any other task type takes none of these fields.
       parameters:
         - name: id
           in: path
@@ -639,8 +646,17 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/CompleteTaskRequest"
-            example:
-              stationId: station-1
+            examples:
+              anyTask:
+                summary: Any task type except RELOCATE
+                value:
+                  stationId: station-1
+              relocateVacate:
+                summary: A RELOCATE Vacate move - the reserve destination was scanned
+                value:
+                  stationId: station-1
+                  quantity: 12
+                  toBin: WH1-RSV-B02-01-01-A
       responses:
         "204":
           description: Task completed. No response body.
@@ -671,6 +687,25 @@ paths:
                 title: Task already completed
                 status: 409
                 detail: "task: already completed"
+                instance: /tasks/20260101T120000.000000000/complete
+        "422":
+          description: >
+            The RELOCATE confirmation is missing or does not fit the planned
+            move (ADR-0047): `relocation-confirmation-required` (a RELOCATE
+            task completed without `quantity` and the open bins),
+            `invalid-relocation-confirmation` (an open side not scanned, a
+            scan that differs from the planned bin, or equal bins), or
+            `not-relocation-task` (`quantity`/`fromBin`/`toBin` sent for a
+            task that is not RELOCATE). The task stays Claimed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/relocation-confirmation-required
+                title: A RELOCATE task completes only with the confirmed quantity and the bins the move left open
+                status: 422
+                detail: "task: a RELOCATE task completes only with the confirmed quantity and the bins the move left open"
                 instance: /tasks/20260101T120000.000000000/complete
         "500":
           $ref: "#/components/responses/InternalError"
@@ -992,7 +1027,7 @@ paths:
         - name: taskType
           in: path
           required: true
-          description: The process path to count (conventionally PICK, PACK, or SLAM).
+          description: The process path to count (conventionally PICK, PACK, SLAM or RELOCATE).
           schema:
             type: string
             example: PICK
@@ -1301,6 +1336,72 @@ components:
       enum: [PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL]
       example: PICK
 
+    AnyTaskType:
+      type: string
+      description: >
+        Every task type a task can have and a station can claim: the
+        creatable TaskType values plus `RELOCATE` (a slot-plan move,
+        ADR-0047). RELOCATE tasks are created only from WorkReleased on the
+        RELOCATE process path, never through `POST /tasks`, because they
+        need the planned move.
+      enum: [PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL, RELOCATE]
+      example: PICK
+
+    TaskRelocation:
+      type: object
+      description: >
+        The slot-plan move a RELOCATE task executes (ADR-0047), from
+        WorkReleased.data.relocation. An open side is omitted: `fromBin` of an
+        Assign and `toBin` of a Vacate are scanned by the operator at
+        completion.
+      required: [planId, moveSeq, kind, sku, ref]
+      properties:
+        planId:
+          type: string
+          description: The approved slot plan.
+          example: plan-7
+        moveSeq:
+          type: integer
+          format: int32
+          minimum: 0
+          description: The move's 0-based position in the plan.
+          example: 3
+        kind:
+          type: string
+          enum: [Relocate, Assign, Vacate]
+          example: Vacate
+        sku:
+          type: string
+          example: SKU-1
+        fromBin:
+          type: string
+          description: Planned source bin; omitted for an Assign.
+          example: WH1-FWD-A01-01-03-A
+        toBin:
+          type: string
+          description: Planned destination bin; omitted for a Vacate.
+          example: WH1-FWD-A01-01-02-A
+        ref:
+          type: string
+          description: The move reference `<planId>:<moveSeq>`, published as TaskCompleted.relocation_ref.
+          example: "plan-7:3"
+        executed:
+          type: object
+          description: The executed move, present once the task is completed.
+          required: [quantity, fromBin, toBin]
+          properties:
+            quantity:
+              type: integer
+              format: int32
+              minimum: 1
+              example: 12
+            fromBin:
+              type: string
+              example: WH1-FWD-A01-01-03-A
+            toBin:
+              type: string
+              example: WH1-RSV-B02-01-01-A
+
     TaskStatus:
       type: string
       description: Lifecycle state of a Task.
@@ -1394,7 +1495,7 @@ components:
           description: Server-generated task id.
           example: 20260101T120000.000000000
         type:
-          $ref: "#/components/schemas/TaskType"
+          $ref: "#/components/schemas/AnyTaskType"
         status:
           $ref: "#/components/schemas/TaskStatus"
         cpt:
@@ -1436,13 +1537,15 @@ components:
           nullable: true
           description: When the active claim's lease expires, if any.
           example: "2026-01-01T12:05:00Z"
+        relocation:
+          $ref: "#/components/schemas/TaskRelocation"
 
     ClaimNextRequest:
       type: object
       required: [taskType]
       properties:
         taskType:
-          $ref: "#/components/schemas/TaskType"
+          $ref: "#/components/schemas/AnyTaskType"
       example:
         taskType: PICK
 
@@ -1473,6 +1576,33 @@ components:
             Must be non-empty: the API treats "" as a missing field and
             rejects it with 400.
           example: station-1
+        quantity:
+          type: integer
+          format: int32
+          minimum: 1
+          description: >
+            RELOCATE only (ADR-0047): the units the operator counted and
+            moved (v1 moves the whole on-hand quantity of the SKU at the
+            source bin). Required for a RELOCATE task, rejected (422
+            `not-relocation-task`) for any other. A value below 1 is a 400.
+          example: 12
+        fromBin:
+          type: string
+          minLength: 1
+          description: >
+            RELOCATE only: the source bin the operator scanned. Required
+            when the move left the source open (an Assign); when sent for a
+            planned source it must equal it. A blank value is a 400.
+          example: WH1-RSV-B02-01-01-A
+        toBin:
+          type: string
+          minLength: 1
+          description: >
+            RELOCATE only: the destination bin the operator scanned.
+            Required when the move left the destination open (a Vacate);
+            when sent for a planned destination it must equal it. A blank
+            value is a 400.
+          example: WH1-RSV-B02-01-01-A
       example:
         stationId: station-1
 

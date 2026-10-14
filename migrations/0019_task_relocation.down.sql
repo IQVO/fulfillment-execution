@@ -1,0 +1,10 @@
+ALTER TABLE tasks
+    DROP COLUMN relocated_to_bin,
+    DROP COLUMN relocated_from_bin,
+    DROP COLUMN relocated_quantity,
+    DROP COLUMN relocation_to_bin,
+    DROP COLUMN relocation_from_bin,
+    DROP COLUMN relocation_sku,
+    DROP COLUMN relocation_kind,
+    DROP COLUMN relocation_move_seq,
+    DROP COLUMN relocation_plan_id;

@@ -25,3 +25,13 @@ var ErrWrongTaskType = errors.New("usecases: wrong task type for this operation"
 // supplied locationCode resolves (KNOWN, per facility-layout) to a role
 // other than WorkCenter — see ADR-0024.
 var ErrStationLocationNotWorkCenter = errors.New("usecases: station location does not resolve to a WorkCenter")
+
+// ErrRelocationMoveMissing is returned by ApplyWorkReleased when work
+// released on the RELOCATE path carries no relocation move (ADR 0047): the
+// task could never be completed into a usable TaskCompleted, so the release
+// is rejected (and dead-lettered by the consumer).
+var ErrRelocationMoveMissing = errors.New("usecases: RELOCATE work released without a relocation move")
+
+// ErrRelocationMoveOnOtherPath is returned by ApplyWorkReleased when a
+// relocation move arrives on a path other than RELOCATE (ADR 0047).
+var ErrRelocationMoveOnOtherPath = errors.New("usecases: relocation move released on a non-RELOCATE path")

@@ -120,6 +120,28 @@ type WorkReleasedData struct {
 	SKU string `json:"sku,omitempty"`
 	// Quantity is the number of units of SKU the transfer moves.
 	Quantity int `json:"quantity,omitempty"`
+	// Relocation, when present, is the slot-plan move of work released on
+	// the RELOCATE path (ADR 0047): wes-work-planning plans one RELOCATE
+	// work unit per move of an approved slot plan. Absent on every other
+	// release. A nested object, not top-level fields, so it can not collide
+	// with the transfer block's sku and its presence is one unambiguous
+	// marker.
+	Relocation *WorkReleasedRelocation `json:"relocation,omitempty"`
+}
+
+// WorkReleasedRelocation is WorkReleased.data.relocation (ADR 0047): one
+// move of slotting-optimization's SlotPlanApproved, as planned by
+// wes-work-planning. kind is the SlotPlanApproved move kind (Relocate |
+// Assign | Vacate); from_bin is omitted for an Assign and to_bin for a
+// Vacate (the operator scans the open side at completion). move_seq is a
+// pointer so an absent value is told apart from move 0 and rejected.
+type WorkReleasedRelocation struct {
+	PlanId  string `json:"plan_id"`
+	MoveSeq *int   `json:"move_seq"`
+	Kind    string `json:"kind"`
+	SKU     string `json:"sku"`
+	FromBin string `json:"from_bin,omitempty"`
+	ToBin   string `json:"to_bin,omitempty"`
 }
 
 // Consumer reads WorkReleased CloudEvents off warehouse.work-planning.events
@@ -358,32 +380,68 @@ func (c *Consumer) handleMessageWithRetry(ctx context.Context, raw []byte) error
 	)
 	bounded := backoff.WithContext(backoff.WithMaxRetries(policy, maxHandlerAttempts-1), ctx)
 
-	transfer, terr := transferDetailsOf(env.Data)
-	if terr != nil {
+	req, rerr := requestOf(env)
+	if rerr != nil {
 		// A deterministic payload-contract violation (transfer_ref with
-		// an unknown work_kind): like an unknown path_id, retrying can
-		// never fix it. Returned as a permanent error, so Run
-		// dead-letters it.
-		return terr
+		// an unknown work_kind, an invalid relocation move): like an
+		// unknown path_id, retrying can never fix it. Returned as a
+		// permanent error, so Run dead-letters it.
+		return rerr
 	}
 
 	return backoff.Retry(func() error {
-		req := usecases.WorkReleasedRequest{
-			EventId:    env.EventId,
-			PathId:     env.Data.PathId,
-			WorkUnitId: env.Data.WorkUnitId,
-			CPT:        env.Data.CPT,
-			Ref:        env.Data.Ref,
-			LineNo:     env.Data.LineNo.Int(),
-			Fragile:    env.Data.Fragile,
-			GiftWrap:   env.Data.GiftWrap,
-			Transfer:   transfer,
-		}
 		if err := c.Apply.Execute(ctx, req); err != nil {
 			return fmt.Errorf("kafka: apply work released: %w", err)
 		}
 		return nil
 	}, bounded)
+}
+
+// requestOf maps one decoded WorkReleased onto the use case request,
+// validating its optional transfer and relocation blocks. An error is a
+// deterministic payload-contract violation.
+func requestOf(env workReleased) (usecases.WorkReleasedRequest, error) {
+	transfer, err := transferDetailsOf(env.Data)
+	if err != nil {
+		return usecases.WorkReleasedRequest{}, err
+	}
+	relocation, err := relocationMoveOf(env.Data)
+	if err != nil {
+		return usecases.WorkReleasedRequest{}, err
+	}
+	return usecases.WorkReleasedRequest{
+		EventId:    env.EventId,
+		PathId:     env.Data.PathId,
+		WorkUnitId: env.Data.WorkUnitId,
+		CPT:        env.Data.CPT,
+		Ref:        env.Data.Ref,
+		LineNo:     env.Data.LineNo.Int(),
+		Fragile:    env.Data.Fragile,
+		GiftWrap:   env.Data.GiftWrap,
+		Transfer:   transfer,
+		Relocation: relocation,
+	}, nil
+}
+
+// relocationMoveOf maps the optional WorkReleased relocation object onto a
+// validated task.RelocationMove (ADR 0047): nil when the object is absent.
+// A present object that is not a valid move (missing move_seq, unknown
+// kind, a bin its kind requires missing, blank plan_id or sku) is a hard
+// error wrapping task.ErrInvalidRelocationMove or
+// task.ErrUnknownRelocationKind — never a silent default.
+func relocationMoveOf(d WorkReleasedData) (*task.RelocationMove, error) {
+	r := d.Relocation
+	if r == nil {
+		return nil, nil
+	}
+	if r.MoveSeq == nil {
+		return nil, fmt.Errorf("kafka: relocation of work unit %q: %w: move_seq is required", d.WorkUnitId, task.ErrInvalidRelocationMove)
+	}
+	move, err := task.NewRelocationMove(r.PlanId, *r.MoveSeq, r.Kind, r.SKU, r.FromBin, r.ToBin)
+	if err != nil {
+		return nil, fmt.Errorf("kafka: relocation of work unit %q: %w", d.WorkUnitId, err)
+	}
+	return &move, nil
 }
 
 // transferDetailsOf maps WorkReleasedData's optional transfer-correlation
@@ -424,22 +482,11 @@ func (c *Consumer) HandleMessage(ctx context.Context, raw []byte) error {
 		return err
 	}
 
-	transfer, err := transferDetailsOf(env.Data)
+	req, err := requestOf(env)
 	if err != nil {
 		return err
 	}
-
-	return c.Apply.Execute(ctx, usecases.WorkReleasedRequest{
-		EventId:    env.EventId,
-		PathId:     env.Data.PathId,
-		WorkUnitId: env.Data.WorkUnitId,
-		CPT:        env.Data.CPT,
-		Ref:        env.Data.Ref,
-		LineNo:     env.Data.LineNo.Int(),
-		Fragile:    env.Data.Fragile,
-		GiftWrap:   env.Data.GiftWrap,
-		Transfer:   transfer,
-	})
+	return c.Apply.Execute(ctx, req)
 }
 
 // reader returns the fetch/commit seam: the test hook when set, else Reader.

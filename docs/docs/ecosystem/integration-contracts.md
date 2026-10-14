@@ -37,7 +37,7 @@ repository consumes `warehouse.fulfillment.analytics`.
 | --- | --- | --- | --- |
 | wes-work-planning | Kafka `warehouse.fulfillment.events` | `TaskCompleted` (`work_unit_id`) to record completion of the work unit | `internal/adapters/inbound/kafka/consumer.go`, `usecases/apply_task_completed.go` |
 | labor-performance | Kafka `warehouse.fulfillment.events`, group `KAFKA_CONSUMER_GROUP` (default `labor-performance`) | `TaskCompleted` (`associate_id`, `duration_seconds`, `task_type`) | `internal/adapters/inbound/kafka/consumer.go`, `cmd/labor/main.go` |
-| inventory-storage | Kafka `warehouse.fulfillment.events`, group `inventory-storage-confirm-pick` | `TaskCompleted` of PICK tasks, counted per order to confirm picked reservations | `internal/adapters/inbound/kafka/task_completed_consumer.go` |
+| inventory-storage | Kafka `warehouse.fulfillment.events`, group `inventory-storage-confirm-pick` | `TaskCompleted` of PICK tasks, counted per order to confirm picked reservations; `TaskCompleted` of RELOCATE tasks (`sku`, `from_bin`, `to_bin`, `quantity`, `relocation_ref`) applied as a RelocateStock (its ADR 0039) | `internal/adapters/inbound/kafka/task_completed_consumer.go` |
 | order-management | Kafka `warehouse.fulfillment.events`, group `order-management-repromise` | `TaskCPTMissed` and `PackageManifested` (re-promise loop) | `internal/adapters/inbound/kafka/repromise_consumer.go` |
 | network-inventory-planning | Kafka `warehouse.fulfillment.events` | `TransferPicked`, `TransferDispatched`, `TransferArrived` (transfer saga) | `internal/adapters/inbound/kafka/transfer_fact_consumer.go` |
 | workforce-management | REST `GET /capacity/{capability}` behind a circuit breaker, base URL `FULFILLMENT_EXECUTION_BASE_URL`, `INSTALLED_CAPACITY_MODE` | installed station count when committing a shift plan | `internal/adapters/outbound/fulfillmentexecution/client.go`, `cmd/workforce/main.go` |
@@ -154,6 +154,7 @@ the task's line stays unknown and is never guessed from the work unit id.
 | `data.fragile` / `data.gift_wrap` | `Task.Fragile` / `Task.GiftWrap` | direct, default `false` |
 | `data.line_no` | `Task.SourceLineNo` | direct; republished as `line_no` on `TaskCompleted` |
 | `data.ref` | — | decoded; becomes `demand_id` on a transfer fact |
+| `data.relocation` | `Task.Relocation` (`task.RelocationMove`) | RELOCATE path only, validated by `task.NewRelocationMove`; see below |
 
 The consumer then calls the **existing** `CreateTask` use case. No new use
 case was introduced for the Kafka path — creating a task from released work
@@ -222,6 +223,37 @@ block (`transfer_ref`, `work_kind`, `site_id`, `sku`, `quantity`); see
 [ADR-0036](../adr/0036-transfer-task-types-and-facts.md). Its presence
 turns the created task into transfer work whose completion publishes a
 transfer fact; absence is exactly the pre-ADR-0036 behavior.
+
+### RELOCATE work: `data.relocation`
+
+Work released on the `RELOCATE` process path is one move of an approved
+slot plan (slotting-optimization ADR 0010, planned by wes-work-planning). It
+carries one nested object; the full contract is in
+[ADR-0047](../adr/0047-relocate-tasks-execute-slot-plan-moves.md):
+
+```json
+"data": {
+  "path_id": "RELOCATE",
+  "work_unit_id": "slot-plan-7-move-3",
+  "cpt": "2026-09-30T23:00:00Z",
+  "ref": "plan-7",
+  "relocation": {"plan_id": "plan-7", "move_seq": 3, "kind": "Assign", "sku": "SKU-1", "to_bin": "WH1-FWD-A01-01-01-A"}
+}
+```
+
+| field | rule |
+| --- | --- |
+| `plan_id` | required, non-blank (`SlotPlanApproved.data.plan_id`) |
+| `move_seq` | required integer `>= 0`: the move's position in `SlotPlanApproved.data.moves` |
+| `kind` | required, exactly `Relocate`, `Assign` or `Vacate` |
+| `sku` | required, non-blank |
+| `from_bin` | required for `Relocate` and `Vacate`; omitted for an `Assign` (scanned at completion) |
+| `to_bin` | required for `Relocate` and `Assign`; omitted for a `Vacate` (scanned at completion) |
+
+A RELOCATE release without the object, the object on another path, or an
+object that is not a valid move is dead-lettered and creates no task. RELOCATE
+work keeps no source order or line (`order_ref` / `line_no` are never
+published for it).
 
 ## Outbound: transfer facts (`TransferPicked` / `TransferDispatched` / `TransferArrived`)
 
@@ -292,6 +324,25 @@ are omitted when empty (`omitempty` on `TaskCompletedData`); `order_ref` and
 `line_no` were added by [ADR-0040](../adr/0040-task-completed-carries-order-ref.md)
 and [ADR-0041](../adr/0041-task-completed-carries-line-no.md) so
 inventory-storage can confirm the reservation of one order line.
+
+A RELOCATE task's `TaskCompleted` carries the executed move in five more
+fields ([ADR-0047](../adr/0047-relocate-tasks-execute-slot-plan-moves.md)).
+They are present only when `task_type` is `RELOCATE` and omitted on every
+other task:
+
+```json
+"data": {
+  "task_id": "task-rel-1", "station_id": "station-07", "work_unit_id": "slot-plan-7-move-3",
+  "duration_seconds": 90, "task_type": "RELOCATE",
+  "sku": "SKU-1", "from_bin": "FWD-A", "to_bin": "RSV-2", "quantity": 12, "relocation_ref": "plan-7:3"
+}
+```
+
+`from_bin` / `to_bin` are the planned bins, or the bin the operator scanned on
+the side the move left open. `quantity` is the operator-confirmed count.
+`relocation_ref` is `<plan_id>:<move_seq>`. The names and JSON types are
+pinned by a golden test and by a round trip through inventory-storage's own
+struct shape (`internal/adapters/outbound/kafka/relocation_wire_test.go`).
 
 Message key (and CloudEvents `subject`): the task id, so all events for one
 task land on the same partition and preserve order. The `id` is a UUID v4

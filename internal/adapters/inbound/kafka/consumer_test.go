@@ -42,6 +42,7 @@ func testCatalogue() *pathcatalog.Catalogue {
 		{Id: "SLAM", MatchPrefix: "slam", Direct: true, RequiredCapabilities: []string{"slam"}},
 		{Id: "DISPATCH", MatchPrefix: "dispatch", Direct: true, RequiredCapabilities: []string{"dispatch"}},
 		{Id: "ARRIVAL", MatchPrefix: "arrival", Direct: true, RequiredCapabilities: []string{"arrival"}},
+		{Id: "RELOCATE", MatchPrefix: "relocate", Direct: true, RequiredCapabilities: []string{"relocate"}},
 	})
 }
 

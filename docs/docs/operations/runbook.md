@@ -132,7 +132,7 @@ One broker for the whole platform (in-cluster; host access
 | `warehouse.work-planning.events.dlq` | produce | `cmd/execution` (only with `EVENT_PUBLISHER=kafka`) | – | – | Original key/value/headers plus `x-dlq-error`, `x-dlq-original-topic`, `x-dlq-original-partition`, `x-dlq-original-offset`, `x-dlq-failed-at`. A failed DLQ write is logged and the loop goes on. |
 | `warehouse.product-master.events` | consume `ProductClassified` | `cmd/execution` (only with `PRODUCT_CLASSIFICATION_MODE=kafka`) | `PRODUCT_CLASSIFICATION_CONSUMER_GROUP` | **earliest** | Explicit commit after the transaction. Transient failure: retried on the same message forever (200ms → 5s), blocking that partition. Invalid payload or non-CloudEvent: WARN and commit past. No DLQ. |
 | `warehouse.process-path-management.events` | consume `ProcessPathCreated`/`Updated`/`Deactivated` | `cmd/execution` (only with `PATH_CATALOGUE_SOURCE=kafka`) | `fulfillment-execution-process-path-catalogue-<host>-<pid>-<nanos>` (new per process) | earliest | Full replay on every start into memory. Async commits every 1s. |
-| `warehouse.fulfillment.events` | produce `TaskCompleted`, `TaskCPTMissed`, `PackageManifested`, `TransferPicked`, `TransferDispatched`, `TransferArrived` | `cmd/execution` relay (rows written by `cmd/execution` and `cmd/mcp`) | – | – | Keyed by task id or package id (`kafka.Hash` balancer, `RequiredAcks=all`, 10ms batch). |
+| `warehouse.fulfillment.events` | produce `TaskCompleted`, `TaskCPTMissed`, `PackageManifested`, `TransferPicked`, `TransferDispatched`, `TransferArrived` | `cmd/execution` relay (rows written by `cmd/execution` and `cmd/mcp`) | – | – | Keyed by task id or package id (`kafka.Hash` balancer, `RequiredAcks=all`, 10ms batch). A RELOCATE task's `TaskCompleted` also carries `sku`, `from_bin`, `to_bin`, `quantity`, `relocation_ref` for inventory-storage ([ADR-0047](../adr/0047-relocate-tasks-execute-slot-plan-moves.md)). |
 | `warehouse.fulfillment.analytics` | produce every analytics event | same relay | – | – | Same writer settings. |
 | `warehouse.fulfillment.analytics` | consume | `cmd/fulfillment-projector` | `fulfillment-analytics` | **earliest** | Deduped on the CloudEvents id (`analytics_consumed_events`). Handling errors are logged and skipped; no DLQ. |
 
@@ -221,12 +221,27 @@ or an `Idempotency-Key`.
 **Replay a dead-lettered `WorkReleased`.** Read the message from
 `warehouse.work-planning.events.dlq` and check `x-dlq-error` (typical causes:
 a `path_id` the catalogue does not know, a `transfer_ref` with an unknown
-`work_kind`, a non-CloudEvents payload). Fix the cause (for example define
+`work_kind`, a RELOCATE release whose `relocation` object is missing or not a
+valid move (`relocation move`, `move_seq is required`, `unknown relocation
+kind` in the error), a non-CloudEvents payload). Fix the cause (for example define
 the path in process-path-management), then produce the **original value
 unchanged** back onto `warehouse.work-planning.events`. A failed apply leaves
 no `processed_events` row (the claim rolls back with the task), so the replay
 applies; a message that had in fact been applied is deduplicated by its
 CloudEvents `id`.
+
+**Complete a RELOCATE task an operator could not finish on the scanner.**
+A RELOCATE task (a slot-plan move,
+[ADR-0047](../adr/0047-relocate-tasks-execute-slot-plan-moves.md)) completes
+only with the operator's count and the scanned open bin. Read the move with
+`GET /tasks?orderRef=<work_unit_id>`: `relocation.kind`, plus `fromBin` /
+`toBin` (the missing one is the side to scan). Then
+`curl -sS -X POST http://<api>/tasks/<id>/complete -H 'Content-Type: application/json' -d '{"stationId":"<claiming station>","quantity":12,"toBin":"<scanned reserve bin>"}'`.
+Never guess the quantity or a bin. inventory-storage applies the move to its
+ledger from the published `TaskCompleted`, and it dead-letters a move its
+ledger rejects (unknown bin, not enough stock).
+If the stock was not actually moved, leave the task Claimed. The lease lapses
+and the task goes back to the RELOCATE queue.
 
 **Find and re-send outbox rows.** Stuck rows:
 `SELECT id, topic, event_type, attempts, last_error FROM outbox_events WHERE published_at IS NULL ORDER BY id LIMIT 20;`

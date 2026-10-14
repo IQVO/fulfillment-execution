@@ -106,6 +106,29 @@ so the saga can advance and destination receiving can correlate its
 receipt. A `TRANSFER_PICK` work kind rides a regular `PICK` task. See
 [ADR-0036](../adr/0036-transfer-task-types-and-facts.md).
 
+### Relocate — executing an approved slot plan
+
+slotting-optimization approves a slot plan: a set of moves that put each
+fast-moving SKU in a better forward slot. Each move is floor work (an
+associate moves the stock from one bin to another), so it runs through the
+same conductor as every other job: wes-work-planning plans one RELOCATE work
+unit per move and releases it on the `RELOCATE` process path, and this
+service turns it into a `RELOCATE` task, claimable only by stations holding
+the `relocate` capability.
+
+A RELOCATE task carries the planned **move** (`plan_id`, `move_seq`, `kind`,
+`sku`, `from_bin`, `to_bin`), stamped at release time. The move kinds are
+those of the plan. A `Relocate` moves the SKU between two known forward
+slots. An `Assign` brings the SKU into a forward slot; the associate picks and
+scans the source bin. A `Vacate` empties a forward slot into a reserve bin the
+associate picks and scans. The associate also counts the units: v1 moves the
+whole on-hand quantity at the source. So a RELOCATE task completes only with
+that confirmation (`quantity`, plus the scanned `fromBin` / `toBin` the move
+left open). Its `TaskCompleted` carries the executed move (`sku`, `from_bin`,
+`to_bin`, `quantity`, `relocation_ref`), which inventory-storage applies to
+its stock ledger. See
+[ADR-0047](../adr/0047-relocate-tasks-execute-slot-plan-moves.md).
+
 ### SLAM — Scan, Label, Apply, Manifest
 
 Packages are scanned and weighed on a scale that detects expected-versus-actual
