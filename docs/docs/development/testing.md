@@ -176,7 +176,7 @@ Triggers: push and pull request to `main` and `develop`, a weekly schedule
 | `lint` | golangci-lint v2.13.1 | every push/PR |
 | `guide-lint` | `scripts/harness/guide_lint.py`, `repo_lint.py`, `test_hook.py`, `test_repo_lint.py` | every push/PR |
 | `complexity` | golangci-lint with only `gocyclo,gocognit,cyclop,funlen,nestif`, plus an informational gocyclo report | every push/PR |
-| `test` | build, vet, `go test ./... -race` with coverage, the 90% gate | every push/PR |
+| `test` | build, vet, then `make coverage` (`go test ./... -race` with the Makefile's coverage scope and 90% gate) | every push/PR |
 | `bdd` | `go test ./... -run TestFeatures -v` | every push/PR |
 | `contract` | `scripts/contract-test.sh` with Schemathesis 4.28.0 | every push/PR |
 | `evals-tests` | MCP evals (`^TestEval` and `^TestMCPEvalSuite`) | every push/PR |
