@@ -16,10 +16,10 @@ in the consumers and publishers.
 
 ## Canvas at a glance
 
-One picture of the sections below, laid out like the ddd-crew canvas:
-inbound collaborators on the left, this context in the middle (purpose,
-domain roles and the business decisions it enforces), outbound
-collaborators on the right. Arrows follow the message type: **solid blue**
+Two pictures of the sections below, laid out like the ddd-crew canvas:
+first the inbound collaborators feeding this context (purpose, domain roles
+and the business decisions it enforces), then the outbound collaborators it
+calls or notifies. Arrows follow the message type: **solid blue**
 commands (`cmd`), **dotted green** queries (`qry`), **thick orange** events
 (`evt`); each arrow names its channel and the messages it carries. Box shapes
 mark the collaborator kind: rounded = people, UI or any client; blue =
@@ -30,8 +30,10 @@ abbreviated (REST, MCP, Kafka, HTTP, port); the Inbound and Outbound
 Communication tables carry the exact route, tool, topic and CloudEvents
 type for every message.
 
+### Inbound
+
 ```mermaid
-%%{init: {"flowchart": {"nodeSpacing": 18, "rankSpacing": 36, "padding": 8}}}%%
+%%{init: {"flowchart": {"nodeSpacing": 14, "rankSpacing": 40, "padding": 6}}}%%
 flowchart LR
     classDef bc fill:#fff3bf,stroke:#e67700,stroke-width:1.5px,color:#000
     classDef card fill:#fff9db,stroke:#f08c00,color:#000,text-align:left
@@ -42,50 +44,32 @@ flowchart LR
     classDef none fill:#f8f9fa,stroke:#adb5bd,stroke-dasharray:5 5,color:#495057
     subgraph IN["Inbound - who commands, queries or feeds it"]
         direction TB
-        in0(["Station clients, Pack, SLAM and Rebin stations, console"]):::actor
+        in0(["Station clients, Pack,<br/>SLAM and Rebin stations,<br/>console"]):::actor
         in1[["Scheduler (external)"]]:::ext
         in2["wes-work-planning"]:::ctx
-        in3["process-path-management (opt-in)"]:::ctx
+        in3["process-path-management<br/>(opt-in)"]:::ctx
         in4["product-master (opt-in)"]:::ctx
         in5["workforce-management"]:::ctx
-        in6["warehouse-ops-agent / console BFF"]:::ctx
-        in7(["Any MCP host (no sibling caller in code)"]):::actor
+        in6["warehouse-ops-agent /<br/>console BFF"]:::ctx
+        in7(["Any MCP host (no sibling<br/>caller in code)"]):::actor
     end
     subgraph BC["fulfillment-execution - Core subdomain - WES tier"]
         direction TB
-        purpose["<b>Purpose</b><br/>Turn released work into physically<br/>completed work: each work unit<br/>becomes a Task a station pulls, held<br/>by at most one station under a<br/>lease, earliest CPT first; seal,<br/>SLAM-check and consolidate packages;<br/>report completions and missed CPTs."]:::card
+        purpose["<b>Purpose</b><br/>Turn released work into physically completed work: each<br/>work unit becomes a Task a station pulls, held by at most<br/>one station under a lease, earliest CPT first; seal,<br/>SLAM-check and consolidate packages; report completions<br/>and missed CPTs."]:::card
         roles["<b>Domain roles</b><br/>- Execution context (task lifecycle, claim and lease)<br/>- Enforcer<br/>- Gateway to the floor (empty WCS seam)<br/>- Analysis side role (own throughput read model)"]:::card
-        rules["<b>Business decisions it enforces</b><br/>- Dispatch is pull, never push<br/>- Priority is earliest CPT first,<br/>nothing else<br/>- A task is claimed at most once at a<br/>time; a lapsed lease returns it to<br/>the pool<br/>- Capabilities come from the<br/>registered station, not the request<br/>- Incompatible DOT hazard classes<br/>never share a package<br/>- A missed CPT is reported, not<br/>enforced"]:::card
+        rules["<b>Business decisions it enforces</b><br/>- Dispatch is pull, never push<br/>- Priority is earliest CPT first, nothing else<br/>- A task is claimed at most once at a time; a lapsed lease<br/>returns it to the pool<br/>- Capabilities come from the registered station, not the<br/>request<br/>- Incompatible DOT hazard classes never share a package<br/>- A missed CPT is reported, not enforced"]:::card
         purpose ~~~ roles ~~~ rules
     end
-    subgraph OUT["Outbound - whom it calls or notifies"]
-        direction TB
-        out0["wes-work-planning"]:::ctx
-        out1["labor-performance"]:::ctx
-        out2["order-management"]:::ctx
-        out3["network-inventory-planning (transfer saga)"]:::ctx
-        out4["facility-layout (opt-in)"]:::ctx
-        out5["own analytics read side"]:::self
-        out6["wes-work-planning operators (DLQ)"]:::self
-        out7["WCS / equipment: no methods yet"]:::none
-    end
-    in0 -->|"cmd - REST<br/>Create task, Register station,<br/>Claim next task, Check in / out,<br/>Renew lease, Complete task, Seal<br/>package, Run SLAM weigh-check,<br/>Record arrival at Rebin"| BC
+    in0 -->|"cmd - REST<br/>Create task, Register station,<br/>Claim next task, Check in /<br/>out, Renew lease, Complete<br/>task, Seal package, Run SLAM<br/>weigh-check, Record arrival at<br/>Rebin"| BC
     in0 -.->|"qry - REST<br/>Package by id, packages for an<br/>order, Queue depth"| BC
-    in1 -->|"cmd - REST<br/>Expire leases, Sweep CPT misses"| BC
+    in1 -->|"cmd - REST<br/>Expire leases, Sweep CPT<br/>misses"| BC
     in2 ==>|"evt - Kafka<br/>warehouse.work-planning.events<br/>WorkReleased"| BC
     in3 ==>|"evt - Kafka<br/>warehouse.process-path-management.events<br/>ProcessPathCreated,<br/>ProcessPathUpdated,<br/>ProcessPathDeactivated"| BC
     in4 ==>|"evt - Kafka<br/>warehouse.product-master.events<br/>ProductClassified into a local<br/>copy"| BC
     in5 -.->|"qry - REST<br/>Installed capacity"| BC
     in6 -.->|"qry - REST<br/>Tasks for an order"| BC
-    in6 -.->|"qry - MCP<br/>get_queue_status,<br/>find_claimable_work,<br/>diagnose_stuck_tasks, throughput<br/>and on-time-to-CPT reports"| BC
+    in6 -.->|"qry - MCP<br/>get_queue_status,<br/>find_claimable_work,<br/>diagnose_stuck_tasks,<br/>throughput and on-time-to-CPT<br/>reports"| BC
     in7 -->|"cmd - MCP<br/>complete_task"| BC
-    BC ==>|"evt - Kafka<br/>warehouse.fulfillment.events<br/>TaskCompleted"| out0
-    BC ==>|"evt - Kafka<br/>warehouse.fulfillment.events<br/>TaskCompleted (associate,<br/>duration, task type)"| out1
-    BC ==>|"evt - Kafka<br/>warehouse.fulfillment.events<br/>TaskCPTMissed, PackageManifested"| out2
-    BC ==>|"evt - Kafka<br/>warehouse.fulfillment.events<br/>TransferPicked,<br/>TransferDispatched,<br/>TransferArrived"| out3
-    BC -.->|"qry - REST (http mode)<br/>Location role lookup"| out4
-    BC ==>|"evt - Kafka<br/>warehouse.fulfillment.analytics<br/>10 analytics events (TaskCreated<br/>... PackageManifested)"| out5
-    BC ==>|"evt - Kafka<br/>warehouse.work-planning.events.dlq<br/>poison or failed WorkReleased"| out6
     linkStyle 0 stroke:#1971c2,stroke-width:1.5px
     linkStyle 1 stroke:#2f9e44,stroke-width:1.5px
     linkStyle 2 stroke:#1971c2,stroke-width:1.5px
@@ -96,14 +80,47 @@ flowchart LR
     linkStyle 7 stroke:#2f9e44,stroke-width:1.5px
     linkStyle 8 stroke:#2f9e44,stroke-width:1.5px
     linkStyle 9 stroke:#1971c2,stroke-width:1.5px
-    linkStyle 10 stroke:#e8590c,stroke-width:2.5px
-    linkStyle 11 stroke:#e8590c,stroke-width:2.5px
-    linkStyle 12 stroke:#e8590c,stroke-width:2.5px
-    linkStyle 13 stroke:#e8590c,stroke-width:2.5px
-    linkStyle 14 stroke:#2f9e44,stroke-width:1.5px
-    linkStyle 15 stroke:#e8590c,stroke-width:2.5px
-    linkStyle 16 stroke:#e8590c,stroke-width:2.5px
     class BC bc
+```
+
+### Outbound
+
+```mermaid
+%%{init: {"flowchart": {"nodeSpacing": 14, "rankSpacing": 40, "padding": 6}}}%%
+flowchart LR
+    classDef bc fill:#fff3bf,stroke:#e67700,stroke-width:1.5px,color:#000
+    classDef card fill:#fff9db,stroke:#f08c00,color:#000,text-align:left
+    classDef ctx fill:#e7f5ff,stroke:#1c7ed6,color:#000
+    classDef actor fill:#fff4e6,stroke:#e8590c,color:#000
+    classDef ext fill:#ffe3e3,stroke:#c92a2a,color:#000
+    classDef self fill:#f1f3f5,stroke:#868e96,color:#000
+    classDef none fill:#f8f9fa,stroke:#adb5bd,stroke-dasharray:5 5,color:#495057
+    BC["<b>fulfillment-execution - Core subdomain - WES tier</b>"]:::bc
+    subgraph OUT["Outbound - whom it calls or notifies"]
+        direction TB
+        out0["wes-work-planning"]:::ctx
+        out1["labor-performance"]:::ctx
+        out2["order-management"]:::ctx
+        out3["network-inventory-planning<br/>(transfer saga)"]:::ctx
+        out4["facility-layout (opt-in)"]:::ctx
+        out5["own analytics read side"]:::self
+        out6["wes-work-planning<br/>operators (DLQ)"]:::self
+        out7["WCS / equipment: no<br/>methods yet"]:::none
+    end
+    BC ==>|"evt - Kafka<br/>warehouse.fulfillment.events<br/>TaskCompleted"| out0
+    BC ==>|"evt - Kafka<br/>warehouse.fulfillment.events<br/>TaskCompleted (associate,<br/>duration, task type)"| out1
+    BC ==>|"evt - Kafka<br/>warehouse.fulfillment.events<br/>TaskCPTMissed,<br/>PackageManifested"| out2
+    BC ==>|"evt - Kafka<br/>warehouse.fulfillment.events<br/>TransferPicked,<br/>TransferDispatched,<br/>TransferArrived"| out3
+    BC -.->|"qry - REST (http mode)<br/>Location role lookup"| out4
+    BC ==>|"evt - Kafka<br/>warehouse.fulfillment.analytics<br/>10 analytics events<br/>(TaskCreated ...<br/>PackageManifested)"| out5
+    BC ==>|"evt - Kafka<br/>warehouse.work-planning.events.dlq<br/>poison or failed WorkReleased"| out6
+    linkStyle 0 stroke:#e8590c,stroke-width:2.5px
+    linkStyle 1 stroke:#e8590c,stroke-width:2.5px
+    linkStyle 2 stroke:#e8590c,stroke-width:2.5px
+    linkStyle 3 stroke:#e8590c,stroke-width:2.5px
+    linkStyle 4 stroke:#2f9e44,stroke-width:1.5px
+    linkStyle 5 stroke:#e8590c,stroke-width:2.5px
+    linkStyle 6 stroke:#e8590c,stroke-width:2.5px
 ```
 
 Source: the Inbound Communication and Outbound Communication tables of this
