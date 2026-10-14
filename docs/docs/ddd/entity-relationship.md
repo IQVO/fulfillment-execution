@@ -26,13 +26,13 @@ draw no relationship lines. The logical links are explained below the
 diagrams — each one crosses an aggregate boundary, which is exactly why it
 is held by id and not by a constraint.
 
-## OLTP schema (`tasks` after 0017; other tables as of 0014)
+## OLTP schema (`tasks` after 0019; other tables as of 0014)
 
 ```mermaid
 erDiagram
     tasks {
         text id PK
-        text task_type "PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL"
+        text task_type "PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL, RELOCATE"
         text status "PENDING, CLAIMED, COMPLETED"
         timestamptz cpt
         text order_ref "indexed"
@@ -50,6 +50,15 @@ erDiagram
         integer quantity "0014, nullable"
         text source_order_id "0016, nullable - order id from WorkReleased.ref, order work only"
         integer source_line_no "0017, nullable - order line from WorkReleased.line_no, order work only"
+        text relocation_plan_id "0019, nullable - present means RELOCATE work"
+        integer relocation_move_seq "0019, nullable"
+        text relocation_kind "0019, nullable - Relocate|Assign|Vacate"
+        text relocation_sku "0019, nullable"
+        text relocation_from_bin "0019, nullable - NULL for an Assign"
+        text relocation_to_bin "0019, nullable - NULL for a Vacate"
+        integer relocated_quantity "0019, nullable - set on completion"
+        text relocated_from_bin "0019, nullable - set on completion"
+        text relocated_to_bin "0019, nullable - set on completion"
     }
     stations {
         text id PK
@@ -109,7 +118,9 @@ Source: `migrations/0001_init.up.sql` to `migrations/0013_package_order_ref_inde
 plus `0016_task_source_order_id` and `0017_task_source_line_no` for the two
 `tasks` columns above (`0015`'s product-classification copy table is not drawn),
 and `0018_drop_domain_events`, which removed the legacy `domain_events` table
-([ADR-0045](../adr/0045-drop-legacy-domain-events-table.md)), applied in order; `schema_migrations` is golang-migrate's own table
+([ADR-0045](../adr/0045-drop-legacy-domain-events-table.md)), and `0019_task_relocation`, which adds the
+nullable RELOCATE move (`relocation_*`) and executed-move (`relocated_*`) columns
+([ADR-0047](../adr/0047-relocate-tasks-execute-slot-plan-moves.md)), applied in order; `schema_migrations` is golang-migrate's own table
 (`internal/adapters/outbound/postgres/migrate.go`). Array columns are shown
 as `text_array` / `integer_array` (Postgres `TEXT[]` / `INTEGER[]`).
 Omits indexes other than the ones noted (`idx_tasks_type_status_cpt` on
