@@ -19,7 +19,8 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/execution ./cmd/execution && \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/fulfillment-projector ./cmd/fulfillment-projector && \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/fulfillment-reports ./cmd/fulfillment-reports && \
-    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/mcp ./cmd/mcp
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/mcp ./cmd/mcp && \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/sweep ./cmd/sweep
 
 # --- runtime stage ---
 FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
@@ -34,6 +35,7 @@ COPY --from=build --chown=app:app /out/execution ./execution
 COPY --from=build --chown=app:app /out/fulfillment-projector ./fulfillment-projector
 COPY --from=build --chown=app:app /out/fulfillment-reports ./fulfillment-reports
 COPY --from=build --chown=app:app /out/mcp ./mcp
+COPY --from=build --chown=app:app /out/sweep ./sweep
 COPY --from=build --chown=app:app /src/migrations ./migrations
 USER 1000
 EXPOSE 8080

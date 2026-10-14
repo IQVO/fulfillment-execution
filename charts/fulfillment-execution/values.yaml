@@ -277,7 +277,21 @@ sweeps:
   enabled: true
   startingDeadlineSeconds: 60
   activeDeadlineSeconds: 120
-  requestTimeoutSeconds: 30
+  # Fail fast (ADR 0048), read by the /app/sweep entrypoint: each POST is cut
+  # after requestTimeoutSeconds; connect errors, timeouts, 429 and 5xx are
+  # retried up to maxAttempts times with a backoff that starts at
+  # retryBackoffSeconds and doubles up to maxBackoffSeconds; a give-up exits
+  # non-zero so the Job FAILS (with logs) instead of hanging until
+  # activeDeadlineSeconds. The worst case, maxAttempts x requestTimeoutSeconds
+  # + (maxAttempts - 1) x maxBackoffSeconds (4 x 15 + 3 x 8 = 84 s), must stay
+  # below activeDeadlineSeconds or the render fails.
+  requestTimeoutSeconds: 15
+  maxAttempts: 4
+  retryBackoffSeconds: 1
+  maxBackoffSeconds: 8
+  # Istio sidecar quit endpoint, POSTed on EVERY exit path (success, give-up,
+  # rejection, bad configuration) so the pod completes. Set "" outside a mesh.
+  sidecarQuitUrl: "http://127.0.0.1:15020/quitquitquit"
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
   expireLeases:
