@@ -79,6 +79,16 @@ type TaskCompletedData struct {
 	// when unknown. inventory-storage uses order_ref + line_no to confirm
 	// the reservation of that line (decision 18, ADR 0041).
 	LineNo int `json:"line_no,omitempty"`
+	// SKU, FromBin, ToBin, Quantity and RelocationRef are the additive
+	// RELOCATE fields (ADR 0047): the executed slot-plan move, present only
+	// on a RELOCATE task's TaskCompleted and omitted on every other one.
+	// inventory-storage applies them to its ledger as a RelocateStock
+	// (its ADR 0039); relocation_ref is "<plan_id>:<move_seq>".
+	SKU           string `json:"sku,omitempty"`
+	FromBin       string `json:"from_bin,omitempty"`
+	ToBin         string `json:"to_bin,omitempty"`
+	Quantity      int    `json:"quantity,omitempty"`
+	RelocationRef string `json:"relocation_ref,omitempty"`
 }
 
 // TaskCPTMissedData is the payload of a published TaskCPTMissed event: a
@@ -250,11 +260,23 @@ func (p *Publisher) encodeTaskCompleted(ctx context.Context, tc shared.TaskCompl
 		OrderRef:        orderRef,
 		LineNo:          lineNo,
 	}
+	withRelocation(&data, tc.Relocation)
 	enc, err := p.encodeIntegration(entityTask, "TaskCompleted", string(tc.TaskId), tc.OccurredAt(), data)
 	if err != nil {
 		return nil, err
 	}
 	return []Encoded{enc}, nil
+}
+
+// withRelocation copies a RELOCATE completion's executed move onto the
+// TaskCompleted payload (ADR 0047); a nil move leaves the fields empty, so
+// they are omitted from the wire.
+func withRelocation(data *TaskCompletedData, r *shared.TaskRelocation) {
+	if r == nil {
+		return
+	}
+	data.SKU, data.FromBin, data.ToBin = r.SKU, r.FromBin, r.ToBin
+	data.Quantity, data.RelocationRef = r.Quantity, r.Ref
 }
 
 func (p *Publisher) encodeTaskCPTMissed(ev shared.TaskCPTMissed) ([]Encoded, error) {
