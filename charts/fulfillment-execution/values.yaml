@@ -258,7 +258,7 @@ pathCatalogue:
 # only freed lazily and stuck tasks are never reported as CPT-missed. Set
 # sweeps.enabled=false when the endpoints are driven by an external caller
 # instead. Each CronJob reuses the service image and POSTs to this release's
-# own Service with busybox wget (an empty-body POST; the handlers read no
+# own Service with the /app/sweep entrypoint (ADR 0048; an empty-body POST; the handlers read no
 # body and require no Content-Type, and the sweeps take no Idempotency-Key).
 #
 # expire-leases (every minute) frees tasks whose lease has lapsed, so

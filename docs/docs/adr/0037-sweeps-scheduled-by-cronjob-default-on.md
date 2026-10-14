@@ -10,7 +10,7 @@ description: "ADR 0037 — the Helm chart's expire-leases (every minute) and swe
 
 ## Status
 
-Accepted. Decided 2026-10-06 (audit decision 12a). Supplements
+Accepted; amended by [ADR-0048](./0048-sweep-cronjobs-fail-fast.md) (the Job runs `/app/sweep`). Decided 2026-10-06 (audit decision 12a). Supplements
 [ADR-0003](./0003-lease-based-at-most-once-claiming.md) (names a CronJob as the
 sweep's caller) and [ADR-0025](./0025-cpt-missed-sweep-and-package-manifested.md)
 (rejected an in-process ticker). It changes a chart default only; no REST,
