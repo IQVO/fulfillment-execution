@@ -60,6 +60,12 @@ func (uc *CreateTask) ExecuteRelease(ctx context.Context, taskType task.Type, cp
 	return uc.save(ctx, t)
 }
 
+// ExecuteRelocation creates a RELOCATE task carrying the slot-plan move
+// (ADR 0047), released by the WorkReleased consumer on the RELOCATE path.
+func (uc *CreateTask) ExecuteRelocation(ctx context.Context, cpt shared.CPT, orderRef shared.OrderRef, required shared.CapabilitySet, move task.RelocationMove) (*task.Task, error) {
+	return uc.save(ctx, task.NewRelocationTask(uc.NewId(), cpt, orderRef, required, move))
+}
+
 func (uc *CreateTask) save(ctx context.Context, t *task.Task) (*task.Task, error) {
 	err := atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
 		if err := uc.Tasks.Save(ctx, t); err != nil {

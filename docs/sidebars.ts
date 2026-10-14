@@ -169,6 +169,8 @@ const sidebars: SidebarsConfig = {
         'adr/0044-listener-before-catalogue-replay',
         'adr/0045-drop-legacy-domain-events-table',
         'adr/0046-workreleased-consumer-commits-after-settle',
+        'adr/0047-relocate-tasks-execute-slot-plan-moves',
+        'adr/0048-sweep-cronjobs-fail-fast',
       ],
     },
   ],

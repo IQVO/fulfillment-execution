@@ -42,6 +42,22 @@ type claimableWork struct {
 	CPT                  string   `json:"cpt"`
 	OrderRef             string   `json:"orderRef"`
 	RequiredCapabilities []string `json:"requiredCapabilities"`
+	// Relocation is the slot-plan move of a RELOCATE task (ADR 0047),
+	// omitted for every other task type.
+	Relocation *relocationView `json:"relocation,omitempty"`
+}
+
+// relocationView is a RELOCATE task's planned move at the tool boundary. An
+// open side (fromBin of an Assign, toBin of a Vacate) is omitted: the
+// operator scans it and passes it to complete_task.
+type relocationView struct {
+	PlanId  string `json:"planId"`
+	MoveSeq int    `json:"moveSeq"`
+	Kind    string `json:"kind"`
+	SKU     string `json:"sku"`
+	FromBin string `json:"fromBin,omitempty"`
+	ToBin   string `json:"toBin,omitempty"`
+	Ref     string `json:"ref"`
 }
 
 // stuckTask is one entry in the diagnose_stuck_tasks result: a claimed task
@@ -61,11 +77,15 @@ func toClaimableWork(t *task.Task) claimableWork {
 	for c := range t.RequiredCapabilities() {
 		caps = append(caps, string(c))
 	}
-	return claimableWork{
+	out := claimableWork{
 		TaskId:               string(t.Id()),
 		Type:                 string(t.Type()),
 		CPT:                  t.CPT().Time().UTC().Format(time.RFC3339),
 		OrderRef:             string(t.OrderRef()),
 		RequiredCapabilities: caps,
 	}
+	if m := t.Relocation(); m != nil {
+		out.Relocation = &relocationView{PlanId: m.PlanId, MoveSeq: m.MoveSeq, Kind: string(m.Kind), SKU: m.SKU, FromBin: m.FromBin, ToBin: m.ToBin, Ref: m.Ref()}
+	}
+	return out
 }

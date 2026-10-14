@@ -44,8 +44,9 @@ func (r *TaskRepo) Save(ctx context.Context, t *task.Task) error {
 	}
 
 	_, err := querierFrom(ctx, r.pool).Exec(ctx, `
-		INSERT INTO tasks (id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at, transfer_ref, demand_id, work_kind, site_id, sku, quantity, source_order_id, source_line_no)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+		INSERT INTO tasks (`+taskColumns+`)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
+		        $20, $21, $22, $23, $24, $25, $26, $27, $28)
 		ON CONFLICT (id) DO UPDATE SET
 			task_type = EXCLUDED.task_type,
 			status = EXCLUDED.status,
@@ -64,11 +65,98 @@ func (r *TaskRepo) Save(ctx context.Context, t *task.Task) error {
 			sku = EXCLUDED.sku,
 			quantity = EXCLUDED.quantity,
 			source_order_id = EXCLUDED.source_order_id,
-			source_line_no = EXCLUDED.source_line_no
-	`, string(t.Id()), string(t.Type()), string(t.Status()), t.CPT().Time(), string(t.OrderRef()),
+			source_line_no = EXCLUDED.source_line_no,
+			relocation_plan_id = EXCLUDED.relocation_plan_id,
+			relocation_move_seq = EXCLUDED.relocation_move_seq,
+			relocation_kind = EXCLUDED.relocation_kind,
+			relocation_sku = EXCLUDED.relocation_sku,
+			relocation_from_bin = EXCLUDED.relocation_from_bin,
+			relocation_to_bin = EXCLUDED.relocation_to_bin,
+			relocated_quantity = EXCLUDED.relocated_quantity,
+			relocated_from_bin = EXCLUDED.relocated_from_bin,
+			relocated_to_bin = EXCLUDED.relocated_to_bin
+	`, append([]any{string(t.Id()), string(t.Type()), string(t.Status()), t.CPT().Time(), string(t.OrderRef()),
 		capabilitiesToSlice(t.RequiredCapabilities()), leaseStationId, leaseExpiry, t.Fragile(), t.GiftWrap(), t.ClaimedAt(),
-		transferRef, demandId, workKind, siteId, sku, quantity, nullableString(t.SourceOrderId()), nullableLineNo(t.SourceLineNo()))
+		transferRef, demandId, workKind, siteId, sku, quantity, nullableString(t.SourceOrderId()), nullableLineNo(t.SourceLineNo())},
+		relocationColumnsOf(t).values()...)...)
 	return err
+}
+
+// taskColumns is the column list every INSERT and SELECT of a task uses, in
+// scanTask's order. The relocation_* / relocated_* columns (migration 0019,
+// ADR 0047) come last.
+const taskColumns = `id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at, ` +
+	`transfer_ref, demand_id, work_kind, site_id, sku, quantity, source_order_id, source_line_no, ` +
+	`relocation_plan_id, relocation_move_seq, relocation_kind, relocation_sku, relocation_from_bin, relocation_to_bin, ` +
+	`relocated_quantity, relocated_from_bin, relocated_to_bin`
+
+// relocationColumns is a task's nullable relocation block as stored
+// (migration 0019): the planned move and, once completed, the executed
+// result. Every field is nil for a non-RELOCATE task.
+type relocationColumns struct {
+	planId, kind, sku, fromBin, toBin *string
+	moveSeq                           *int
+	quantity                          *int
+	resultFromBin, resultToBin        *string
+}
+
+// relocationColumnsOf maps t's move and result onto their columns; an empty
+// optional bin is stored as NULL.
+func relocationColumnsOf(t *task.Task) relocationColumns {
+	var c relocationColumns
+	if m := t.Relocation(); m != nil {
+		seq := m.MoveSeq
+		c.planId, c.moveSeq, c.kind, c.sku = &m.PlanId, &seq, nullableString(string(m.Kind)), &m.SKU
+		c.fromBin, c.toBin = nullableString(m.FromBin), nullableString(m.ToBin)
+	}
+	if r := t.RelocationResult(); r != nil {
+		q := r.Quantity
+		c.quantity, c.resultFromBin, c.resultToBin = &q, nullableString(r.FromBin), nullableString(r.ToBin)
+	}
+	return c
+}
+
+// values is the INSERT argument order of taskColumns' relocation tail.
+func (c relocationColumns) values() []any {
+	return []any{c.planId, c.moveSeq, c.kind, c.sku, c.fromBin, c.toBin, c.quantity, c.resultFromBin, c.resultToBin}
+}
+
+// dest is the Scan destination order of taskColumns' relocation tail.
+func (c *relocationColumns) dest() []any {
+	return []any{&c.planId, &c.moveSeq, &c.kind, &c.sku, &c.fromBin, &c.toBin, &c.quantity, &c.resultFromBin, &c.resultToBin}
+}
+
+// rehydrate rebuilds the move and result. A NULL plan id is "not RELOCATE
+// work" (nil, nil), exactly like a row written before migration 0019. A
+// stored move that no longer validates fails the rehydrate (same discipline
+// as the status/type validation): a RELOCATE task whose completion could
+// not publish a usable move must not silently load.
+func (c relocationColumns) rehydrate(id string) (*task.RelocationMove, *task.RelocationResult, error) {
+	if c.planId == nil {
+		return nil, nil, nil
+	}
+	move, err := task.NewRelocationMove(*c.planId, derefInt(c.moveSeq), derefString(c.kind), derefString(c.sku), derefString(c.fromBin), derefString(c.toBin))
+	if err != nil {
+		return nil, nil, fmt.Errorf("rehydrate task %q: %w", id, err)
+	}
+	if c.quantity == nil {
+		return &move, nil, nil
+	}
+	return &move, &task.RelocationResult{Quantity: *c.quantity, FromBin: derefString(c.resultFromBin), ToBin: derefString(c.resultToBin)}, nil
+}
+
+func derefString(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return *v
+}
+
+func derefInt(v *int) int {
+	if v == nil {
+		return -1 // fails NewRelocationMove's move_seq >= 0 rule
+	}
+	return *v
 }
 
 // nullableString maps "" to SQL NULL for the transfer-correlation block's
@@ -94,7 +182,7 @@ func nullableLineNo(n int) *int {
 
 func (r *TaskRepo) FindById(ctx context.Context, id shared.TaskId) (*task.Task, error) {
 	row := querierFrom(ctx, r.pool).QueryRow(ctx, `
-		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at, transfer_ref, demand_id, work_kind, site_id, sku, quantity, source_order_id, source_line_no
+		SELECT `+taskColumns+`
 		FROM tasks WHERE id = $1
 	`, string(id))
 	t, err := scanTask(row)
@@ -106,7 +194,7 @@ func (r *TaskRepo) FindById(ctx context.Context, id shared.TaskId) (*task.Task, 
 
 func (r *TaskRepo) FindClaimableByType(ctx context.Context, taskType task.Type, now time.Time) ([]*task.Task, error) {
 	rows, err := querierFrom(ctx, r.pool).Query(ctx, `
-		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at, transfer_ref, demand_id, work_kind, site_id, sku, quantity, source_order_id, source_line_no
+		SELECT `+taskColumns+`
 		FROM tasks
 		WHERE task_type = $1
 		  AND (status = 'PENDING' OR (status = 'CLAIMED' AND lease_expiry <= $2))
@@ -141,7 +229,7 @@ func (r *TaskRepo) SaveClaim(ctx context.Context, t *task.Task, now time.Time) (
 
 func (r *TaskRepo) FindAllClaimed(ctx context.Context) ([]*task.Task, error) {
 	rows, err := querierFrom(ctx, r.pool).Query(ctx, `
-		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at, transfer_ref, demand_id, work_kind, site_id, sku, quantity, source_order_id, source_line_no
+		SELECT `+taskColumns+`
 		FROM tasks WHERE status = 'CLAIMED'
 	`)
 	if err != nil {
@@ -157,7 +245,7 @@ func (r *TaskRepo) FindAllClaimed(ctx context.Context) ([]*task.Task, error) {
 // own status guard.
 func (r *TaskRepo) FindOpenPastCPT(ctx context.Context, now time.Time) ([]*task.Task, error) {
 	rows, err := querierFrom(ctx, r.pool).Query(ctx, `
-		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at, transfer_ref, demand_id, work_kind, site_id, sku, quantity, source_order_id, source_line_no
+		SELECT `+taskColumns+`
 		FROM tasks
 		WHERE status IN ('PENDING', 'CLAIMED') AND cpt <= $1
 	`, now)
@@ -178,7 +266,7 @@ func (r *TaskRepo) CountByTypeAndStatus(ctx context.Context, taskType task.Type,
 
 func (r *TaskRepo) FindByOrderRef(ctx context.Context, orderRef shared.OrderRef) ([]*task.Task, error) {
 	rows, err := querierFrom(ctx, r.pool).Query(ctx, `
-		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at, transfer_ref, demand_id, work_kind, site_id, sku, quantity, source_order_id, source_line_no
+		SELECT `+taskColumns+`
 		FROM tasks WHERE order_ref = $1
 	`, string(orderRef))
 	if err != nil {
@@ -211,7 +299,10 @@ func scanTask(row rowScanner) (*task.Task, error) {
 		sourceOrderId                  *string
 		sourceLineNo                   *int
 	)
-	if err := row.Scan(&id, &taskType, &status, &cpt, &orderRef, &requiredCapabilities, &leaseStationId, &leaseExpiry, &fragile, &giftWrap, &claimedAt, &transferRef, &demandId, &workKind, &siteId, &sku, &quantity, &sourceOrderId, &sourceLineNo); err != nil {
+	var relocation relocationColumns
+	dest := append([]any{&id, &taskType, &status, &cpt, &orderRef, &requiredCapabilities, &leaseStationId, &leaseExpiry, &fragile, &giftWrap, &claimedAt, &transferRef, &demandId, &workKind, &siteId, &sku, &quantity, &sourceOrderId, &sourceLineNo},
+		relocation.dest()...)
+	if err := row.Scan(dest...); err != nil {
 		return nil, err
 	}
 
@@ -230,6 +321,10 @@ func scanTask(row rowScanner) (*task.Task, error) {
 	}
 
 	transfer, err := scanTransferDetails(id, transferRef, demandId, workKind, siteId, sku, quantity)
+	if err != nil {
+		return nil, err
+	}
+	move, result, err := relocation.rehydrate(id)
 	if err != nil {
 		return nil, err
 	}
@@ -252,7 +347,7 @@ func scanTask(row rowScanner) (*task.Task, error) {
 	if sourceLineNo != nil {
 		t.WithSourceLineNo(*sourceLineNo)
 	}
-	return t, nil
+	return t.WithRelocation(move, result), nil
 }
 
 // scanTransferDetails rebuilds the nullable transfer-correlation block

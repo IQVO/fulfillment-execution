@@ -36,11 +36,15 @@ package run through `main_integration_test.go`:
 - `internal/adapters/outbound/postgres`: repositories, the claim
   compare-and-set race, the consolidation race, the outbox and relay, pool
   limits and `statement_timeout`, rehydration validation, source order and
-  line number, transfer details.
+  line number, transfer details, the RELOCATE move and its executed result
+  (`task_relocation_integration_test.go`, migration 0019).
 - `internal/adapters/inbound/http`: the `Idempotency-Key` middleware against
   a real transaction.
 - `internal/adapters/inbound/kafka`: the DLQ, the `ProductClassified`
-  consumer, `line_no` bounds, transfer facts end to end (Kafka + Postgres).
+  consumer, `line_no` bounds, transfer facts end to end (Kafka + Postgres),
+  and a RELOCATE release completed into a `TaskCompleted` with the
+  relocation fields end to end (`relocation_integration_test.go`,
+  ADR-0047).
 - `internal/adapters/outbound/kafka`: hash partitioning by aggregate key and
   CloudEvents on the wire.
 - `internal/adapters/outbound/kafkacatalog`: catalogue replay against a real
@@ -172,7 +176,7 @@ Triggers: push and pull request to `main` and `develop`, a weekly schedule
 | `lint` | golangci-lint v2.13.1 | every push/PR |
 | `guide-lint` | `scripts/harness/guide_lint.py`, `repo_lint.py`, `test_hook.py`, `test_repo_lint.py` | every push/PR |
 | `complexity` | golangci-lint with only `gocyclo,gocognit,cyclop,funlen,nestif`, plus an informational gocyclo report | every push/PR |
-| `test` | build, vet, `go test ./... -race` with coverage, the 90% gate | every push/PR |
+| `test` | build, vet, then `make coverage` (`go test ./... -race` with the Makefile's coverage scope and 90% gate) | every push/PR |
 | `bdd` | `go test ./... -run TestFeatures -v` | every push/PR |
 | `contract` | `scripts/contract-test.sh` with Schemathesis 4.28.0 | every push/PR |
 | `evals-tests` | MCP evals (`^TestEval` and `^TestMCPEvalSuite`) | every push/PR |

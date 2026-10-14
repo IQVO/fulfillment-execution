@@ -250,6 +250,38 @@ Source: `internal/application/usecases/complete_task.go`,
 path where the encoders write to Kafka directly. `cmd/mcp` inserts outbox
 rows but never runs the relay.
 
+### 5a. Execute a RELOCATE move (slot plan, ADR-0047)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant WP as wes-work-planning
+    participant C as WorkReleased consumer
+    participant UC as CompleteTask
+    participant T as task.Task
+    participant OB as outbox + relay
+    participant IS as inventory-storage
+    WP->>C: WorkReleased path RELOCATE + relocation
+    C->>C: NewRelocationMove, ApplyWorkReleased
+    Note over C: invalid move or no relocation: DLQ, no task
+    C->>T: NewRelocationTask (move saved, 0019)
+    Note over UC,T: operator claims taskType RELOCATE
+    UC->>T: CompleteRelocation quantity, scanned bin
+    alt no confirmation, bad scan, quantity below 1
+        T-->>UC: 422, task stays Claimed
+    end
+    UC->>OB: TaskCompleted + sku, bins, quantity, ref
+    OB->>IS: TaskCompleted task_type RELOCATE
+    IS->>IS: RelocateStock, StockRelocated
+```
+
+Source: `internal/adapters/inbound/kafka/consumer.go` (`relocationMoveOf`),
+`internal/application/usecases/consume_work_released.go` (`checkRelocation`),
+`internal/application/usecases/complete_task.go` (`ExecuteWith`,
+`taskCompletedFor`), `internal/domain/task/relocation.go`,
+`internal/adapters/outbound/kafka/publisher.go` (`withRelocation`).
+inventory-storage's side is its ADR 0039.
+
 ## 6. Seal a package
 
 ```mermaid

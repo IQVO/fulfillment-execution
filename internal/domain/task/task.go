@@ -106,7 +106,7 @@ type TransferDetails struct {
 // exact (case-sensitive): every writer persists the canonical constant.
 func ParseType(value string) (Type, error) {
 	switch Type(value) {
-	case Pick, Pack, Slam, Rebin, Dispatch, Arrival:
+	case Pick, Pack, Slam, Rebin, Dispatch, Arrival, Relocate:
 		return Type(value), nil
 	default:
 		return "", ErrUnknownType
@@ -182,6 +182,11 @@ type Task struct {
 	// created before this field existed. Never parsed from the
 	// "<order>-line-<n>" work unit id. Published as TaskCompleted.line_no.
 	sourceLineNo int
+	// relocation is the planned slot-plan move a RELOCATE task executes
+	// (ADR 0047); nil for every other task. relocationResult is the
+	// executed move recorded by CompleteRelocation; nil until then.
+	relocation       *RelocationMove
+	relocationResult *RelocationResult
 }
 
 // New creates a task in the Pending state, ready for the pool. fragile is a
@@ -216,6 +221,14 @@ func NewTransferTask(id shared.TaskId, taskType Type, cpt shared.CPT, orderRef s
 	cp := transfer
 	t.transfer = &cp
 	return t
+}
+
+// NewRelocationTask creates a Pending RELOCATE task carrying the planned
+// move (ADR 0047). Same construction invariants as New; the move was
+// validated by NewRelocationMove. Relocation work carries no packing hints.
+func NewRelocationTask(id shared.TaskId, cpt shared.CPT, orderRef shared.OrderRef, required shared.CapabilitySet, move RelocationMove) *Task {
+	t := New(id, Relocate, cpt, orderRef, required, false, false)
+	return t.WithRelocation(&move, nil)
 }
 
 // Rehydrate reconstructs a Task from persisted state without re-validating
@@ -297,6 +310,30 @@ func (t *Task) SourceOrderId() string { return t.sourceOrderId }
 // empty id leaves the task without one.
 func (t *Task) WithSourceOrderId(orderId string) *Task {
 	t.sourceOrderId = orderId
+	return t
+}
+
+// Relocation returns the planned move of a RELOCATE task, or nil for any
+// other task. The returned pointer is the task's own: do not mutate it.
+func (t *Task) Relocation() *RelocationMove { return t.relocation }
+
+// RelocationResult returns the executed move recorded when a RELOCATE task
+// was completed, or nil (not RELOCATE work, or not completed yet).
+func (t *Task) RelocationResult() *RelocationResult { return t.relocationResult }
+
+// WithRelocation stamps the planned move and, for a completed task, the
+// executed result, and returns the task: used at creation and when a
+// repository rehydrates the columns. Both are copied.
+func (t *Task) WithRelocation(move *RelocationMove, result *RelocationResult) *Task {
+	t.relocation, t.relocationResult = nil, nil
+	if move != nil {
+		cp := *move
+		t.relocation = &cp
+	}
+	if result != nil {
+		cp := *result
+		t.relocationResult = &cp
+	}
 	return t
 }
 
@@ -425,8 +462,43 @@ func (t *Task) VerifyHeldBy(stationId shared.StationId, now time.Time) error {
 
 // Complete finishes the task. Only the owning station may complete it, the
 // claim must still be active, and a completed task cannot be completed
-// again (no double-complete).
+// again (no double-complete). A RELOCATE task can not be completed this way:
+// it needs the operator's confirmation (CompleteRelocation, ADR 0047).
 func (t *Task) Complete(stationId shared.StationId, now time.Time) error {
+	if err := t.checkCompletable(stationId, now); err != nil {
+		return err
+	}
+	if t.taskType == Relocate {
+		return ErrRelocationConfirmationRequired
+	}
+	t.finish()
+	return nil
+}
+
+// CompleteRelocation finishes a RELOCATE task with the operator's
+// confirmation (ADR 0047): the same claim rules as Complete, then the
+// confirmed quantity (at least 1) and the bins the move left open (scanned)
+// are checked against the planned move and recorded as RelocationResult.
+func (t *Task) CompleteRelocation(stationId shared.StationId, now time.Time, c RelocationConfirmation) error {
+	if err := t.checkCompletable(stationId, now); err != nil {
+		return err
+	}
+	if t.relocation == nil {
+		return ErrNotRelocationTask
+	}
+	result, err := t.relocation.resolve(c)
+	if err != nil {
+		return err
+	}
+	t.relocationResult = &result
+	t.finish()
+	return nil
+}
+
+// checkCompletable applies the claim rules shared by Complete and
+// CompleteRelocation. An expired lease frees the task (Pending) and
+// reports ErrNotClaimed.
+func (t *Task) checkCompletable(stationId shared.StationId, now time.Time) error {
 	if t.status == Completed {
 		return ErrAlreadyCompleted
 	}
@@ -441,7 +513,10 @@ func (t *Task) Complete(stationId shared.StationId, now time.Time) error {
 	if t.lease.StationId != stationId {
 		return ErrNotOwner
 	}
+	return nil
+}
+
+func (t *Task) finish() {
 	t.status = Completed
 	t.lease = nil
-	return nil
 }

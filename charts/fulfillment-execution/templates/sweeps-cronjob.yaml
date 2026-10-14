@@ -6,17 +6,26 @@ the external scheduler ADR-0003 names. ON by default (sweeps.enabled=true,
 ADR-0037); set it false when an external caller drives the endpoints. No
 in-process ticker is added (ADR-0025 rejected one).
 
-The Job reuses the service's own alpine image and busybox `wget` (no extra
-image to pull) and POSTs to the in-cluster Service. `--post-data=` makes
-busybox send a POST with `Content-Length: 0`; the two handlers read no body
-and require no Content-Type (PostExpireLeases / PostSweepCPTMisses in
-internal/adapters/inbound/http/handlers.go), and neither route sits behind the
-Idempotency-Key middleware (ADR-0028 covers POST /tasks only), so the empty
-POST is accepted. busybox wget exits non-zero on an HTTP error status, so a
-failing sweep fails the Job.
+The Job reuses the service's own image and runs its /app/sweep entrypoint
+(cmd/sweep, ADR 0048), which POSTs an empty body to the in-cluster Service.
+The two handlers read no body and require no Content-Type (PostExpireLeases /
+PostSweepCPTMisses in internal/adapters/inbound/http/handlers.go), and neither
+route sits behind the Idempotency-Key middleware (ADR-0028 covers POST /tasks
+only). Fail fast (ADR 0048): each attempt is bounded by
+sweeps.requestTimeoutSeconds, transient failures (connect/timeout, 429, 5xx)
+are retried up to sweeps.maxAttempts with doubling backoff capped at
+sweeps.maxBackoffSeconds, a give-up exits non-zero (the Job fails with logs),
+and the Istio sidecar quit (sweeps.sidecarQuitUrl) is POSTed on EVERY exit
+path. The render fails when the worst-case retry budget does not fit inside
+activeDeadlineSeconds, so a values change can not reintroduce the hang.
 */ -}}
 {{- if .Values.sweeps.enabled }}
 {{- $root := . }}
+{{- $s := .Values.sweeps }}
+{{- $budget := add (mul (int $s.maxAttempts) (int $s.requestTimeoutSeconds)) (mul (sub (int $s.maxAttempts) 1) (int $s.maxBackoffSeconds)) }}
+{{- if ge (int $budget) (int $s.activeDeadlineSeconds) }}
+{{- fail (printf "sweeps: worst-case retry budget %ds (maxAttempts x requestTimeoutSeconds + (maxAttempts-1) x maxBackoffSeconds) must be below activeDeadlineSeconds %ds (ADR 0048)" (int $budget) (int $s.activeDeadlineSeconds)) }}
+{{- end }}
 {{- $jobs := dict "expire-leases" .Values.sweeps.expireLeases "sweep-cpt-misses" .Values.sweeps.cptMisses }}
 {{- range $name, $job := $jobs }}
 {{- if $job.enabled }}
@@ -62,14 +71,20 @@ spec:
               image: "{{ $root.Values.image.repository }}:{{ $root.Values.image.tag | default $root.Chart.AppVersion }}"
               imagePullPolicy: {{ $root.Values.image.pullPolicy }}
               command:
-                - wget
-                - -q
-                - -O
-                - "-"
-                - -T
-                - {{ $root.Values.sweeps.requestTimeoutSeconds | quote }}
-                - --post-data=
-                - {{ printf "http://%s:%v/tasks/%s" (include "fulfillment-execution.fullname" $root) $root.Values.service.port $name | quote }}
+                - /app/sweep
+              env:
+                - name: SWEEP_URL
+                  value: {{ printf "http://%s:%v/tasks/%s" (include "fulfillment-execution.fullname" $root) $root.Values.service.port $name | quote }}
+                - name: SWEEP_REQUEST_TIMEOUT
+                  value: {{ printf "%ds" (int $s.requestTimeoutSeconds) | quote }}
+                - name: SWEEP_MAX_ATTEMPTS
+                  value: {{ $s.maxAttempts | quote }}
+                - name: SWEEP_RETRY_BACKOFF
+                  value: {{ printf "%ds" (int $s.retryBackoffSeconds) | quote }}
+                - name: SWEEP_MAX_BACKOFF
+                  value: {{ printf "%ds" (int $s.maxBackoffSeconds) | quote }}
+                - name: SIDECAR_QUIT_URL
+                  value: {{ $s.sidecarQuitUrl | default "" | quote }}
               resources:
                 {{- toYaml $root.Values.sweeps.resources | nindent 16 }}
           {{- with $root.Values.nodeSelector }}

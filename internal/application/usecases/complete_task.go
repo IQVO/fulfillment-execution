@@ -30,8 +30,19 @@ type CompleteTask struct {
 	UnitOfWork ports.UnitOfWork
 }
 
-// Execute completes taskId on behalf of stationId.
+// Execute completes taskId on behalf of stationId, with no relocation
+// inputs. A RELOCATE task is rejected (task.ErrRelocationConfirmationRequired):
+// it completes only through ExecuteWith.
 func (uc *CompleteTask) Execute(ctx context.Context, taskId shared.TaskId, stationId shared.StationId) error {
+	return uc.ExecuteWith(ctx, taskId, stationId, task.RelocationConfirmation{})
+}
+
+// ExecuteWith completes taskId on behalf of stationId with the operator's
+// relocation inputs (ADR 0047). For a RELOCATE task they are required: the
+// confirmed quantity (>= 1) and the bins the move left open; the completion
+// publishes the executed move on TaskCompleted. For any other task they
+// must be empty (task.ErrNotRelocationTask otherwise).
+func (uc *CompleteTask) ExecuteWith(ctx context.Context, taskId shared.TaskId, stationId shared.StationId, in task.RelocationConfirmation) error {
 	t, err := uc.Tasks.FindById(ctx, taskId)
 	if err != nil {
 		return err
@@ -41,14 +52,14 @@ func (uc *CompleteTask) Execute(ctx context.Context, taskId shared.TaskId, stati
 	}
 
 	now := uc.Clock.Now()
-	if err := t.Complete(stationId, now); err != nil {
+	if err := completeAggregate(t, stationId, now, in); err != nil {
 		return err
 	}
 	err = atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
 		if err := uc.Tasks.Save(ctx, t); err != nil {
 			return err
 		}
-		events := []shared.DomainEvent{shared.NewTaskCompleted(taskId, stationId, now)}
+		events := []shared.DomainEvent{taskCompletedFor(t, stationId, now)}
 		events = append(events, transferFactFor(t, now)...)
 		return uc.Publisher.Publish(ctx, events...)
 	})
@@ -59,6 +70,37 @@ func (uc *CompleteTask) Execute(ctx context.Context, taskId shared.TaskId, stati
 		uc.Metrics.TaskCompleted(ctx, t.Type())
 	}
 	return nil
+}
+
+// completeAggregate routes the completion: a RELOCATE task takes the
+// confirmation, any other task takes none.
+func completeAggregate(t *task.Task, stationId shared.StationId, now time.Time, in task.RelocationConfirmation) error {
+	if t.Type() == task.Relocate && in.HasInput() {
+		return t.CompleteRelocation(stationId, now, in)
+	}
+	if t.Type() != task.Relocate && in.HasInput() {
+		return task.ErrNotRelocationTask
+	}
+	// No inputs: a RELOCATE task is rejected by Complete itself
+	// (ErrRelocationConfirmationRequired, after the claim rules).
+	return t.Complete(stationId, now)
+}
+
+// taskCompletedFor builds the TaskCompleted of a just-completed task: a
+// RELOCATE task's carries the executed move (SKU from the plan, the bins
+// and quantity from the confirmation, ref "<plan_id>:<move_seq>").
+func taskCompletedFor(t *task.Task, stationId shared.StationId, now time.Time) shared.TaskCompleted {
+	move, result := t.Relocation(), t.RelocationResult()
+	if move == nil || result == nil {
+		return shared.NewTaskCompleted(t.Id(), stationId, now)
+	}
+	return shared.NewRelocationTaskCompleted(t.Id(), stationId, now, shared.TaskRelocation{
+		SKU:      move.SKU,
+		FromBin:  result.FromBin,
+		ToBin:    result.ToBin,
+		Quantity: result.Quantity,
+		Ref:      move.Ref(),
+	})
 }
 
 // transferFactFor maps a just-completed task's transfer correlation block

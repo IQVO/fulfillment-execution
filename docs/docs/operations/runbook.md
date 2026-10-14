@@ -28,7 +28,7 @@ the image tag and the chart as `oci://ghcr.io/iqvo/fulfillment-execution`.
 | analytics projector | `<release>-projector` | `/app/fulfillment-projector` | `analytics.enabled` (default `false`) | `8091` (admin, `ADMIN_ADDR`) | none | startup, liveness and readiness on `/healthz` (port `admin`) |
 | analytics reports | `<release>-reports` | `/app/fulfillment-reports` | `analytics.enabled` | `8080` (`HTTP_ADDR=:8080` from the chart) | ClusterIP `80` → `http` | startup, liveness and readiness on `/healthz` |
 | frontend (MFE remote) | `<release>-frontend` | nginx serving `web/` | `frontend.enabled` (default `false`) | `8080` | ClusterIP `80` | see `frontend-deployment.yaml` |
-| expire-leases sweep | CronJob `<release>-expire-leases` | busybox `wget` from the service image | `sweeps.enabled` + `sweeps.expireLeases.enabled` (default on) | – | – | – |
+| expire-leases sweep | CronJob `<release>-expire-leases` | `/app/sweep` from the service image ([ADR-0048](../adr/0048-sweep-cronjobs-fail-fast.md)) | `sweeps.enabled` + `sweeps.expireLeases.enabled` (default on) | – | – | – |
 | CPT-miss sweep | CronJob `<release>-sweep-cpt-misses` | same | `sweeps.enabled` + `sweeps.cptMisses.enabled` (default on) | – | – | – |
 
 The api Deployment mounts the chart ConfigMap `<release>` with `envFrom`
@@ -132,7 +132,7 @@ One broker for the whole platform (in-cluster; host access
 | `warehouse.work-planning.events.dlq` | produce | `cmd/execution` (only with `EVENT_PUBLISHER=kafka`) | – | – | Original key/value/headers plus `x-dlq-error`, `x-dlq-original-topic`, `x-dlq-original-partition`, `x-dlq-original-offset`, `x-dlq-failed-at`. A failed DLQ write is logged and the loop goes on. |
 | `warehouse.product-master.events` | consume `ProductClassified` | `cmd/execution` (only with `PRODUCT_CLASSIFICATION_MODE=kafka`) | `PRODUCT_CLASSIFICATION_CONSUMER_GROUP` | **earliest** | Explicit commit after the transaction. Transient failure: retried on the same message forever (200ms → 5s), blocking that partition. Invalid payload or non-CloudEvent: WARN and commit past. No DLQ. |
 | `warehouse.process-path-management.events` | consume `ProcessPathCreated`/`Updated`/`Deactivated` | `cmd/execution` (only with `PATH_CATALOGUE_SOURCE=kafka`) | `fulfillment-execution-process-path-catalogue-<host>-<pid>-<nanos>` (new per process) | earliest | Full replay on every start into memory. Async commits every 1s. |
-| `warehouse.fulfillment.events` | produce `TaskCompleted`, `TaskCPTMissed`, `PackageManifested`, `TransferPicked`, `TransferDispatched`, `TransferArrived` | `cmd/execution` relay (rows written by `cmd/execution` and `cmd/mcp`) | – | – | Keyed by task id or package id (`kafka.Hash` balancer, `RequiredAcks=all`, 10ms batch). |
+| `warehouse.fulfillment.events` | produce `TaskCompleted`, `TaskCPTMissed`, `PackageManifested`, `TransferPicked`, `TransferDispatched`, `TransferArrived` | `cmd/execution` relay (rows written by `cmd/execution` and `cmd/mcp`) | – | – | Keyed by task id or package id (`kafka.Hash` balancer, `RequiredAcks=all`, 10ms batch). A RELOCATE task's `TaskCompleted` also carries `sku`, `from_bin`, `to_bin`, `quantity`, `relocation_ref` for inventory-storage ([ADR-0047](../adr/0047-relocate-tasks-execute-slot-plan-moves.md)). |
 | `warehouse.fulfillment.analytics` | produce every analytics event | same relay | – | – | Same writer settings. |
 | `warehouse.fulfillment.analytics` | consume | `cmd/fulfillment-projector` | `fulfillment-analytics` | **earliest** | Deduped on the CloudEvents id (`analytics_consumed_events`). Handling errors are logged and skipped; no DLQ. |
 
@@ -174,7 +174,8 @@ There is no housekeeping job: published `outbox_events` rows and
 ## Sweeps (scheduled)
 
 The service has no in-process timers. Two CronJobs POST to the api Service
-with busybox `wget` ([ADR-0037](../adr/0037-sweeps-scheduled-by-cronjob-default-on.md)):
+with the `/app/sweep` entrypoint ([ADR-0037](../adr/0037-sweeps-scheduled-by-cronjob-default-on.md),
+[ADR-0048](../adr/0048-sweep-cronjobs-fail-fast.md)):
 
 | CronJob | Schedule | Calls | Effect |
 | --- | --- | --- | --- |
@@ -182,9 +183,20 @@ with busybox `wget` ([ADR-0037](../adr/0037-sweeps-scheduled-by-cronjob-default-
 | `<release>-sweep-cpt-misses` | `*/5 * * * *` | `POST /tasks/sweep-cpt-misses` | Returns `{"reported":N}`; publishes one `TaskCPTMissed` per open task at or past its CPT, again on every pass until it completes. Kafka volume = overdue tasks × passes. |
 
 Both: `concurrencyPolicy: Forbid`, `startingDeadlineSeconds: 60`,
-`activeDeadlineSeconds: 120`, request timeout 30s, `backoffLimit: 0`. A
-non-2xx response fails the Job. Set `sweeps.enabled=false` only when another
-scheduler calls the endpoints.
+`activeDeadlineSeconds: 120`, `backoffLimit: 0`. Each POST is cut after 15 s;
+connect errors, timeouts, 429 and 5xx are retried up to 4 attempts with a
+1 s → 8 s doubling backoff; any other non-2xx is not retried. A give-up exits
+non-zero, so the Job FAILS with a log line instead of hanging until the
+deadline; the Istio sidecar quit (`http://127.0.0.1:15020/quitquitquit`) is
+POSTed on every exit path. The chart refuses to render a retry budget that
+does not fit `activeDeadlineSeconds`. Set `sweeps.enabled=false` only when
+another scheduler calls the endpoints.
+
+| Symptom | Cause | Action |
+| --- | --- | --- |
+| Sweep Job `Failed` with `sweep: failed; exiting non-zero so the Job fails fast` in its log | The api answered 5xx/429, refused the connection or timed out on every attempt (unavailable or rolling), or answered a non-retryable 4xx. | `kubectl -n <ns> logs job/<job>` shows each attempt's `error`; check the api pods (`kubectl get pods -l app.kubernetes.io/component=api`) and its `/readyz`. Nothing to clean up: the next scheduled run retries, and both sweeps are idempotent. |
+| Sweep Job ends in `DeadlineExceeded` (pod deleted, no logs) | A build older than ADR-0048 (busybox `wget`), or the pod never started its container (image pull, sidecar injection). | Check the image tag has `/app/sweep`; `kubectl describe job` for pod events. |
+| Sweep Job `Failed` with exit code 2 | `SWEEP_URL` missing or an invalid `SWEEP_*` value (a hand-edited CronJob). | Re-render from the chart values. |
 
 ## Scaling
 
@@ -209,12 +221,27 @@ or an `Idempotency-Key`.
 **Replay a dead-lettered `WorkReleased`.** Read the message from
 `warehouse.work-planning.events.dlq` and check `x-dlq-error` (typical causes:
 a `path_id` the catalogue does not know, a `transfer_ref` with an unknown
-`work_kind`, a non-CloudEvents payload). Fix the cause (for example define
+`work_kind`, a RELOCATE release whose `relocation` object is missing or not a
+valid move (`relocation move`, `move_seq is required`, `unknown relocation
+kind` in the error), a non-CloudEvents payload). Fix the cause (for example define
 the path in process-path-management), then produce the **original value
 unchanged** back onto `warehouse.work-planning.events`. A failed apply leaves
 no `processed_events` row (the claim rolls back with the task), so the replay
 applies; a message that had in fact been applied is deduplicated by its
 CloudEvents `id`.
+
+**Complete a RELOCATE task an operator could not finish on the scanner.**
+A RELOCATE task (a slot-plan move,
+[ADR-0047](../adr/0047-relocate-tasks-execute-slot-plan-moves.md)) completes
+only with the operator's count and the scanned open bin. Read the move with
+`GET /tasks?orderRef=<work_unit_id>`: `relocation.kind`, plus `fromBin` /
+`toBin` (the missing one is the side to scan). Then
+`curl -sS -X POST http://<api>/tasks/<id>/complete -H 'Content-Type: application/json' -d '{"stationId":"<claiming station>","quantity":12,"toBin":"<scanned reserve bin>"}'`.
+Never guess the quantity or a bin. inventory-storage applies the move to its
+ledger from the published `TaskCompleted`, and it dead-letters a move its
+ledger rejects (unknown bin, not enough stock).
+If the stock was not actually moved, leave the task Claimed. The lease lapses
+and the task goes back to the RELOCATE queue.
 
 **Find and re-send outbox rows.** Stuck rows:
 `SELECT id, topic, event_type, attempts, last_error FROM outbox_events WHERE published_at IS NULL ORDER BY id LIMIT 20;`

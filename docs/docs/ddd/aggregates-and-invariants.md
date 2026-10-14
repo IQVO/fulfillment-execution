@@ -20,7 +20,7 @@ classDiagram
     class Task {
         <<Aggregate Root>>
         -TaskId id
-        -Type taskType : PICK|PACK|SLAM|REBIN|DISPATCH|ARRIVAL
+        -Type taskType : PICK|PACK|SLAM|REBIN|DISPATCH|ARRIVAL|RELOCATE
         -Status status : PENDING|CLAIMED|COMPLETED
         -CPT cpt
         -OrderRef orderRef
@@ -30,9 +30,12 @@ classDiagram
         -bool giftWrap
         -time* claimedAt
         -TransferDetails* transfer : nullable correlation block (ADR-0036)
+        -RelocationMove* relocation : RELOCATE only (ADR-0047)
+        -RelocationResult* relocationResult : set on completion
         +Claim(stationId, capabilities, now, duration) error
         +RenewLease(stationId, now, duration) error
         +Complete(stationId, now) error
+        +CompleteRelocation(stationId, now, confirmation) error
         +ExpireLeaseIfDue(now) bool
         +IsAvailable(now) bool
         +IsCPTMissed(now) bool
@@ -103,6 +106,9 @@ The unit of physical work. Its invariants are the reason this context exists.
 | T4 | **No double-complete.** A completed task rejects every further operation. | `Task.Claim` / `RenewLease` / `Complete` | `task.ErrAlreadyCompleted` | `409` |
 | T5 | **Only the claim owner may renew or complete.** `SealPackage` applies the same ownership test, with the lease expiry check, through `Task.VerifyHeldBy`. A missing or expired lease is `ErrNotClaimed` (T6, decided 2026-10-06, ADR 0038); only an active lease held by another station is `ErrNotOwner`. | `Task.RenewLease`, `Task.Complete`, `Task.VerifyHeldBy` | `task.ErrNotOwner` | `409` |
 | T6 | **Renew/complete/seal require an active claim.** Acting on a `Pending` task, or on a lapsed lease, is rejected — the same error on every endpoint. | `Task.RenewLease`, `Task.Complete`, `Task.VerifyHeldBy` | `task.ErrNotClaimed` | `409` |
+| T7 | **A released move is a valid move** ([ADR-0047](../adr/0047-relocate-tasks-execute-slot-plan-moves.md)). Non-blank plan id and SKU, `move_seq >= 0`, kind `Relocate` / `Assign` / `Vacate`, the bins the kind requires present (`Relocate` both, `Assign` `to_bin`, `Vacate` `from_bin`), and two known bins differ. | `task.NewRelocationMove` (the WorkReleased consumer) | `task.ErrInvalidRelocationMove`, `task.ErrUnknownRelocationKind` | — (dead-lettered) |
+| T8 | **A RELOCATE task completes only with the operator's confirmation.** After T4–T6: a quantity of at least 1, every side the move left open scanned, a scan of a planned side equal to the plan, and different bins. `Complete` without it is refused. | `Task.Complete`, `Task.CompleteRelocation` | `task.ErrRelocationConfirmationRequired`, `task.ErrInvalidRelocationConfirmation` | `422` |
+| T9 | **Relocation inputs belong to RELOCATE tasks only.** | `CompleteTask.ExecuteWith`, `Task.CompleteRelocation` | `task.ErrNotRelocationTask` | `422` |
 
 ### The ordering inside `Claim` is itself an invariant
 

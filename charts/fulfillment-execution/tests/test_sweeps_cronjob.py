@@ -8,6 +8,11 @@
 - sweeps.enabled=false renders no CronJob.
 - A single sweep can be switched off, and the schedule is overridable.
 - The CronJob pods must never match a Deployment's Service selector.
+- Fail fast (ADR 0048): the Job runs /app/sweep (per-attempt timeout, bounded
+  backed-off retry, non-zero exit on give-up, Istio sidecar quit on every exit
+  path), backoffLimit 0, an activeDeadlineSeconds, and the retry budget
+  (attempts x timeout + (attempts - 1) x max backoff) fits inside that
+  deadline; a values set that breaks the budget fails the render.
 
 Run: python3 charts/fulfillment-execution/tests/test_sweeps_cronjob.py
 """
@@ -21,11 +26,18 @@ from pathlib import Path
 CHART_DIR = Path(__file__).resolve().parents[1]
 
 
-def render(extra_args: list[str]) -> list[dict]:
-    out = subprocess.run(
+def render_raw(extra_args: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(
         ["helm", "template", "fulfillment-execution", str(CHART_DIR), *extra_args],
-        capture_output=True, text=True, check=True,
-    ).stdout
+        capture_output=True, text=True, check=False,
+    )
+
+
+def render(extra_args: list[str]) -> list[dict]:
+    proc = render_raw(extra_args)
+    if proc.returncode != 0:
+        raise SystemExit(f"FAIL: helm template {extra_args} failed: {proc.stderr}")
+    out = proc.stdout
     try:
         import yaml  # type: ignore
     except ModuleNotFoundError:  # pragma: no cover - environment guard
@@ -36,6 +48,70 @@ def render(extra_args: list[str]) -> list[dict]:
 
 def cronjobs(docs: list[dict]) -> dict[str, dict]:
     return {d["metadata"]["name"]: d for d in docs if d.get("kind") == "CronJob"}
+
+
+WANT_ENV = {
+    "SWEEP_REQUEST_TIMEOUT": "15s",
+    "SWEEP_MAX_ATTEMPTS": "4",
+    "SWEEP_RETRY_BACKOFF": "1s",
+    "SWEEP_MAX_BACKOFF": "8s",
+    "SIDECAR_QUIT_URL": "http://127.0.0.1:15020/quitquitquit",
+}
+
+
+def seconds(value: str) -> int:
+    if not value.endswith("s") or not value[:-1].isdigit():
+        raise ValueError(f"expected whole seconds like '15s', got {value!r}")
+    return int(value[:-1])
+
+
+def check_fail_fast(name: str, path: str, job_spec: dict) -> list[str]:
+    """ADR 0048: the sweep entrypoint fails fast and the budget fits the deadline."""
+    failures: list[str] = []
+    if job_spec.get("backoffLimit") != 0:
+        failures.append(f"{name}: backoffLimit must be 0, got {job_spec.get('backoffLimit')!r}")
+    deadline = job_spec.get("activeDeadlineSeconds")
+    if not deadline:
+        failures.append(f"{name}: activeDeadlineSeconds must be set")
+        return failures
+    container = job_spec["template"]["spec"]["containers"][0]
+    if container.get("command") != ["/app/sweep"]:
+        failures.append(f"{name}: command must be ['/app/sweep'] (the fail-fast entrypoint), "
+                        f"got {container.get('command')!r}")
+    env = {e["name"]: e.get("value") for e in container.get("env") or []}
+    if env.get("SWEEP_URL") != f"http://fulfillment-execution:80{path}":
+        failures.append(f"{name}: SWEEP_URL must target the release Service, got {env.get('SWEEP_URL')!r}")
+    for key, value in WANT_ENV.items():
+        if env.get(key) != value:
+            failures.append(f"{name}: {key} must default to {value!r}, got {env.get(key)!r}")
+    try:
+        attempts = int(env.get("SWEEP_MAX_ATTEMPTS") or "0")
+        budget = attempts * seconds(env.get("SWEEP_REQUEST_TIMEOUT") or "") + \
+            (attempts - 1) * seconds(env.get("SWEEP_MAX_BACKOFF") or "")
+    except ValueError as exc:
+        failures.append(f"{name}: unparsable retry settings: {exc}")
+        return failures
+    if budget >= deadline:
+        failures.append(f"{name}: retry budget {budget}s must be below activeDeadlineSeconds {deadline}s")
+    return failures
+
+
+def check_budget_guard() -> list[str]:
+    """A values set whose retry budget exceeds the deadline must fail the render."""
+    failures: list[str] = []
+    proc = render_raw(["--set", "sweeps.requestTimeoutSeconds=60"])
+    if proc.returncode == 0:
+        failures.append("requestTimeoutSeconds=60 (budget 4x60+3x8 > 120) must fail the render")
+    elif "activeDeadlineSeconds" not in proc.stderr:
+        failures.append(f"budget guard must name activeDeadlineSeconds, got: {proc.stderr.strip()}")
+    docs = render(["--set", "sweeps.sidecarQuitUrl="])
+    for name, job in cronjobs(docs).items():
+        container = job["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]
+        env = {e["name"]: e.get("value") for e in container.get("env") or []}
+        if env.get("SIDECAR_QUIT_URL", None) != "":
+            failures.append(f"{name}: sweeps.sidecarQuitUrl='' must render SIDECAR_QUIT_URL empty "
+                            f"(quit disabled), got {env.get('SIDECAR_QUIT_URL')!r}")
+    return failures
 
 
 def main() -> int:
@@ -68,23 +144,10 @@ def main() -> int:
             if key not in spec:
                 failures.append(f"{name}: {key} must be set")
         job_spec = spec["jobTemplate"]["spec"]
-        if job_spec.get("backoffLimit") != 0 or not job_spec.get("activeDeadlineSeconds"):
-            failures.append(f"{name}: Job must have backoffLimit 0 and an activeDeadlineSeconds")
         pod = job_spec["template"]["spec"]
         if pod["restartPolicy"] != "Never":
             failures.append(f"{name}: restartPolicy must be Never")
-        # The exact invocation: busybox wget, an explicit EMPTY POST body
-        # (--post-data=), the in-cluster Service URL last. The handlers read
-        # no body and need no Content-Type, so this is accepted.
-        cmd = pod["containers"][0]["command"]
-        if cmd[0] != "wget":
-            failures.append(f"{name}: must use busybox wget, got {cmd[0]}")
-        if cmd[-1] != f"http://fulfillment-execution:80{path}":
-            failures.append(f"{name}: wrong target URL {cmd[-1]}")
-        if "--post-data=" not in cmd:
-            failures.append(f"{name}: must POST an explicit empty body (--post-data=)")
-        if cmd.index("-T") + 1 >= len(cmd) or cmd[cmd.index("-T") + 1] != "30":
-            failures.append(f"{name}: request timeout (-T 30) missing")
+        failures.extend(check_fail_fast(name, path, job_spec))
 
     # CronJob pods must not be selectable by any Service in the chart.
     services = [d for d in docs if d.get("kind") == "Service"]
@@ -111,12 +174,14 @@ def main() -> int:
     if not cpt or cpt["spec"]["schedule"] != "*/15 * * * *":
         failures.append("sweeps.cptMisses.schedule must be overridable")
 
+    failures.extend(check_budget_guard())
+
     if failures:
         for f in failures:
             print(f"FAIL: {f}")
         return 1
     print("PASS: sweep CronJobs are ON by default (every minute / every 5 minutes, Forbid, "
-          "empty-body wget POST); sweeps.enabled=false and per-sweep toggle/schedule override "
+          "/app/sweep fail-fast entrypoint, retry budget inside the deadline, sidecar quit); sweeps.enabled=false and per-sweep toggle/schedule override "
           "work, pods unreachable via Services")
     return 0
 

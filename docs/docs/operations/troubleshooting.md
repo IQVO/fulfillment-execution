@@ -53,6 +53,9 @@ no `412`.
 | `422 wrong-task-type` | Seal on a task that is not `PACK`. | Task `type`. | Seal only PACK tasks. |
 | `422 package-no-scanned-contents` | Seal with an empty `contents` list. | Request body. | Scan at least one item. |
 | `422 rebin-unknown-line` | `POST /rebin/arrivals` with a `lineId` outside the order's `requiredLineIds`. | Request body. | Send the line set consistently for the order. |
+| `422 relocation-confirmation-required` | `complete` on a RELOCATE task without `quantity` (and the open bin) ([ADR-0047](../adr/0047-relocate-tasks-execute-slot-plan-moves.md)). | The task's `relocation` on `GET /tasks?orderRef=`. | Send the operator's count and the scanned `fromBin` (Assign) or `toBin` (Vacate). |
+| `422 invalid-relocation-confirmation` | The open side was not scanned, a scan differs from the planned bin, or both bins are equal. | `relocation.fromBin` / `toBin` vs the request. | Rescan; send only the open side, or the planned bin unchanged. |
+| `422 not-relocation-task` | `quantity` / `fromBin` / `toBin` sent to a task that is not RELOCATE. | Task `type`. | Drop the fields. |
 | `422 station-location-not-workcenter` | `LOCATION_ROLE_MODE=http` and facility-layout says the `locationCode` is not a `WorkCenter`. | facility-layout `GET /locations/{locationCode}`. | Use a WorkCenter location. |
 | `500 internal-error` with `statement timeout` in `detail` | A query held its connection for more than 5s (`statement_timeout`). | Postgres locks and load. | Find the blocking session; the pool is small (10). |
 
@@ -62,6 +65,7 @@ no `412`.
 | --- | --- | --- | --- |
 | Released work never becomes a task | One of: the consumer group is new and started at the **latest** offset; the `path_id` is not in the catalogue (dead-lettered); the broker is unreachable. | Group offsets on `warehouse.work-planning.events`; `x-dlq-error` on the `.dlq` topic; WARN `kafka read failed; retrying`. | Re-release the work, define the path, or fix the broker. Replay procedure: [Runbook](./runbook.md#routine-procedures). |
 | DLQ (`warehouse.work-planning.events.dlq`) growing | Handling failed 3 times, or the message is not a CloudEvent. | `x-dlq-error` header; ERROR `kafka message handling failed after retries`. | Fix the cause, then replay the original value. |
+| RELOCATE work dead-lettered | wes-work-planning released RELOCATE work without `data.relocation`, or put it on another path, or sent an invalid move (missing `move_seq`, a kind other than `Relocate` / `Assign` / `Vacate`, a required bin missing) ([ADR-0047](../adr/0047-relocate-tasks-execute-slot-plan-moves.md)). | `x-dlq-error`: `without a relocation move`, `relocation move released on a non-RELOCATE path`, `invalid relocation move`, `unknown relocation kind`. | Fix the producer against the ADR-0047 contract, then re-release or replay. |
 | DLQ entry with `x-dlq-error: context canceled` | Written by a build older than [ADR-0046](../adr/0046-workreleased-consumer-commits-after-settle.md): a healthy `WorkReleased` interrupted by a pod shutdown was dead-lettered. Current builds never do this. | `x-dlq-failed-at` matches a rollout/restart time. | Replay the original value; the processed-events claim makes it safe if the Task already exists. |
 | Failures only in logs, no DLQ topic | `EVENT_PUBLISHER` is not `kafka`, so no DLQ writer is wired. | Env. | Expected in local/log mode. |
 | Duplicate tasks after a restart | No `DATABASE_URL`: `processed_events` was in memory and is gone. | Env. | Run with Postgres anywhere redelivery matters. |
