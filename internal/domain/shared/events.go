@@ -49,14 +49,37 @@ func NewLeaseExpired(id TaskId, at time.Time) LeaseExpired {
 }
 
 // TaskCompleted is raised when a station finishes a claimed task.
+// Relocation is set only when a RELOCATE task completes (ADR 0047): the
+// executed slot-plan move, published as TaskCompleted's additive sku,
+// from_bin, to_bin, quantity and relocation_ref fields.
 type TaskCompleted struct {
 	base
-	TaskId    TaskId
-	StationId StationId
+	TaskId     TaskId
+	StationId  StationId
+	Relocation *TaskRelocation
+}
+
+// TaskRelocation is the executed move a RELOCATE task's TaskCompleted
+// carries: the SKU, the actual source and destination bins, the
+// operator-confirmed quantity and the move reference "<plan_id>:<move_seq>".
+type TaskRelocation struct {
+	SKU      string
+	FromBin  string
+	ToBin    string
+	Quantity int
+	Ref      string
 }
 
 func NewTaskCompleted(id TaskId, station StationId, at time.Time) TaskCompleted {
 	return TaskCompleted{base: base{Name: "TaskCompleted", At: at}, TaskId: id, StationId: station}
+}
+
+// NewRelocationTaskCompleted is NewTaskCompleted for a RELOCATE task: it
+// carries the executed move (a copy of r).
+func NewRelocationTaskCompleted(id TaskId, station StationId, at time.Time, r TaskRelocation) TaskCompleted {
+	e := NewTaskCompleted(id, station, at)
+	e.Relocation = &r
+	return e
 }
 
 // ItemPicked is raised when a Pick task records an item retrieved into a tote.
