@@ -110,6 +110,21 @@ a read-only pool (`default_transaction_read_only=on`, `MaxConns` 5,
 | `OTEL_SERVICE_NAME` | `fulfillment-reports` | no | Resource `service.name`. The HTTP middleware reads the same variable but falls back to `fulfillment-execution` when it is unset, so set it explicitly outside the chart. | `cmd/fulfillment-reports/main.go`, `internal/observability/telemetry.go` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT`, `SERVICE_VERSION`, `ENVIRONMENT` | as above | no | Shared telemetry settings. | `internal/observability/telemetry.go` |
 
+## `cmd/sweep` (the sweep CronJobs' entrypoint)
+
+Runs once per CronJob schedule, POSTs one sweep endpoint and exits
+([ADR-0048](../adr/0048-sweep-cronjobs-fail-fast.md)). Exit codes: `0` done,
+`1` gave up or rejected, `2` bad configuration.
+
+| Variable | Default | Required? | Meaning | Read in |
+| --- | --- | --- | --- | --- |
+| `SWEEP_URL` | *(unset)* | **yes** | Endpoint to POST, e.g. `http://<release>:80/tasks/expire-leases`. | `cmd/sweep/sweep.go` |
+| `SWEEP_REQUEST_TIMEOUT` | `15s` | no | Per-attempt bound (connect + request + response), Go duration. | `cmd/sweep/sweep.go` |
+| `SWEEP_MAX_ATTEMPTS` | `4` | no | Attempts before giving up; connect errors, timeouts, 429 and 5xx are retried, other non-2xx are not. | `cmd/sweep/sweep.go` |
+| `SWEEP_RETRY_BACKOFF` | `1s` | no | First backoff; doubles per attempt. | `cmd/sweep/sweep.go` |
+| `SWEEP_MAX_BACKOFF` | `8s` | no | Backoff cap. | `cmd/sweep/sweep.go` |
+| `SIDECAR_QUIT_URL` | `http://127.0.0.1:15020/quitquitquit` | no | Istio sidecar quit endpoint, POSTed on every exit path; empty disables it. | `cmd/sweep/sweep.go` |
+
 ## Helm values that set these variables
 
 From `charts/fulfillment-execution/values.yaml` and the Deployment templates.
@@ -135,6 +150,7 @@ and frontend Deployments do not mount it.
 | `analytics.projector.adminAddr`, `analytics.migrationsPath` | `ADMIN_ADDR`, `ANALYTICS_MIGRATIONS_PATH` | projector |
 | `analytics.database.*` | `ANALYTICS_DATABASE_URL` (projector: key `ANALYTICS_DATABASE_URL`; reports: key `ANALYTICS_READER_DATABASE_URL`) | projector, reports |
 | `analytics.reports.httpAddr` (`:8080`) | `HTTP_ADDR` | reports |
+| `sweeps.requestTimeoutSeconds` (`15`), `sweeps.maxAttempts` (`4`), `sweeps.retryBackoffSeconds` (`1`), `sweeps.maxBackoffSeconds` (`8`), `sweeps.sidecarQuitUrl` | `SWEEP_REQUEST_TIMEOUT`, `SWEEP_MAX_ATTEMPTS`, `SWEEP_RETRY_BACKOFF`, `SWEEP_MAX_BACKOFF`, `SIDECAR_QUIT_URL` (and `SWEEP_URL` from the release Service); the render fails when the retry budget does not fit `sweeps.activeDeadlineSeconds` | sweep CronJobs (`cmd/sweep`) |
 
 `CORS_ALLOWED_ORIGINS`, `LOG_LEVEL` (api), `OUTBOX_RELAY_INTERVAL`,
 `WORK_RELEASED_CONSUMER_GROUP` and `FACILITY_LAYOUT_BASE_URL` have no

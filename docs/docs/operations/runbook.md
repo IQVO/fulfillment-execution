@@ -28,7 +28,7 @@ the image tag and the chart as `oci://ghcr.io/iqvo/fulfillment-execution`.
 | analytics projector | `<release>-projector` | `/app/fulfillment-projector` | `analytics.enabled` (default `false`) | `8091` (admin, `ADMIN_ADDR`) | none | startup, liveness and readiness on `/healthz` (port `admin`) |
 | analytics reports | `<release>-reports` | `/app/fulfillment-reports` | `analytics.enabled` | `8080` (`HTTP_ADDR=:8080` from the chart) | ClusterIP `80` → `http` | startup, liveness and readiness on `/healthz` |
 | frontend (MFE remote) | `<release>-frontend` | nginx serving `web/` | `frontend.enabled` (default `false`) | `8080` | ClusterIP `80` | see `frontend-deployment.yaml` |
-| expire-leases sweep | CronJob `<release>-expire-leases` | busybox `wget` from the service image | `sweeps.enabled` + `sweeps.expireLeases.enabled` (default on) | – | – | – |
+| expire-leases sweep | CronJob `<release>-expire-leases` | `/app/sweep` from the service image ([ADR-0048](../adr/0048-sweep-cronjobs-fail-fast.md)) | `sweeps.enabled` + `sweeps.expireLeases.enabled` (default on) | – | – | – |
 | CPT-miss sweep | CronJob `<release>-sweep-cpt-misses` | same | `sweeps.enabled` + `sweeps.cptMisses.enabled` (default on) | – | – | – |
 
 The api Deployment mounts the chart ConfigMap `<release>` with `envFrom`
@@ -174,7 +174,8 @@ There is no housekeeping job: published `outbox_events` rows and
 ## Sweeps (scheduled)
 
 The service has no in-process timers. Two CronJobs POST to the api Service
-with busybox `wget` ([ADR-0037](../adr/0037-sweeps-scheduled-by-cronjob-default-on.md)):
+with the `/app/sweep` entrypoint ([ADR-0037](../adr/0037-sweeps-scheduled-by-cronjob-default-on.md),
+[ADR-0048](../adr/0048-sweep-cronjobs-fail-fast.md)):
 
 | CronJob | Schedule | Calls | Effect |
 | --- | --- | --- | --- |
@@ -182,9 +183,20 @@ with busybox `wget` ([ADR-0037](../adr/0037-sweeps-scheduled-by-cronjob-default-
 | `<release>-sweep-cpt-misses` | `*/5 * * * *` | `POST /tasks/sweep-cpt-misses` | Returns `{"reported":N}`; publishes one `TaskCPTMissed` per open task at or past its CPT, again on every pass until it completes. Kafka volume = overdue tasks × passes. |
 
 Both: `concurrencyPolicy: Forbid`, `startingDeadlineSeconds: 60`,
-`activeDeadlineSeconds: 120`, request timeout 30s, `backoffLimit: 0`. A
-non-2xx response fails the Job. Set `sweeps.enabled=false` only when another
-scheduler calls the endpoints.
+`activeDeadlineSeconds: 120`, `backoffLimit: 0`. Each POST is cut after 15 s;
+connect errors, timeouts, 429 and 5xx are retried up to 4 attempts with a
+1 s → 8 s doubling backoff; any other non-2xx is not retried. A give-up exits
+non-zero, so the Job FAILS with a log line instead of hanging until the
+deadline; the Istio sidecar quit (`http://127.0.0.1:15020/quitquitquit`) is
+POSTed on every exit path. The chart refuses to render a retry budget that
+does not fit `activeDeadlineSeconds`. Set `sweeps.enabled=false` only when
+another scheduler calls the endpoints.
+
+| Symptom | Cause | Action |
+| --- | --- | --- |
+| Sweep Job `Failed` with `sweep: failed; exiting non-zero so the Job fails fast` in its log | The api answered 5xx/429, refused the connection or timed out on every attempt (unavailable or rolling), or answered a non-retryable 4xx. | `kubectl -n <ns> logs job/<job>` shows each attempt's `error`; check the api pods (`kubectl get pods -l app.kubernetes.io/component=api`) and its `/readyz`. Nothing to clean up: the next scheduled run retries, and both sweeps are idempotent. |
+| Sweep Job ends in `DeadlineExceeded` (pod deleted, no logs) | A build older than ADR-0048 (busybox `wget`), or the pod never started its container (image pull, sidecar injection). | Check the image tag has `/app/sweep`; `kubectl describe job` for pod events. |
+| Sweep Job `Failed` with exit code 2 | `SWEEP_URL` missing or an invalid `SWEEP_*` value (a hand-edited CronJob). | Re-render from the chart values. |
 
 ## Scaling
 
