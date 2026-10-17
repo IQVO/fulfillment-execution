@@ -21,16 +21,18 @@ type Placement struct {
 // determinable, in which case the task cannot be announced to the location-
 // aware consumers (TaskAvailable is not raised on the wire).
 //
-// Today only a RELOCATE task carries locations: its planned bins. An Assign
-// leaves the source open and a Vacate the destination (the operator scans
-// them at completion), so the one known bin stands for both ends of the trip.
-// The site is the site segment of that bin's facility-layout LocationCode.
-// No other task type carries a location, so none has a placement.
+// Today only RELOCATE and REPLENISH tasks carry locations: their planned
+// bins. An Assign leaves the source open and a Vacate the destination (the
+// operator scans them at completion), so the one known bin stands for both
+// ends of the trip. A REPLENISH task knows both bins (ADR 0050): source bin
+// first, destination bin last. The site is the site segment of that bin's
+// facility-layout LocationCode. No other task type carries a location, so
+// none has a placement.
 func (t *Task) Placement() (Placement, bool) {
-	if t.relocation == nil {
+	from, to, ok := t.plannedBins()
+	if !ok {
 		return Placement{}, false
 	}
-	from, to := t.relocation.FromBin, t.relocation.ToBin
 	if from == "" {
 		from = to
 	}
@@ -45,6 +47,19 @@ func (t *Task) Placement() (Placement, bool) {
 		return Placement{}, false
 	}
 	return Placement{SiteId: site, FromLocation: from, ToLocation: to}, true
+}
+
+// plannedBins returns the planned source and destination bins of a RELOCATE
+// or REPLENISH task (either may be empty for a RELOCATE Assign or Vacate);
+// ok is false for a task that carries neither move.
+func (t *Task) plannedBins() (from, to string, ok bool) {
+	if t.relocation != nil {
+		return t.relocation.FromBin, t.relocation.ToBin, true
+	}
+	if t.replenishment != nil {
+		return t.replenishment.FromBin, t.replenishment.ToBin, true
+	}
+	return "", "", false
 }
 
 // PriorityBand is the opaque string published as TaskAvailable.priority_band:

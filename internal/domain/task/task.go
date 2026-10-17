@@ -106,7 +106,7 @@ type TransferDetails struct {
 // exact (case-sensitive): every writer persists the canonical constant.
 func ParseType(value string) (Type, error) {
 	switch Type(value) {
-	case Pick, Pack, Slam, Rebin, Dispatch, Arrival, Relocate:
+	case Pick, Pack, Slam, Rebin, Dispatch, Arrival, Relocate, Replenish:
 		return Type(value), nil
 	default:
 		return "", ErrUnknownType
@@ -187,6 +187,12 @@ type Task struct {
 	// executed move recorded by CompleteRelocation; nil until then.
 	relocation       *RelocationMove
 	relocationResult *RelocationResult
+	// replenishment is the planned pick-face replenishment move a REPLENISH
+	// task executes (ADR 0050); nil for every other task.
+	// replenishmentResult is the executed move recorded by
+	// CompleteReplenishment; nil until then.
+	replenishment       *ReplenishmentMove
+	replenishmentResult *ReplenishmentResult
 }
 
 // New creates a task in the Pending state, ready for the pool. fragile is a
@@ -229,6 +235,15 @@ func NewTransferTask(id shared.TaskId, taskType Type, cpt shared.CPT, orderRef s
 func NewRelocationTask(id shared.TaskId, cpt shared.CPT, orderRef shared.OrderRef, required shared.CapabilitySet, move RelocationMove) *Task {
 	t := New(id, Relocate, cpt, orderRef, required, false, false)
 	return t.WithRelocation(&move, nil)
+}
+
+// NewReplenishmentTask creates a Pending REPLENISH task carrying the planned
+// move (ADR 0050). Same construction invariants as New; the move was
+// validated by NewReplenishmentMove. Replenishment work carries no packing
+// hints.
+func NewReplenishmentTask(id shared.TaskId, cpt shared.CPT, orderRef shared.OrderRef, required shared.CapabilitySet, move ReplenishmentMove) *Task {
+	t := New(id, Replenish, cpt, orderRef, required, false, false)
+	return t.WithReplenishment(&move, nil)
 }
 
 // Rehydrate reconstructs a Task from persisted state without re-validating
@@ -333,6 +348,30 @@ func (t *Task) WithRelocation(move *RelocationMove, result *RelocationResult) *T
 	if result != nil {
 		cp := *result
 		t.relocationResult = &cp
+	}
+	return t
+}
+
+// Replenishment returns the planned move of a REPLENISH task, or nil for any
+// other task. The returned pointer is the task's own: do not mutate it.
+func (t *Task) Replenishment() *ReplenishmentMove { return t.replenishment }
+
+// ReplenishmentResult returns the executed move recorded when a REPLENISH
+// task was completed, or nil (not REPLENISH work, or not completed yet).
+func (t *Task) ReplenishmentResult() *ReplenishmentResult { return t.replenishmentResult }
+
+// WithReplenishment stamps the planned move and, for a completed task, the
+// executed result, and returns the task: used at creation and when a
+// repository rehydrates the columns. Both are copied.
+func (t *Task) WithReplenishment(move *ReplenishmentMove, result *ReplenishmentResult) *Task {
+	t.replenishment, t.replenishmentResult = nil, nil
+	if move != nil {
+		cp := *move
+		t.replenishment = &cp
+	}
+	if result != nil {
+		cp := *result
+		t.replenishmentResult = &cp
 	}
 	return t
 }
@@ -462,8 +501,9 @@ func (t *Task) VerifyHeldBy(stationId shared.StationId, now time.Time) error {
 
 // Complete finishes the task. Only the owning station may complete it, the
 // claim must still be active, and a completed task cannot be completed
-// again (no double-complete). A RELOCATE task can not be completed this way:
-// it needs the operator's confirmation (CompleteRelocation, ADR 0047).
+// again (no double-complete). A RELOCATE or REPLENISH task can not be
+// completed this way: it needs the operator's confirmation
+// (CompleteRelocation, ADR 0047; CompleteReplenishment, ADR 0050).
 func (t *Task) Complete(stationId shared.StationId, now time.Time) error {
 	if err := t.checkCompletable(stationId, now); err != nil {
 		return err
@@ -471,6 +511,29 @@ func (t *Task) Complete(stationId shared.StationId, now time.Time) error {
 	if t.taskType == Relocate {
 		return ErrRelocationConfirmationRequired
 	}
+	if t.taskType == Replenish {
+		return ErrReplenishmentConfirmationRequired
+	}
+	t.finish()
+	return nil
+}
+
+// CompleteReplenishment finishes a REPLENISH task with the operator's
+// confirmation (ADR 0050): the same claim rules as Complete, then the
+// confirmed quantity (at least 1) and any scanned bin are checked against
+// the planned move and recorded as ReplenishmentResult.
+func (t *Task) CompleteReplenishment(stationId shared.StationId, now time.Time, c ReplenishmentConfirmation) error {
+	if err := t.checkCompletable(stationId, now); err != nil {
+		return err
+	}
+	if t.replenishment == nil {
+		return ErrNotRelocationTask
+	}
+	result, err := t.replenishment.resolve(c)
+	if err != nil {
+		return err
+	}
+	t.replenishmentResult = &result
 	t.finish()
 	return nil
 }

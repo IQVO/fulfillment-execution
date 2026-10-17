@@ -45,9 +45,11 @@ var (
 	// quantity below 1, a bin the move left open was not scanned, a
 	// scanned bin differs from the planned one, or both bins are equal).
 	ErrInvalidRelocationConfirmation = errors.New("task: invalid relocation confirmation")
-	// ErrNotRelocationTask: relocation inputs were given for a task that
-	// is not RELOCATE work.
-	ErrNotRelocationTask = errors.New("task: quantity, from_bin and to_bin apply only to RELOCATE tasks")
+	// ErrNotRelocationTask: confirmation inputs (quantity, from_bin,
+	// to_bin) were given for a task that is neither RELOCATE nor REPLENISH
+	// work (ADR 0050 extends the inputs to REPLENISH; the name and the REST
+	// slug stay for compatibility).
+	ErrNotRelocationTask = errors.New("task: quantity, from_bin and to_bin apply only to RELOCATE and REPLENISH tasks")
 )
 
 // ParseRelocationKind validates the wire/persisted form of a RelocationKind
