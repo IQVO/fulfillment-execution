@@ -83,6 +83,16 @@ type classificationWiring struct {
 	close    func()
 }
 
+// setupClassification validates the env config and builds the wiring in one
+// step, keeping run()'s body flat (funlen).
+func setupClassification(storage storageAdapters, brokers []string, logger *slog.Logger) (classificationWiring, error) {
+	cfg, err := classificationConfigFromEnv()
+	if err != nil {
+		return classificationWiring{}, err
+	}
+	return buildClassification(cfg, storage, brokers, logger)
+}
+
 // buildClassification wires the adapters for cfg. kafka mode reads and
 // writes the Postgres copy (product_classification_copy) when a database is
 // configured, or an in-memory copy otherwise, dedupes on the SAME

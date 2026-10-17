@@ -18,6 +18,7 @@ code on `develop` and from the consumers' own code, not from intent.
 | --- | --- | --- | --- | --- |
 | Consume | `warehouse.work-planning.events` | `WorkReleased` | `internal/adapters/inbound/kafka/consumer.go` | `WORK_RELEASED_CONSUMER_GROUP` (default `fulfillment-execution`); a new group starts at the **latest** offset |
 | Consume (opt-in) | `warehouse.product-master.events` | `ProductClassified` | `internal/adapters/inbound/kafka/product_classified_consumer.go`, only when `PRODUCT_CLASSIFICATION_MODE=kafka` | `PRODUCT_CLASSIFICATION_CONSUMER_GROUP` (no default; required) |
+| Consume (opt-in) | `warehouse.task-interleaving.events` | `InterleavingHintIssued` | `internal/adapters/inbound/kafka/interleaving_hint_consumer.go`, only when `TASK_INTERLEAVING_MODE=kafka` | `TASK_INTERLEAVING_CONSUMER_GROUP` (no default; required) |
 | Consume (opt-in) | `warehouse.process-path-management.events` | process-path catalogue events | `internal/adapters/outbound/kafkacatalog`, only when `PATH_CATALOGUE_SOURCE=kafka` | a fresh group per process: full replay on every boot |
 | Publish | `warehouse.fulfillment.events` | `TaskAvailable`, `TaskClaimed`, `TaskCompleted`, `TaskCPTMissed`, `PackageManifested`, `TransferPicked`, `TransferDispatched`, `TransferArrived` | `internal/adapters/outbound/kafka/publisher.go` | – |
 | Publish | `warehouse.work-planning.events.dlq` | failed / poison `WorkReleased` | `consumer.go` (`DeadLetterTopic`), only when `EVENT_PUBLISHER=kafka` | – |
@@ -93,6 +94,27 @@ for the segregation check. A payload that breaks the contract (missing
 committed past; any other failure retries the same message with backoff
 (200ms to 5s) until it succeeds, so it blocks its partition but never loses
 an event.
+
+## Inbound: `InterleavingHintIssued`
+
+Only with `TASK_INTERLEAVING_MODE=kafka`
+([ADR-0051](../adr/0051-interleaving-hints-advise-claimnext.md)). The consumer
+dispatches on the full type
+`com.warehouse.wes.task-interleaving.stationtrip.InterleavingHintIssued` (key
+and `subject` = the station id) and ignores every other type on the topic.
+Each event is an **advisory** hint (`hint_id`, `station_id`, `site_id`,
+`expires_at`, ranked `candidates`) and replaces the station's single ACTIVE
+row of `interleaving_hints` — a newer hint supersedes the previous one.
+`ClaimNext` reads the station's active, unexpired hint only as a tie-break
+inside one priority band (same task type, same CPT instant): the hinted
+candidates still in the pool are tried first, lowest rank before higher, and
+the CPT ordering across bands is never crossed. Every failure mode fails
+open — no hint, an expired hint, no hinted candidate in the pool, or a failed
+hint read all behave exactly as without a hint. A payload that breaks the
+contract (missing `hint_id`/`station_id`/`site_id`/`expires_at`, empty
+`candidates`, rank < 1, a blank candidate `task_id`) is logged and committed
+past; any other failure retries the same message with backoff (200ms to 5s)
+until it succeeds.
 
 Every message on every one of these topics is a **CloudEvents 1.0** event in
 structured content mode, built and validated with the official

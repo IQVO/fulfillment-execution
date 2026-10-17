@@ -134,6 +134,25 @@ channels:
       - name: consumed
       message:
         $ref: '#/components/messages/ProductClassified'
+  warehouse.task-interleaving.events:
+    description: task-interleaving's integration topic (key and `subject` = the station id). This service
+      consumes only InterleavingHintIssued from it, into its local hint copy `interleaving_hints` (ADR-0051),
+      under the consumer group from `TASK_INTERLEAVING_CONSUMER_GROUP`, only when `TASK_INTERLEAVING_MODE=kafka`.
+      Every other type on the topic is ignored.
+    publish:
+      operationId: receiveInterleavingHintIssued
+      summary: Receive InterleavingHintIssued from task-interleaving.
+      description: task-interleaving publishes an advisory hint (never an assignment) of which open tasks
+        a station could work next. The CloudEvents `id` claim and the per-station superseding upsert of
+        `interleaving_hints` commit in one transaction; the offset is committed afterwards. One ACTIVE hint
+        per station — a newer hint supersedes the previous one. claimNext uses the station's active,
+        unexpired hint only as a tie-break inside one priority band (never across a CPT boundary) and fails
+        open when no hint applies. A message that is not a valid CloudEvent, or whose payload breaks the
+        contract, is logged at WARN and skipped.
+      tags:
+      - name: consumed
+      message:
+        $ref: '#/components/messages/InterleavingHintIssued'
 components:
   messages:
     TaskCompleted:
@@ -2164,6 +2183,127 @@ components:
             dot_hazard_class: 3
             classification_source: native
             version: 3
+    InterleavingHintIssued:
+      name: InterleavingHintIssued
+      title: InterleavingHintIssued
+      summary: task-interleaving recommended which open tasks a station could work next (consumed).
+      description: Published by task-interleaving on `warehouse.task-interleaving.events` (its AsyncAPI
+        is the source of truth); consumed here into the local hint copy (ADR-0051). Kafka key and `subject`
+        = the station id. `candidates` is non-empty and ranked from 1 by `detour_m` ascending then `task_id`.
+        The hint is advisory and valid until `expires_at`; one ACTIVE hint per station, a newer hint
+        supersedes; dedupe on the CloudEvents `id`.
+      contentType: application/cloudevents+json
+      tags:
+      - name: consumed
+      headers:
+        $ref: '#/components/schemas/KafkaHeaders'
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          required:
+          - type
+          - source
+          - dataschema
+          - data
+          properties:
+            type:
+              type: string
+              const: com.warehouse.wes.task-interleaving.stationtrip.InterleavingHintIssued
+            source:
+              type: string
+              const: /warehouse/task-interleaving
+            dataschema:
+              type: string
+              const: urn:warehouse:task-interleaving:events:InterleavingHintIssued:v1
+            data:
+              type: object
+              required:
+              - hint_id
+              - station_id
+              - site_id
+              - expires_at
+              - candidates
+              properties:
+                hint_id:
+                  type: string
+                  description: The hint id.
+                station_id:
+                  type: string
+                  description: The station the hint is for (also the Kafka key and the CloudEvents `subject`).
+                site_id:
+                  type: string
+                  description: The site the station belongs to.
+                after_task_id:
+                  type: string
+                  description: The task whose completion triggered the hint. Not used here.
+                origin_location:
+                  type: string
+                  description: Where the operator finished `after_task_id`. Not used here.
+                expires_at:
+                  type: string
+                  format: date-time
+                  description: The hint is ignored at and after this instant (fail-open).
+                policy_version:
+                  type: integer
+                  description: The interleaving policy version the hint was issued under. Not used here.
+                candidates:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required:
+                    - rank
+                    - task_id
+                    properties:
+                      rank:
+                        type: integer
+                        minimum: 1
+                        description: 1 = the producer's preferred candidate.
+                      task_id:
+                        type: string
+                        description: A task of this context's open pool.
+                      task_type:
+                        type: string
+                        description: Not used here (claimNext scans one type per call).
+                      location:
+                        type: string
+                        description: Not used here.
+                      detour_m:
+                        type: number
+                        description: Not used here.
+      examples:
+      - name: twoCandidates
+        headers:
+          content-type: application/cloudevents+json; charset=UTF-8
+        payload:
+          specversion: "1.0"
+          id: 6f1d2c3b-4a5e-4b7c-8d9e-0a1b2c3d4e5f
+          source: /warehouse/task-interleaving
+          type: com.warehouse.wes.task-interleaving.stationtrip.InterleavingHintIssued
+          subject: STN-07
+          time: '2026-10-17T12:00:00Z'
+          datacontenttype: application/json
+          dataschema: urn:warehouse:task-interleaving:events:InterleavingHintIssued:v1
+          data:
+            hint_id: hint-3b0e8d2a-7c41-4f6a-9d15-2a8b6c4e1f07
+            station_id: STN-07
+            site_id: SITE-1
+            after_task_id: task-8a1f
+            origin_location: WH1-FWD-A01-01-01-A
+            expires_at: '2026-10-17T12:01:30Z'
+            policy_version: 2
+            candidates:
+            - rank: 1
+              task_id: task-9c2e
+              task_type: PICK
+              location: WH1-FWD-A01-02-01-A
+              detour_m: 4.5
+            - rank: 2
+              task_id: task-9d10
+              task_type: REPLENISH
+              location: WH1-FWD-A02-01-01-A
+              detour_m: 12.0
   schemas:
     TransferFactData:
       type: object

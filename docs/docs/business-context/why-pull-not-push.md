@@ -95,8 +95,13 @@ single point of failure with a floor-wide blast radius.
 Being honest about the trade-off, because it is real:
 
 - **No global optimisation.** Pull is greedy: each station takes the most
-  urgent thing *it* can do. There is no interleaving (combining a putaway and
-  a pick on one walk), no travel-path optimisation across stations, no
+  urgent thing *it* can do. Interleaving (combining a putaway and a pick on
+  one walk) arrives only as an *advisory* signal: since
+  [ADR-0051](../adr/0051-interleaving-hints-advise-claimnext.md) this context
+  consumes task-interleaving's `InterleavingHintIssued` and lets it break
+  ties **inside one priority band** — it never reorders across a CPT
+  boundary, so the greedy policy stays intact and an absent hint costs
+  nothing. There is still no travel-path optimisation across stations and no
   batching by aisle. A push optimiser can, in principle, beat greedy dispatch
   on total travel distance. This context accepts a locally-greedy allocation
   in exchange for having no stale plan to maintain.

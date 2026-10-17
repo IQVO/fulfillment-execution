@@ -126,7 +126,10 @@ cannot claim work by asserting capabilities it does not have.
   urgent thing *it* can do. There is no interleaving, no travel-path
   optimisation across stations, no aisle batching. Total travel distance is
   accepted as suboptimal in exchange for having no stale plan to maintain.
-  This is the real cost of the decision.
+  This is the real cost of the decision. (Updated by
+  [ADR-0051](./0051-interleaving-hints-advise-claimnext.md): task-interleaving's
+  advisory hint now breaks ties *inside* one priority band; the greedy
+  earliest-CPT-first policy across bands is unchanged.)
 - **Selection quality lives entirely in one query.** With no optimiser, the
   ordering `FindClaimableByType` returns *is* the policy. Any future
   sophistication has to be expressed there — which is at least the right
