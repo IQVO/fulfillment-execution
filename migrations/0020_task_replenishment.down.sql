@@ -1,0 +1,10 @@
+ALTER TABLE tasks
+    DROP COLUMN replenished_to_bin,
+    DROP COLUMN replenished_from_bin,
+    DROP COLUMN replenished_quantity,
+    DROP COLUMN replenishment_priority,
+    DROP COLUMN replenishment_quantity,
+    DROP COLUMN replenishment_to_bin,
+    DROP COLUMN replenishment_from_bin,
+    DROP COLUMN replenishment_sku,
+    DROP COLUMN replenishment_request_id;
