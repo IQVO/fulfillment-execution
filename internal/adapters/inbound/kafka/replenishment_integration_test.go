@@ -174,7 +174,25 @@ func TestWorkReleasedReplenish_TaskCompletesAndTheMoveReachesTheWire(t *testing.
 	defer cancel()
 	rig := newReplenishmentRig(t, ctx)
 
-	producer := &kafkago.Writer{Addr: kafkago.TCP(rig.brokers...), Topic: rig.topic, RequiredAcks: kafkago.RequireAll}
+	rig.publishRelease(t, ctx)
+	created := rig.waitForReplenishTask(t, ctx)
+	want := task.ReplenishmentMove{RequestId: "req-9", SKU: "SKU-1", FromBin: "WH1-RSV-AMB-B02-03-02-C", ToBin: "WH1-FWD-AMB-A01-01-01-A", Quantity: 24, Priority: task.ReplenishmentPriorityUrgent}
+	if created.Replenishment() == nil || *created.Replenishment() != want {
+		t.Fatalf("persisted move = %+v, want %+v", created.Replenishment(), want)
+	}
+
+	claimed := rig.claimAndComplete(t, ctx)
+	if _, err := rig.relay.RelayOnce(ctx); err != nil {
+		t.Fatalf("relay: %v", err)
+	}
+	assertReplenishmentWire(t, rig.readReplenishmentCompleted(t, ctx, claimed.Id()))
+}
+
+// publishRelease puts the WorkReleased of replenishment request req-9 on the
+// work-planning topic.
+func (r relocationRig) publishRelease(t *testing.T, ctx context.Context) {
+	t.Helper()
+	producer := &kafkago.Writer{Addr: kafkago.TCP(r.brokers...), Topic: r.topic, RequiredAcks: kafkago.RequireAll}
 	t.Cleanup(func() { _ = producer.Close() })
 	msg := kafkago.Message{
 		Key: []byte("replenish-req-9"),
@@ -193,31 +211,31 @@ func TestWorkReleasedReplenish_TaskCompletesAndTheMoveReachesTheWire(t *testing.
 	if err := producer.WriteMessages(ctx, msg); err != nil {
 		t.Fatalf("publish WorkReleased: %v", err)
 	}
+}
 
-	created := rig.waitForReplenishTask(t, ctx)
-	want := task.ReplenishmentMove{RequestId: "req-9", SKU: "SKU-1", FromBin: "WH1-RSV-AMB-B02-03-02-C", ToBin: "WH1-FWD-AMB-A01-01-01-A", Quantity: 24, Priority: task.ReplenishmentPriorityUrgent}
-	if created.Replenishment() == nil || *created.Replenishment() != want {
-		t.Fatalf("persisted move = %+v, want %+v", created.Replenishment(), want)
-	}
-
-	if got, err := rig.claim.Execute(ctx, "station-plain", task.Replenish); got != nil || !errors.Is(err, usecases.ErrNoClaimableTask) {
+// claimAndComplete proves the capability matching (a station without
+// replenish never gets the task), then claims and completes it with the
+// operator's count, which is below the plan.
+func (r relocationRig) claimAndComplete(t *testing.T, ctx context.Context) *task.Task {
+	t.Helper()
+	if got, err := r.claim.Execute(ctx, "station-plain", task.Replenish); got != nil || !errors.Is(err, usecases.ErrNoClaimableTask) {
 		t.Fatalf("a station without the replenish capability must not get the task, got %v err=%v", got, err)
 	}
-	claimed, err := rig.claim.Execute(ctx, "station-rep", task.Replenish)
+	claimed, err := r.claim.Execute(ctx, "station-rep", task.Replenish)
 	if err != nil || claimed == nil {
 		t.Fatalf("claim: %v %v", claimed, err)
 	}
-	if err := rig.complete.Execute(ctx, claimed.Id(), "station-rep"); err == nil {
+	if err := r.complete.Execute(ctx, claimed.Id(), "station-rep"); err == nil {
 		t.Fatal("a REPLENISH task must not complete without the operator's confirmation")
 	}
-	if err := rig.complete.ExecuteWith(ctx, claimed.Id(), "station-rep", task.RelocationConfirmation{Quantity: 20}); err != nil {
+	if err := r.complete.ExecuteWith(ctx, claimed.Id(), "station-rep", task.RelocationConfirmation{Quantity: 20}); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
-	if _, err := rig.relay.RelayOnce(ctx); err != nil {
-		t.Fatalf("relay: %v", err)
-	}
+	return claimed
+}
 
-	got := rig.readReplenishmentCompleted(t, ctx, claimed.Id())
+func assertReplenishmentWire(t *testing.T, got replenishmentTaskCompleted) {
+	t.Helper()
 	if got.TaskType != "REPLENISH" || got.WorkUnitID != "replenish-req-9" || got.SKU != "SKU-1" ||
 		got.FromBin != "WH1-RSV-AMB-B02-03-02-C" || got.ToBin != "WH1-FWD-AMB-A01-01-01-A" || got.RequestRef != "req-9" {
 		t.Fatalf("TaskCompleted data = %+v", got)

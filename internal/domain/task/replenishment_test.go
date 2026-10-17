@@ -156,6 +156,7 @@ func TestCompleteReplenishment_RecordsTheConfirmedMove(t *testing.T) {
 		"scan from only":  {Quantity: 20, FromBin: binRsv},
 		"scan to only":    {Quantity: 20, ToBin: binFwd},
 		"the plan itself": {Quantity: 24},
+		"one unit":        {Quantity: 1},
 	}
 	for name, c := range cases {
 		tk := claimedReplenishment(t)

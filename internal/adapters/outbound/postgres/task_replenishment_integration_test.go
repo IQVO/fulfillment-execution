@@ -60,20 +60,39 @@ func TestTaskRepo_ReplenishmentRoundTrip(t *testing.T) {
 	if err != nil || got == nil {
 		t.Fatalf("find: %v %v", got, err)
 	}
+	assertPendingReplenishment(t, repo, got, now, move)
+
+	// Claim, complete with the operator's count (below the plan), save, reload.
+	assertReplenishmentCompletionRoundTrip(t, repo, got, now, move)
+
+	other, err := repo.FindById(ctx, "integration-task-not-replenish")
+	if err != nil || other == nil {
+		t.Fatalf("find plain: %v %v", other, err)
+	}
+	if other.Replenishment() != nil || other.ReplenishmentResult() != nil {
+		t.Fatalf("a PICK task carries no replenishment, got %+v / %+v", other.Replenishment(), other.ReplenishmentResult())
+	}
+}
+
+// assertPendingReplenishment checks the point read and the bulk read path
+// (scanTasks) of a task that was just released.
+func assertPendingReplenishment(t *testing.T, repo *postgres.TaskRepo, got *task.Task, now time.Time, move task.ReplenishmentMove) {
+	t.Helper()
 	if got.Type() != task.Replenish || got.Replenishment() == nil || *got.Replenishment() != move {
 		t.Fatalf("round-trip: type %s move %+v, want REPLENISH %+v", got.Type(), got.Replenishment(), move)
 	}
 	if got.ReplenishmentResult() != nil || got.Relocation() != nil {
 		t.Fatalf("a pending REPLENISH task has no result and no relocation, got %+v / %+v", got.ReplenishmentResult(), got.Relocation())
 	}
-
-	// Bulk read path (scanTasks) carries the move too.
-	list, err := repo.FindClaimableByType(ctx, task.Replenish, now)
+	list, err := repo.FindClaimableByType(context.Background(), task.Replenish, now)
 	if err != nil || len(list) != 1 || list[0].Replenishment() == nil || list[0].Replenishment().Ref() != "req-9" {
 		t.Fatalf("FindClaimableByType = %v err=%v, want one task with request req-9", list, err)
 	}
+}
 
-	// Claim, complete with the operator's count (below the plan), save, reload.
+func assertReplenishmentCompletionRoundTrip(t *testing.T, repo *postgres.TaskRepo, got *task.Task, now time.Time, move task.ReplenishmentMove) {
+	t.Helper()
+	ctx := context.Background()
 	if err := got.Claim("s1", shared.NewCapabilitySet("replenish"), now, time.Minute); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
@@ -83,7 +102,7 @@ func TestTaskRepo_ReplenishmentRoundTrip(t *testing.T) {
 	if err := repo.Save(ctx, got); err != nil {
 		t.Fatalf("save completed: %v", err)
 	}
-	done, err := repo.FindById(ctx, "integration-task-replenish")
+	done, err := repo.FindById(ctx, got.Id())
 	if err != nil || done == nil {
 		t.Fatalf("find completed: %v %v", done, err)
 	}
@@ -93,14 +112,6 @@ func TestTaskRepo_ReplenishmentRoundTrip(t *testing.T) {
 	}
 	if *done.Replenishment() != move {
 		t.Fatalf("the planned move must survive the completion, got %+v", done.Replenishment())
-	}
-
-	other, err := repo.FindById(ctx, "integration-task-not-replenish")
-	if err != nil || other == nil {
-		t.Fatalf("find plain: %v %v", other, err)
-	}
-	if other.Replenishment() != nil || other.ReplenishmentResult() != nil {
-		t.Fatalf("a PICK task carries no replenishment, got %+v / %+v", other.Replenishment(), other.ReplenishmentResult())
 	}
 }
 
@@ -146,6 +157,53 @@ func TestTaskRepo_ReplenishmentColumnsAreNullForOtherTasks(t *testing.T) {
 func TestMigration0020_UpAndDown(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
 	defer cancel()
+	rig := newMigrationRig(t, ctx)
+	if got := rig.columns(t); got != 0 {
+		t.Fatalf("at 0019 there are %d replenishment columns, want 0", got)
+	}
+
+	if err := rig.m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		t.Fatalf("migrate up: %v", err)
+	}
+	if got := rig.columns(t); got != 9 {
+		t.Fatalf("after 0020 there are %d replenishment columns, want 9", got)
+	}
+	var nonNull int
+	if err := rig.conn.QueryRow(ctx, `SELECT num_nonnulls(replenishment_request_id, replenishment_sku, replenishment_quantity, replenished_quantity) FROM tasks WHERE id = 'old-task-1'`).Scan(&nonNull); err != nil || nonNull != 0 {
+		t.Fatalf("a pre-migration row must read NULL replenishment columns: nonNull=%d err=%v", nonNull, err)
+	}
+
+	// The migrated schema stores a REPLENISH task through the repository.
+	rig.saveReplenish(t)
+	if err := rig.m.Steps(-1); err != nil {
+		t.Fatalf("migrate down one step: %v", err)
+	}
+	if got := rig.columns(t); got != 0 {
+		t.Fatalf("after the down step there are %d replenishment columns, want 0", got)
+	}
+	var survivors int
+	if err := rig.conn.QueryRow(ctx, `SELECT count(*) FROM tasks WHERE id IN ('old-task-1', 'new-replenish-1')`).Scan(&survivors); err != nil || survivors != 2 {
+		t.Fatalf("the down step must keep the task rows, got %d err=%v", survivors, err)
+	}
+	if err := rig.m.Up(); err != nil {
+		t.Fatalf("migrate up again: %v", err)
+	}
+	if got := rig.columns(t); got != 9 {
+		t.Fatalf("after re-applying 0020 there are %d replenishment columns, want 9", got)
+	}
+}
+
+// migrationRig is a throwaway database migrated to 0019 and holding one task
+// written before the REPLENISH columns existed.
+type migrationRig struct {
+	ctx  context.Context
+	url  string
+	m    *migrate.Migrate
+	conn *pgx.Conn
+}
+
+func newMigrationRig(t *testing.T, ctx context.Context) migrationRig {
+	t.Helper()
 	container, err := tcpostgres.Run(ctx, "postgres:16-alpine",
 		tcpostgres.WithDatabase("fulfillment_execution"),
 		tcpostgres.WithUsername("fulfillment"),
@@ -160,7 +218,6 @@ func TestMigration0020_UpAndDown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connection string: %v", err)
 	}
-
 	m, err := migrate.New("file://../../../../migrations", url)
 	if err != nil {
 		t.Fatalf("migrate.New: %v", err)
@@ -169,70 +226,38 @@ func TestMigration0020_UpAndDown(t *testing.T) {
 	if err := m.Migrate(19); err != nil {
 		t.Fatalf("migrate to 0019: %v", err)
 	}
-
 	conn, err := pgx.Connect(ctx, url)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close(ctx) })
-	insertPick := func(id string) {
-		t.Helper()
-		_, err := conn.Exec(ctx, `INSERT INTO tasks (id, task_type, status, cpt, order_ref, required_capabilities) VALUES ($1, 'PICK', 'PENDING', now() + interval '1 hour', 'wu-old', ARRAY['pick'])`, id)
-		if err != nil {
-			t.Fatalf("insert pre-migration task: %v", err)
-		}
+	if _, err := conn.Exec(ctx, `INSERT INTO tasks (id, task_type, status, cpt, order_ref, required_capabilities) VALUES ('old-task-1', 'PICK', 'PENDING', now() + interval '1 hour', 'wu-old', ARRAY['pick'])`); err != nil {
+		t.Fatalf("insert pre-migration task: %v", err)
 	}
-	insertPick("old-task-1")
+	return migrationRig{ctx: ctx, url: url, m: m, conn: conn}
+}
 
-	columns := func() int {
-		t.Helper()
-		var n int
-		if err := conn.QueryRow(ctx, `SELECT count(*) FROM information_schema.columns WHERE table_name = 'tasks' AND (column_name LIKE 'replenishment\_%' OR column_name LIKE 'replenished\_%')`).Scan(&n); err != nil {
-			t.Fatalf("count columns: %v", err)
-		}
-		return n
+// columns counts the replenishment columns of tasks.
+func (r migrationRig) columns(t *testing.T) int {
+	t.Helper()
+	var n int
+	if err := r.conn.QueryRow(r.ctx, `SELECT count(*) FROM information_schema.columns WHERE table_name = 'tasks' AND (column_name LIKE 'replenishment\_%' OR column_name LIKE 'replenished\_%')`).Scan(&n); err != nil {
+		t.Fatalf("count columns: %v", err)
 	}
-	if got := columns(); got != 0 {
-		t.Fatalf("at 0019 there are %d replenishment columns, want 0", got)
-	}
+	return n
+}
 
-	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		t.Fatalf("migrate up: %v", err)
-	}
-	if got := columns(); got != 9 {
-		t.Fatalf("after 0020 there are %d replenishment columns, want 9", got)
-	}
-	var nonNull int
-	if err := conn.QueryRow(ctx, `SELECT num_nonnulls(replenishment_request_id, replenishment_sku, replenishment_quantity, replenished_quantity) FROM tasks WHERE id = 'old-task-1'`).Scan(&nonNull); err != nil || nonNull != 0 {
-		t.Fatalf("a pre-migration row must read NULL replenishment columns: nonNull=%d err=%v", nonNull, err)
-	}
-
-	// The migrated schema stores a REPLENISH task through the repository.
-	pool, err := postgres.NewPool(ctx, url)
+// saveReplenish stores a REPLENISH task through the repository on the migrated schema.
+func (r migrationRig) saveReplenish(t *testing.T) {
+	t.Helper()
+	pool, err := postgres.NewPool(r.ctx, r.url)
 	if err != nil {
 		t.Fatalf("pool: %v", err)
 	}
 	t.Cleanup(pool.Close)
-	repo := postgres.NewTaskRepo(pool)
 	rep := task.NewReplenishmentTask("new-replenish-1", shared.NewCPT(time.Now().Add(time.Hour)), "replenish-req-9", shared.NewCapabilitySet("replenish"), replenishMove(t))
-	if err := repo.Save(ctx, rep); err != nil {
+	if err := postgres.NewTaskRepo(pool).Save(r.ctx, rep); err != nil {
 		t.Fatalf("save on the migrated schema: %v", err)
-	}
-	if err := m.Steps(-1); err != nil {
-		t.Fatalf("migrate down one step: %v", err)
-	}
-	if got := columns(); got != 0 {
-		t.Fatalf("after the down step there are %d replenishment columns, want 0", got)
-	}
-	var survivors int
-	if err := conn.QueryRow(ctx, `SELECT count(*) FROM tasks WHERE id IN ('old-task-1', 'new-replenish-1')`).Scan(&survivors); err != nil || survivors != 2 {
-		t.Fatalf("the down step must keep the task rows, got %d err=%v", survivors, err)
-	}
-	if err := m.Up(); err != nil {
-		t.Fatalf("migrate up again: %v", err)
-	}
-	if got := columns(); got != 9 {
-		t.Fatalf("after re-applying 0020 there are %d replenishment columns, want 9", got)
 	}
 }
 
