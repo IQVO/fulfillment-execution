@@ -55,6 +55,8 @@ func statusFor(err error) int {
 		errors.Is(err, usecases.ErrStationLocationNotWorkCenter),
 		errors.Is(err, task.ErrRelocationConfirmationRequired),
 		errors.Is(err, task.ErrInvalidRelocationConfirmation),
+		errors.Is(err, task.ErrReplenishmentConfirmationRequired),
+		errors.Is(err, task.ErrInvalidReplenishmentConfirmation),
 		errors.Is(err, task.ErrNotRelocationTask):
 		return http.StatusUnprocessableEntity
 
@@ -98,7 +100,9 @@ var problemCatalog = []struct {
 	{usecases.ErrStationLocationNotWorkCenter, "station-location-not-workcenter", "Station's locationCode does not resolve to a facility-layout WorkCenter"},
 	{task.ErrRelocationConfirmationRequired, "relocation-confirmation-required", "A RELOCATE task completes only with the confirmed quantity and the bins the move left open"},
 	{task.ErrInvalidRelocationConfirmation, "invalid-relocation-confirmation", "The relocation confirmation does not match the planned move"},
-	{task.ErrNotRelocationTask, "not-relocation-task", "quantity, fromBin and toBin apply only to RELOCATE tasks"},
+	{task.ErrNotRelocationTask, "not-relocation-task", "quantity, fromBin and toBin apply only to RELOCATE and REPLENISH tasks"},
+	{task.ErrReplenishmentConfirmationRequired, "replenishment-confirmation-required", "A REPLENISH task completes only with the confirmed quantity"},
+	{task.ErrInvalidReplenishmentConfirmation, "invalid-replenishment-confirmation", "The replenishment confirmation does not match the planned move"},
 }
 
 // problemTypeAndTitle maps a typed domain/application error to its RFC 7807

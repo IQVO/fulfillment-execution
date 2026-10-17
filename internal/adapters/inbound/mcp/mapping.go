@@ -45,6 +45,21 @@ type claimableWork struct {
 	// Relocation is the slot-plan move of a RELOCATE task (ADR 0047),
 	// omitted for every other task type.
 	Relocation *relocationView `json:"relocation,omitempty"`
+	// Replenishment is the pick-face replenishment move of a REPLENISH task
+	// (ADR 0050), omitted for every other task type.
+	Replenishment *replenishmentView `json:"replenishment,omitempty"`
+}
+
+// replenishmentView is a REPLENISH task's planned move at the tool boundary.
+// Both bins are known: the operator may scan them, and must pass the counted
+// quantity to complete_task.
+type replenishmentView struct {
+	RequestId string `json:"requestId"`
+	SKU       string `json:"sku"`
+	FromBin   string `json:"fromBin"`
+	ToBin     string `json:"toBin"`
+	Quantity  int    `json:"quantity"`
+	Priority  string `json:"priority"`
 }
 
 // relocationView is a RELOCATE task's planned move at the tool boundary. An
@@ -86,6 +101,9 @@ func toClaimableWork(t *task.Task) claimableWork {
 	}
 	if m := t.Relocation(); m != nil {
 		out.Relocation = &relocationView{PlanId: m.PlanId, MoveSeq: m.MoveSeq, Kind: string(m.Kind), SKU: m.SKU, FromBin: m.FromBin, ToBin: m.ToBin, Ref: m.Ref()}
+	}
+	if m := t.Replenishment(); m != nil {
+		out.Replenishment = &replenishmentView{RequestId: m.RequestId, SKU: m.SKU, FromBin: m.FromBin, ToBin: m.ToBin, Quantity: m.Quantity, Priority: string(m.Priority)}
 	}
 	return out
 }

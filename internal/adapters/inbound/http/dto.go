@@ -32,10 +32,11 @@ func isValidTaskType(v string) bool {
 	}
 }
 
-// isClaimableTaskType is isValidTaskType plus RELOCATE (apis/openapi.yaml's
-// AnyTaskType enum): every task type a station may claim.
+// isClaimableTaskType is isValidTaskType plus RELOCATE and REPLENISH
+// (apis/openapi.yaml's AnyTaskType enum): every task type a station may
+// claim.
 func isClaimableTaskType(v string) bool {
-	return isValidTaskType(v) || task.Type(v) == task.Relocate
+	return isValidTaskType(v) || task.Type(v) == task.Relocate || task.Type(v) == task.Replenish
 }
 
 // validate reports the first missing required field, or "" if the request
@@ -71,6 +72,40 @@ type taskResponse struct {
 	// Relocation is the slot-plan move of a RELOCATE task (ADR 0047),
 	// omitted for every other task type.
 	Relocation *relocationResponse `json:"relocation,omitempty"`
+	// Replenishment is the pick-face replenishment move of a REPLENISH
+	// task (ADR 0050), omitted for every other task type.
+	Replenishment *replenishmentResponse `json:"replenishment,omitempty"`
+}
+
+// replenishmentResponse is a REPLENISH task's planned move, plus the
+// executed move once the task is completed.
+type replenishmentResponse struct {
+	RequestId string                         `json:"requestId"`
+	SKU       string                         `json:"sku"`
+	FromBin   string                         `json:"fromBin"`
+	ToBin     string                         `json:"toBin"`
+	Quantity  int                            `json:"quantity"`
+	Priority  string                         `json:"priority"`
+	Executed  *executedReplenishmentResponse `json:"executed,omitempty"`
+}
+
+// executedReplenishmentResponse is the move recorded at completion.
+type executedReplenishmentResponse struct {
+	Quantity int    `json:"quantity"`
+	FromBin  string `json:"fromBin"`
+	ToBin    string `json:"toBin"`
+}
+
+func toReplenishmentResponse(t *task.Task) *replenishmentResponse {
+	m := t.Replenishment()
+	if m == nil {
+		return nil
+	}
+	resp := &replenishmentResponse{RequestId: m.RequestId, SKU: m.SKU, FromBin: m.FromBin, ToBin: m.ToBin, Quantity: m.Quantity, Priority: string(m.Priority)}
+	if r := t.ReplenishmentResult(); r != nil {
+		resp.Executed = &executedReplenishmentResponse{Quantity: r.Quantity, FromBin: r.FromBin, ToBin: r.ToBin}
+	}
+	return resp
 }
 
 // relocationResponse is a RELOCATE task's planned move, plus the executed
@@ -117,7 +152,7 @@ func (r claimNextRequest) validate() string {
 	case !isClaimableTaskType(r.TaskType):
 		// apis/openapi.yaml claimNextTask: taskType is the AnyTaskType enum,
 		// and a value outside it is a 400 (BadRequest), not an empty queue (409).
-		return "taskType must be one of PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL, RELOCATE"
+		return "taskType must be one of PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL, RELOCATE, REPLENISH"
 	default:
 		return ""
 	}
@@ -135,10 +170,12 @@ func (r renewLeaseRequest) validate() string {
 }
 
 // completeTaskRequest is POST /tasks/{id}/complete. Quantity, FromBin and
-// ToBin are the RELOCATE confirmation (ADR 0047): optional on the wire,
-// required by the domain for a RELOCATE task (the bins only where the move
-// left them open) and rejected for any other task. Pointers tell an absent
-// field from an explicit 0 / "", which the contract forbids.
+// ToBin are the RELOCATE confirmation (ADR 0047) and the REPLENISH
+// confirmation (ADR 0050): optional on the wire, required by the domain for
+// a RELOCATE or REPLENISH task (the quantity always; the bins, for RELOCATE,
+// only where the move left them open, and for REPLENISH as optional scans
+// that must equal the planned bins) and rejected for any other task. Pointers
+// tell an absent field from an explicit 0 / "", which the contract forbids.
 type completeTaskRequest struct {
 	StationId string  `json:"stationId"`
 	Quantity  *int    `json:"quantity,omitempty"`

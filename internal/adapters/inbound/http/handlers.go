@@ -65,6 +65,7 @@ func toTaskResponse(t *task.Task) taskResponse {
 		resp.LeaseExpiry = &expiry
 	}
 	resp.Relocation = toRelocationResponse(t)
+	resp.Replenishment = toReplenishmentResponse(t)
 	return resp
 }
 
