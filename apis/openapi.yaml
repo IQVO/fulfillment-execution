@@ -1589,19 +1589,22 @@ components:
         fromBin:
           type: string
           minLength: 1
+          pattern: '\S'
           description: >
             RELOCATE only: the source bin the operator scanned. Required
             when the move left the source open (an Assign); when sent for a
-            planned source it must equal it. A blank value is a 400.
+            planned source it must equal it. A blank value (no character
+            outside ECMA-262 `\s`) is a 400.
           example: WH1-RSV-B02-01-01-A
         toBin:
           type: string
           minLength: 1
+          pattern: '\S'
           description: >
             RELOCATE only: the destination bin the operator scanned.
             Required when the move left the destination open (a Vacate);
             when sent for a planned destination it must equal it. A blank
-            value is a 400.
+            value (no character outside ECMA-262 `\s`) is a 400.
           example: WH1-RSV-B02-01-01-A
       example:
         stationId: station-1
