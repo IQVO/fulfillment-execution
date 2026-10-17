@@ -1,7 +1,7 @@
 ---
 id: anytasktype
 title: "AnyTaskType"
-description: "Every task type a task can have and a station can claim: the creatable TaskType values plus `RELOCATE` (a slot-plan move, ADR-0047). RELOCATE tasks are created only from WorkReleased on the RELOCATE process path, never through `POST /tasks`, because they need the planned move."
+description: "Every task type a task can have and a station can claim: the creatable TaskType values plus `RELOCATE` (a slot-plan move, ADR-0047) and `REPLENISH` (a pick-face replenishment, ADR-0050). RELOCATE and REPLENISH tasks are created only from WorkReleased on their process paths, never through `POST /tasks`, because they need the planned move."
 sidebar_label: "AnyTaskType"
 hide_title: true
 hide_table_of_contents: true
@@ -22,7 +22,7 @@ import Heading from "@theme/Heading";
 
 
 
-Every task type a task can have and a station can claim: the creatable TaskType values plus `RELOCATE` (a slot-plan move, ADR-0047). RELOCATE tasks are created only from WorkReleased on the RELOCATE process path, never through `POST /tasks`, because they need the planned move.
+Every task type a task can have and a station can claim: the creatable TaskType values plus `RELOCATE` (a slot-plan move, ADR-0047) and `REPLENISH` (a pick-face replenishment, ADR-0050). RELOCATE and REPLENISH tasks are created only from WorkReleased on their process paths, never through `POST /tasks`, because they need the planned move.
 
 
 <Schema

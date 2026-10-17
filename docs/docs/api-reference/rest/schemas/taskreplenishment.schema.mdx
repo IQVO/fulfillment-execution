@@ -1,0 +1,33 @@
+---
+id: taskreplenishment
+title: "TaskReplenishment"
+description: "The pick-face replenishment move a REPLENISH task executes (ADR-0050), from WorkReleased.data.replenishment. Both bins are always known. `priority` is recorded for the operator's view; claimNext orders by CPT only."
+sidebar_label: "TaskReplenishment"
+hide_title: true
+hide_table_of_contents: true
+schema: true
+sample: {"requestId":"req-9","sku":"SKU-1","fromBin":"WH1-RSV-AMB-B02-03-02-C","toBin":"WH1-FWD-AMB-A01-01-01-A","quantity":24,"priority":"URGENT","executed":{"quantity":20,"fromBin":"WH1-RSV-AMB-B02-03-02-C","toBin":"WH1-FWD-AMB-A01-01-01-A"}}
+custom_edit_url: null
+---
+
+import Schema from "@theme/Schema";
+import Heading from "@theme/Heading";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"TaskReplenishment"}
+>
+</Heading>
+
+
+
+The pick-face replenishment move a REPLENISH task executes (ADR-0050), from WorkReleased.data.replenishment. Both bins are always known. `priority` is recorded for the operator's view; claimNext orders by CPT only.
+
+
+<Schema
+  {...require("./taskreplenishment.Schema.json")}
+>
+  
+</Schema>
+            
