@@ -127,6 +127,26 @@ type WorkReleasedData struct {
 	// with the transfer block's sku and its presence is one unambiguous
 	// marker.
 	Relocation *WorkReleasedRelocation `json:"relocation,omitempty"`
+	// Replenishment, when present, is the pick-face replenishment move of
+	// work released on the REPLENISH path (ADR 0050): wes-work-planning
+	// plans one REPLENISH work unit per pick-face-replenishment request.
+	// Absent on every other release. A nested object next to relocation,
+	// so its presence is one unambiguous marker.
+	Replenishment *WorkReleasedReplenishment `json:"replenishment,omitempty"`
+}
+
+// WorkReleasedReplenishment is WorkReleased.data.replenishment (ADR 0050):
+// one replenishment request of pick-face-replenishment, as planned by
+// wes-work-planning. Every member is required; quantity is a pointer so an
+// absent value is told apart from 0 and rejected. priority is NORMAL or
+// URGENT.
+type WorkReleasedReplenishment struct {
+	RequestId string `json:"request_id"`
+	SKU       string `json:"sku"`
+	FromBin   string `json:"from_bin"`
+	ToBin     string `json:"to_bin"`
+	Quantity  *int   `json:"quantity"`
+	Priority  string `json:"priority"`
 }
 
 // WorkReleasedRelocation is WorkReleased.data.relocation (ADR 0047): one
@@ -409,18 +429,45 @@ func requestOf(env workReleased) (usecases.WorkReleasedRequest, error) {
 	if err != nil {
 		return usecases.WorkReleasedRequest{}, err
 	}
+	replenishment, err := replenishmentMoveOf(env.Data)
+	if err != nil {
+		return usecases.WorkReleasedRequest{}, err
+	}
 	return usecases.WorkReleasedRequest{
-		EventId:    env.EventId,
-		PathId:     env.Data.PathId,
-		WorkUnitId: env.Data.WorkUnitId,
-		CPT:        env.Data.CPT,
-		Ref:        env.Data.Ref,
-		LineNo:     env.Data.LineNo.Int(),
-		Fragile:    env.Data.Fragile,
-		GiftWrap:   env.Data.GiftWrap,
-		Transfer:   transfer,
-		Relocation: relocation,
+		EventId:       env.EventId,
+		PathId:        env.Data.PathId,
+		WorkUnitId:    env.Data.WorkUnitId,
+		CPT:           env.Data.CPT,
+		Ref:           env.Data.Ref,
+		LineNo:        env.Data.LineNo.Int(),
+		Fragile:       env.Data.Fragile,
+		GiftWrap:      env.Data.GiftWrap,
+		Transfer:      transfer,
+		Relocation:    relocation,
+		Replenishment: replenishment,
 	}, nil
+}
+
+// replenishmentMoveOf maps the optional WorkReleased replenishment object
+// onto a validated task.ReplenishmentMove (ADR 0050): nil when the object is
+// absent. A present object that is not a valid move (a blank request_id,
+// sku or bin, a missing or non-positive quantity, equal bins, a priority
+// other than NORMAL or URGENT) is a hard error wrapping
+// task.ErrInvalidReplenishmentMove or task.ErrUnknownReplenishmentPriority
+// — never a silent default.
+func replenishmentMoveOf(d WorkReleasedData) (*task.ReplenishmentMove, error) {
+	r := d.Replenishment
+	if r == nil {
+		return nil, nil
+	}
+	if r.Quantity == nil {
+		return nil, fmt.Errorf("kafka: replenishment of work unit %q: %w: quantity is required", d.WorkUnitId, task.ErrInvalidReplenishmentMove)
+	}
+	move, err := task.NewReplenishmentMove(r.RequestId, r.SKU, r.FromBin, r.ToBin, *r.Quantity, r.Priority)
+	if err != nil {
+		return nil, fmt.Errorf("kafka: replenishment of work unit %q: %w", d.WorkUnitId, err)
+	}
+	return &move, nil
 }
 
 // relocationMoveOf maps the optional WorkReleased relocation object onto a

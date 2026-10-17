@@ -35,3 +35,13 @@ var ErrRelocationMoveMissing = errors.New("usecases: RELOCATE work released with
 // ErrRelocationMoveOnOtherPath is returned by ApplyWorkReleased when a
 // relocation move arrives on a path other than RELOCATE (ADR 0047).
 var ErrRelocationMoveOnOtherPath = errors.New("usecases: relocation move released on a non-RELOCATE path")
+
+// ErrReplenishmentMoveMissing is returned by ApplyWorkReleased when work
+// released on the REPLENISH path carries no replenishment move (ADR 0050):
+// the task could never be completed into a usable TaskCompleted, so the
+// release is rejected (and dead-lettered by the consumer).
+var ErrReplenishmentMoveMissing = errors.New("usecases: REPLENISH work released without a replenishment move")
+
+// ErrReplenishmentMoveOnOtherPath is returned by ApplyWorkReleased when a
+// replenishment move arrives on a path other than REPLENISH (ADR 0050).
+var ErrReplenishmentMoveOnOtherPath = errors.New("usecases: replenishment move released on a non-REPLENISH path")

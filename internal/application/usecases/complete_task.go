@@ -30,18 +30,22 @@ type CompleteTask struct {
 	UnitOfWork ports.UnitOfWork
 }
 
-// Execute completes taskId on behalf of stationId, with no relocation
-// inputs. A RELOCATE task is rejected (task.ErrRelocationConfirmationRequired):
-// it completes only through ExecuteWith.
+// Execute completes taskId on behalf of stationId, with no confirmation
+// inputs. A RELOCATE or REPLENISH task is rejected
+// (task.ErrRelocationConfirmationRequired,
+// task.ErrReplenishmentConfirmationRequired): it completes only through
+// ExecuteWith.
 func (uc *CompleteTask) Execute(ctx context.Context, taskId shared.TaskId, stationId shared.StationId) error {
 	return uc.ExecuteWith(ctx, taskId, stationId, task.RelocationConfirmation{})
 }
 
 // ExecuteWith completes taskId on behalf of stationId with the operator's
-// relocation inputs (ADR 0047). For a RELOCATE task they are required: the
-// confirmed quantity (>= 1) and the bins the move left open; the completion
-// publishes the executed move on TaskCompleted. For any other task they
-// must be empty (task.ErrNotRelocationTask otherwise).
+// confirmation inputs (ADR 0047 for RELOCATE, ADR 0050 for REPLENISH). For a
+// RELOCATE task they are required: the confirmed quantity (>= 1) and the
+// bins the move left open. For a REPLENISH task the confirmed quantity is
+// required and the bins are optional scans that must equal the planned
+// ones. The completion publishes the executed move on TaskCompleted. For any
+// other task the inputs must be empty (task.ErrNotRelocationTask otherwise).
 func (uc *CompleteTask) ExecuteWith(ctx context.Context, taskId shared.TaskId, stationId shared.StationId, in task.RelocationConfirmation) error {
 	t, err := uc.Tasks.FindById(ctx, taskId)
 	if err != nil {
@@ -72,24 +76,33 @@ func (uc *CompleteTask) ExecuteWith(ctx context.Context, taskId shared.TaskId, s
 	return nil
 }
 
-// completeAggregate routes the completion: a RELOCATE task takes the
-// confirmation, any other task takes none.
+// completeAggregate routes the completion: a RELOCATE or REPLENISH task
+// takes the confirmation, any other task takes none.
 func completeAggregate(t *task.Task, stationId shared.StationId, now time.Time, in task.RelocationConfirmation) error {
 	if t.Type() == task.Relocate && in.HasInput() {
 		return t.CompleteRelocation(stationId, now, in)
 	}
-	if t.Type() != task.Relocate && in.HasInput() {
+	if t.Type() == task.Replenish && in.HasInput() {
+		return t.CompleteReplenishment(stationId, now, in)
+	}
+	if t.Type() != task.Relocate && t.Type() != task.Replenish && in.HasInput() {
 		return task.ErrNotRelocationTask
 	}
-	// No inputs: a RELOCATE task is rejected by Complete itself
-	// (ErrRelocationConfirmationRequired, after the claim rules).
+	// No inputs: a RELOCATE or REPLENISH task is rejected by Complete itself
+	// (ErrRelocationConfirmationRequired / ErrReplenishmentConfirmationRequired,
+	// after the claim rules).
 	return t.Complete(stationId, now)
 }
 
 // taskCompletedFor builds the TaskCompleted of a just-completed task: a
 // RELOCATE task's carries the executed move (SKU from the plan, the bins
-// and quantity from the confirmation, ref "<plan_id>:<move_seq>").
+// and quantity from the confirmation, ref "<plan_id>:<move_seq>"), a
+// REPLENISH task's the executed replenishment (SKU from the plan, the bins
+// and quantity from the confirmation, request_ref = the request id).
 func taskCompletedFor(t *task.Task, stationId shared.StationId, now time.Time) shared.TaskCompleted {
+	if ev, ok := replenishmentCompletedFor(t, stationId, now); ok {
+		return ev
+	}
 	move, result := t.Relocation(), t.RelocationResult()
 	if move == nil || result == nil {
 		return shared.NewTaskCompleted(t.Id(), stationId, now)
@@ -101,6 +114,22 @@ func taskCompletedFor(t *task.Task, stationId shared.StationId, now time.Time) s
 		Quantity: result.Quantity,
 		Ref:      move.Ref(),
 	})
+}
+
+// replenishmentCompletedFor builds the TaskCompleted of a just-completed
+// REPLENISH task; ok is false for any other task.
+func replenishmentCompletedFor(t *task.Task, stationId shared.StationId, now time.Time) (shared.TaskCompleted, bool) {
+	move, result := t.Replenishment(), t.ReplenishmentResult()
+	if move == nil || result == nil {
+		return shared.TaskCompleted{}, false
+	}
+	return shared.NewReplenishmentTaskCompleted(t.Id(), stationId, now, shared.TaskReplenishment{
+		SKU:        move.SKU,
+		FromBin:    result.FromBin,
+		ToBin:      result.ToBin,
+		Quantity:   result.Quantity,
+		RequestRef: move.Ref(),
+	}), true
 }
 
 // transferFactFor maps a just-completed task's transfer correlation block

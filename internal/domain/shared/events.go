@@ -66,12 +66,29 @@ func NewLeaseExpired(id TaskId, at time.Time) LeaseExpired {
 // TaskCompleted is raised when a station finishes a claimed task.
 // Relocation is set only when a RELOCATE task completes (ADR 0047): the
 // executed slot-plan move, published as TaskCompleted's additive sku,
-// from_bin, to_bin, quantity and relocation_ref fields.
+// from_bin, to_bin, quantity and relocation_ref fields. Replenishment is
+// set only when a REPLENISH task completes (ADR 0050): the executed
+// replenishment move, published as the same sku, from_bin, to_bin and
+// quantity fields plus the additive request_ref. At most one of the two is
+// set.
 type TaskCompleted struct {
 	base
-	TaskId     TaskId
-	StationId  StationId
-	Relocation *TaskRelocation
+	TaskId        TaskId
+	StationId     StationId
+	Relocation    *TaskRelocation
+	Replenishment *TaskReplenishment
+}
+
+// TaskReplenishment is the executed move a REPLENISH task's TaskCompleted
+// carries: the SKU, the actual source and destination bins, the
+// operator-confirmed quantity and the request reference (the replenishment
+// request id).
+type TaskReplenishment struct {
+	SKU        string
+	FromBin    string
+	ToBin      string
+	Quantity   int
+	RequestRef string
 }
 
 // TaskRelocation is the executed move a RELOCATE task's TaskCompleted
@@ -94,6 +111,14 @@ func NewTaskCompleted(id TaskId, station StationId, at time.Time) TaskCompleted 
 func NewRelocationTaskCompleted(id TaskId, station StationId, at time.Time, r TaskRelocation) TaskCompleted {
 	e := NewTaskCompleted(id, station, at)
 	e.Relocation = &r
+	return e
+}
+
+// NewReplenishmentTaskCompleted is NewTaskCompleted for a REPLENISH task: it
+// carries the executed move (a copy of r).
+func NewReplenishmentTaskCompleted(id TaskId, station StationId, at time.Time, r TaskReplenishment) TaskCompleted {
+	e := NewTaskCompleted(id, station, at)
+	e.Replenishment = &r
 	return e
 }
 

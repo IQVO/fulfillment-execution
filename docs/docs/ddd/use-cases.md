@@ -18,10 +18,10 @@ One file each in `internal/application/usecases/`.
 
 | # | Use case | Signature (abridged) | Raises | Endpoint |
 | --- | --- | --- | --- | --- |
-| 1 | `CreateTask` | `Execute(ctx, taskType, cpt, orderRef, required, fragile, giftWrap) (*Task, error)`; `ExecuteRelocation(ctx, cpt, orderRef, required, RelocationMove)` for RELOCATE work | `TaskCreated` | `POST /tasks` (behind the `Idempotency-Key` middleware when Postgres is wired, ADR-0028; RELOCATE is not creatable there); also the `WorkReleased` consumer and `ArriveAtRebin` |
+| 1 | `CreateTask` | `Execute(ctx, taskType, cpt, orderRef, required, fragile, giftWrap) (*Task, error)`; `ExecuteRelocation(ctx, cpt, orderRef, required, RelocationMove)` for RELOCATE work; `ExecuteReplenishment(ctx, cpt, orderRef, required, ReplenishmentMove)` for REPLENISH work ([ADR-0050](../adr/0050-replenish-tasks-execute-pick-face-replenishment.md)) | `TaskCreated` | `POST /tasks` (behind the `Idempotency-Key` middleware when Postgres is wired, ADR-0028; RELOCATE and REPLENISH are not creatable there); also the `WorkReleased` consumer and `ArriveAtRebin` |
 | 2 | `ClaimNext` | `Execute(ctx, stationId, taskType) (*Task, error)` | `TaskClaimed` | `POST /stations/{stationId}/claim-next` |
 | 3 | `RenewLease` | `Execute(ctx, taskId, stationId) error` | — | `POST /tasks/{id}/renew-lease` |
-| 4 | `CompleteTask` | `Execute(ctx, taskId, stationId) error`; `ExecuteWith(ctx, taskId, stationId, RelocationConfirmation) error` for a RELOCATE task ([ADR-0047](../adr/0047-relocate-tasks-execute-slot-plan-moves.md)) | `TaskCompleted` (a RELOCATE task's carries the executed move: `sku`, `from_bin`, `to_bin`, `quantity`, `relocation_ref`) | `POST /tasks/{id}/complete` (optional `quantity`, `fromBin`, `toBin`); MCP `complete_task` (same optional inputs) |
+| 4 | `CompleteTask` | `Execute(ctx, taskId, stationId) error`; `ExecuteWith(ctx, taskId, stationId, RelocationConfirmation) error` for a RELOCATE task ([ADR-0047](../adr/0047-relocate-tasks-execute-slot-plan-moves.md)) or a REPLENISH task ([ADR-0050](../adr/0050-replenish-tasks-execute-pick-face-replenishment.md)) | `TaskCompleted` (a RELOCATE task's carries the executed move: `sku`, `from_bin`, `to_bin`, `quantity`, `relocation_ref`; a REPLENISH task's the same with `request_ref`) | `POST /tasks/{id}/complete` (optional `quantity`, `fromBin`, `toBin`); MCP `complete_task` (same optional inputs) |
 | 5 | `SealPackage` | `Execute(ctx, taskId, stationId, contents) (*Package, error)` | `PackageSealed` | `POST /tasks/{id}/seal-package` |
 | 6 | `RunSlam` | `Execute(ctx, packageId, actualWeight, expectedWeight) error` | `LabelApplied` + `PackageManifested` **or** `WeightDiscrepancyDetected` + `PackageDiverted` | `POST /packages/{id}/slam` |
 | 7 | `GetQueueDepth` | `Execute(ctx, taskType) (int, error)` | — | `GET /queues/{taskType}/depth`; MCP `get_queue_status` and the `queue://fulfillment/...` resources |
@@ -35,7 +35,7 @@ One file each in `internal/application/usecases/`.
 | 15 | `ArriveAtRebin` | `Execute(ctx, orderRef, lineId, requiredLineIds, packCPT, packRequired, packFragile, packGiftWrap) error` | `ItemArrivedAtRebin`; on completion also `TaskCreated` (via `CreateTask`) + `OrderConsolidated` | `POST /rebin/arrivals` |
 | 16 | `GetPackage` | `Execute(ctx, packageId) (*Package, error)` | — | `GET /packages/{id}` ([ADR-0033](../adr/0033-package-read-model.md)) |
 | 17 | `GetPackagesByOrderRef` | `Execute(ctx, orderRef) ([]*Package, error)` | — | `GET /packages?orderRef=` ([ADR-0033](../adr/0033-package-read-model.md)) |
-| 18 | `ApplyWorkReleased` | `Execute(ctx, WorkReleasedRequest) error` | `TaskCreated` (via `CreateTask`, once per CloudEvents `id`) | Kafka `WorkReleased` on `warehouse.work-planning.events`. Claims the event id in `processed_events`, resolves `path_id` through the catalogue (unknown path = error, retried then dead-lettered), saves the task, all in ONE `UnitOfWork` ([ADR-0036](../adr/0036-transfer-task-types-and-facts.md)). RELOCATE-path work must carry `data.relocation` and nothing else may; a violation is `ErrRelocationMoveMissing` / `ErrRelocationMoveOnOtherPath` ([ADR-0047](../adr/0047-relocate-tasks-execute-slot-plan-moves.md)) |
+| 18 | `ApplyWorkReleased` | `Execute(ctx, WorkReleasedRequest) error` | `TaskCreated` (via `CreateTask`, once per CloudEvents `id`) | Kafka `WorkReleased` on `warehouse.work-planning.events`. Claims the event id in `processed_events`, resolves `path_id` through the catalogue (unknown path = error, retried then dead-lettered), saves the task, all in ONE `UnitOfWork` ([ADR-0036](../adr/0036-transfer-task-types-and-facts.md)). RELOCATE-path work must carry `data.relocation` and nothing else may; a violation is `ErrRelocationMoveMissing` / `ErrRelocationMoveOnOtherPath` ([ADR-0047](../adr/0047-relocate-tasks-execute-slot-plan-moves.md)); REPLENISH-path work must carry `data.replenishment` and nothing else may, a violation is `ErrReplenishmentMoveMissing` / `ErrReplenishmentMoveOnOtherPath` ([ADR-0050](../adr/0050-replenish-tasks-execute-pick-face-replenishment.md)) |
 | 19 | `ApplyProductClassified` | `Execute(ctx, ProductClassifiedRequest) error` | — | Kafka `ProductClassified` on `warehouse.product-master.events`, only with `PRODUCT_CLASSIFICATION_MODE=kafka`. Claims the event id and runs the version-guarded `UpsertIfNewer` into `product_classification_copy` in ONE `UnitOfWork` ([ADR-0039](../adr/0039-product-classification-local-copy.md)) |
 
 Source: `internal/application/usecases/` (one file per use case;
@@ -193,6 +193,22 @@ that move, and the Kafka encoder publishes it as the additive `sku`,
 `Execute` (no inputs) on a RELOCATE task returns
 `ErrRelocationConfirmationRequired`. Inputs on any other task return
 `ErrNotRelocationTask`. Both are `422`, and nothing is saved or published.
+
+### `CompleteTask` on a REPLENISH task — the operator confirms the count
+
+A REPLENISH task executes one pick-face replenishment request
+([ADR-0050](../adr/0050-replenish-tasks-execute-pick-face-replenishment.md)).
+It completes through the same `ExecuteWith` and the same
+`task.RelocationConfirmation` shape (aliased as `task.ReplenishmentConfirmation`),
+but both bins are planned: the counted `Quantity` (at least 1) is required and a
+scanned bin is optional and must equal the planned one. `Task.CompleteReplenishment`
+records the executed move and the `TaskCompleted` built for it
+(`shared.NewReplenishmentTaskCompleted`) is published with the additive `sku`,
+`from_bin`, `to_bin`, `quantity` and `request_ref` fields. `Execute` (no inputs)
+on a REPLENISH task returns `ErrReplenishmentConfirmationRequired`; a bad
+quantity or a scan that differs from the plan returns
+`ErrInvalidReplenishmentConfirmation`. Both are `422`, and nothing is saved or
+published.
 
 ## The outbound ports
 

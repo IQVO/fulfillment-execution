@@ -37,7 +37,7 @@ repository consumes `warehouse.fulfillment.analytics`.
 | --- | --- | --- | --- |
 | wes-work-planning | Kafka `warehouse.fulfillment.events` | `TaskCompleted` (`work_unit_id`) to record completion of the work unit | `internal/adapters/inbound/kafka/consumer.go`, `usecases/apply_task_completed.go` |
 | labor-performance | Kafka `warehouse.fulfillment.events`, group `KAFKA_CONSUMER_GROUP` (default `labor-performance`) | `TaskCompleted` (`associate_id`, `duration_seconds`, `task_type`) | `internal/adapters/inbound/kafka/consumer.go`, `cmd/labor/main.go` |
-| inventory-storage | Kafka `warehouse.fulfillment.events`, group `inventory-storage-confirm-pick` | `TaskCompleted` of PICK tasks, counted per order to confirm picked reservations; `TaskCompleted` of RELOCATE tasks (`sku`, `from_bin`, `to_bin`, `quantity`, `relocation_ref`) applied as a RelocateStock (its ADR 0039) | `internal/adapters/inbound/kafka/task_completed_consumer.go` |
+| inventory-storage | Kafka `warehouse.fulfillment.events`, group `inventory-storage-confirm-pick` | `TaskCompleted` of PICK tasks, counted per order to confirm picked reservations; `TaskCompleted` of RELOCATE tasks (`sku`, `from_bin`, `to_bin`, `quantity`, `relocation_ref`) applied as a RelocateStock (its ADR 0039); `TaskCompleted` of REPLENISH tasks (`sku`, `from_bin`, `to_bin`, `quantity`, `request_ref`) applied as a RelocateStock with reason REPLENISHMENT (its ADR 0041) | `internal/adapters/inbound/kafka/task_completed_consumer.go` |
 | order-management | Kafka `warehouse.fulfillment.events`, group `order-management-repromise` | `TaskCPTMissed` and `PackageManifested` (re-promise loop) | `internal/adapters/inbound/kafka/repromise_consumer.go` |
 | network-inventory-planning | Kafka `warehouse.fulfillment.events` | `TransferPicked`, `TransferDispatched`, `TransferArrived` (transfer saga) | `internal/adapters/inbound/kafka/transfer_fact_consumer.go` |
 | workforce-management | REST `GET /capacity/{capability}` behind a circuit breaker, base URL `FULFILLMENT_EXECUTION_BASE_URL`, `INSTALLED_CAPACITY_MODE` | installed station count when committing a shift plan | `internal/adapters/outbound/fulfillmentexecution/client.go`, `cmd/workforce/main.go` |
@@ -155,6 +155,7 @@ the task's line stays unknown and is never guessed from the work unit id.
 | `data.line_no` | `Task.SourceLineNo` | direct; republished as `line_no` on `TaskCompleted` |
 | `data.ref` | — | decoded; becomes `demand_id` on a transfer fact |
 | `data.relocation` | `Task.Relocation` (`task.RelocationMove`) | RELOCATE path only, validated by `task.NewRelocationMove`; see below |
+| `data.replenishment` | `Task.Replenishment` (`task.ReplenishmentMove`) | REPLENISH path only, validated by `task.NewReplenishmentMove`; see below |
 
 The consumer then calls the **existing** `CreateTask` use case. No new use
 case was introduced for the Kafka path — creating a task from released work
@@ -255,6 +256,36 @@ object that is not a valid move is dead-lettered and creates no task. RELOCATE
 work keeps no source order or line (`order_ref` / `line_no` are never
 published for it).
 
+### REPLENISH work: `data.replenishment`
+
+Work released on the `REPLENISH` process path is one pick-face replenishment
+request (pick-face-replenishment, planned by wes-work-planning). It carries one
+nested object next to `relocation`; the full contract is in
+[ADR-0050](../adr/0050-replenish-tasks-execute-pick-face-replenishment.md):
+
+```json
+"data": {
+  "path_id": "REPLENISH",
+  "work_unit_id": "replenish-req-9",
+  "cpt": "2026-09-30T16:00:00Z",
+  "ref": "req-9",
+  "replenishment": {"request_id": "req-9", "sku": "SKU-1", "from_bin": "WH1-RSV-AMB-B02-03-02-C",
+                    "to_bin": "WH1-FWD-AMB-A01-01-01-A", "quantity": 24, "priority": "URGENT"}
+}
+```
+
+| field | rule |
+| --- | --- |
+| `request_id` | required, non-blank, at most 200 characters |
+| `sku` | required, non-blank |
+| `from_bin`, `to_bin` | required, non-blank, different |
+| `quantity` | required integer `>= 1` (an absent value is rejected) |
+| `priority` | required, exactly `NORMAL` or `URGENT` |
+
+A REPLENISH release without the object, the object on another path (the
+RELOCATE path included), a `relocation` object on the REPLENISH path, or an object
+that is not a valid move is dead-lettered and creates no task.
+
 ## Outbound: transfer facts (`TransferPicked` / `TransferDispatched` / `TransferArrived`)
 
 When a task carrying a transfer correlation block completes, exactly ONE
@@ -343,6 +374,28 @@ the side the move left open. `quantity` is the operator-confirmed count.
 `relocation_ref` is `<plan_id>:<move_seq>`. The names and JSON types are
 pinned by a golden test and by a round trip through inventory-storage's own
 struct shape (`internal/adapters/outbound/kafka/relocation_wire_test.go`).
+
+A REPLENISH task's `TaskCompleted` carries `sku`, `from_bin`, `to_bin` and
+`quantity` as above plus the additive `request_ref`, the replenishment request
+id ([ADR-0050](../adr/0050-replenish-tasks-execute-pick-face-replenishment.md));
+`relocation_ref`, `order_ref` and `line_no` are absent, and `request_ref` is
+omitted on every other task:
+
+```json
+"data": {
+  "task_id": "task-rep-1", "station_id": "station-07", "work_unit_id": "replenish-req-9",
+  "duration_seconds": 90, "task_type": "REPLENISH",
+  "sku": "SKU-1", "from_bin": "WH1-RSV-AMB-B02-03-02-C", "to_bin": "WH1-FWD-AMB-A01-01-01-A",
+  "quantity": 20, "request_ref": "req-9"
+}
+```
+
+`quantity` is the operator-confirmed count (it may be below the planned
+quantity). inventory-storage applies it as a RelocateStock with reason
+`REPLENISHMENT` and `source_ref` = `request_ref` (its ADR 0041). The names and
+types are pinned by a golden test and by a decode through a field-for-field copy
+of inventory-storage's decoder and required-field rules
+(`internal/adapters/outbound/kafka/replenishment_wire_test.go`).
 
 Message key (and CloudEvents `subject`): the task id, so all events for one
 task land on the same partition and preserve order. The `id` is a UUID v4

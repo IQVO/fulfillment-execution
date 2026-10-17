@@ -37,14 +37,18 @@ package run through `main_integration_test.go`:
   compare-and-set race, the consolidation race, the outbox and relay, pool
   limits and `statement_timeout`, rehydration validation, source order and
   line number, transfer details, the RELOCATE move and its executed result
-  (`task_relocation_integration_test.go`, migration 0019).
+  (`task_relocation_integration_test.go`, migration 0019) and the REPLENISH move
+  and its executed result (`task_replenishment_integration_test.go`, migration
+  0020, with its down).
 - `internal/adapters/inbound/http`: the `Idempotency-Key` middleware against
   a real transaction.
 - `internal/adapters/inbound/kafka`: the DLQ, the `ProductClassified`
   consumer, `line_no` bounds, transfer facts end to end (Kafka + Postgres),
   and a RELOCATE release completed into a `TaskCompleted` with the
   relocation fields end to end (`relocation_integration_test.go`,
-  ADR-0047).
+  ADR-0047), and a REPLENISH release completed into a `TaskCompleted` with
+  `request_ref` end to end, with the atomicity of creation and completion
+  (`replenishment_integration_test.go`, ADR-0050).
 - `internal/adapters/outbound/kafka`: hash partitioning by aggregate key and
   CloudEvents on the wire.
 - `internal/adapters/outbound/kafkacatalog`: catalogue replay against a real

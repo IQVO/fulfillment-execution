@@ -129,6 +129,28 @@ left open). Its `TaskCompleted` carries the executed move (`sku`, `from_bin`,
 its stock ledger. See
 [ADR-0047](../adr/0047-relocate-tasks-execute-slot-plan-moves.md).
 
+### Replenish — keeping a pick face stocked
+
+pick-face-replenishment watches a forward pick face and, when its stock falls
+below the minimum, asks for a replenishment: move a quantity of the SKU from a
+reserve bin to the pick face. It is floor work like a relocation, so it runs
+through the same conductor: wes-work-planning plans one REPLENISH work unit per
+request and releases it on the `REPLENISH` process path, and this service turns
+it into a `REPLENISH` task, claimable only by stations holding the `replenish`
+capability.
+
+A REPLENISH task carries the planned **move** (`request_id`, `sku`, `from_bin`,
+`to_bin`, planned `quantity`, `priority` of `NORMAL` or `URGENT`). Unlike a
+relocation, both bins are known up front, so the associate only counts and
+confirms: a REPLENISH task completes only with the counted `quantity` (the bins
+are optional scans that must match the plan). Its `TaskCompleted` carries the
+executed move (`sku`, `from_bin`, `to_bin`, `quantity`, `request_ref`), which
+inventory-storage applies to its stock ledger as a replenishment relocation. The
+task is announced to task-interleaving with both bins. `URGENT` is recorded
+and shown, but `claimNext` still orders by CPT only: an urgent request is
+expected to arrive with an earlier CPT. See
+[ADR-0050](../adr/0050-replenish-tasks-execute-pick-face-replenishment.md).
+
 ### SLAM — Scan, Label, Apply, Manifest
 
 Packages are scanned and weighed on a scale that detects expected-versus-actual

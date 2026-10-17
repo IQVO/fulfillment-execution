@@ -32,6 +32,10 @@ type WorkReleasedRequest struct {
 	// Relocation is the slot-plan move of work released on the RELOCATE
 	// path (WorkReleased.relocation, ADR 0047); nil for every other release.
 	Relocation *task.RelocationMove
+	// Replenishment is the pick-face replenishment move of work released
+	// on the REPLENISH path (WorkReleased.replenishment, ADR 0050); nil
+	// for every other release.
+	Replenishment *task.ReplenishmentMove
 }
 
 // ApplyWorkReleased applies one WorkReleased occurrence exactly once
@@ -116,28 +120,7 @@ func (uc *ApplyWorkReleased) Execute(ctx context.Context, req WorkReleasedReques
 		}
 
 		required := shared.NewCapabilitySet(capabilitiesOf(pathDef)...)
-		orderRef := shared.OrderRef(req.WorkUnitId)
-		taskType := task.Type(pathDef.Id)
-		if err := checkRelocation(taskType, req); err != nil {
-			return err
-		}
-		if req.Relocation != nil {
-			// Relocation work is not order work: no source order or line.
-			_, err = uc.CreateTask.ExecuteRelocation(ctx, shared.NewCPT(req.CPT), orderRef, required, *req.Relocation)
-			return err
-		}
-		// The release ref is the ORDER id only for order-originated work;
-		// for transfer work it is a demand id, so nothing is stamped.
-		sourceOrderId := req.Ref
-		// line_no is likewise order-only and explicit: never parsed from
-		// the "<order>-line-<n>" work unit id (decision 18, ADR 0041).
-		sourceLineNo := uc.boundedLineNo(ctx, req)
-		if req.Transfer != nil {
-			sourceOrderId = ""
-			sourceLineNo = 0
-		}
-		_, err = uc.CreateTask.ExecuteRelease(ctx, taskType, shared.NewCPT(req.CPT), orderRef, required, req.Fragile, req.GiftWrap, sourceOrderId, sourceLineNo, req.Transfer)
-		return err
+		return uc.createTask(ctx, req, task.Type(pathDef.Id), shared.OrderRef(req.WorkUnitId), required)
 	})
 	if err == nil {
 		return nil
@@ -156,6 +139,42 @@ func (uc *ApplyWorkReleased) Execute(ctx context.Context, req WorkReleasedReques
 	return err
 }
 
+// createTask creates the task a release stands for, after the path's pairing
+// rules (ADR 0047, ADR 0050) hold: RELOCATE work carries its slot-plan move,
+// REPLENISH work its replenishment move, and every other release is order
+// or transfer work.
+func (uc *ApplyWorkReleased) createTask(ctx context.Context, req WorkReleasedRequest, taskType task.Type, orderRef shared.OrderRef, required shared.CapabilitySet) error {
+	if err := checkRelocation(taskType, req); err != nil {
+		return err
+	}
+	if err := checkReplenishment(taskType, req); err != nil {
+		return err
+	}
+	cpt := shared.NewCPT(req.CPT)
+	if req.Relocation != nil {
+		// Relocation work is not order work: no source order or line.
+		_, err := uc.CreateTask.ExecuteRelocation(ctx, cpt, orderRef, required, *req.Relocation)
+		return err
+	}
+	if req.Replenishment != nil {
+		// Replenishment work is neither order nor transfer work.
+		_, err := uc.CreateTask.ExecuteReplenishment(ctx, cpt, orderRef, required, *req.Replenishment)
+		return err
+	}
+	// The release ref is the ORDER id only for order-originated work;
+	// for transfer work it is a demand id, so nothing is stamped.
+	sourceOrderId := req.Ref
+	// line_no is likewise order-only and explicit: never parsed from
+	// the "<order>-line-<n>" work unit id (decision 18, ADR 0041).
+	sourceLineNo := uc.boundedLineNo(ctx, req)
+	if req.Transfer != nil {
+		sourceOrderId = ""
+		sourceLineNo = 0
+	}
+	_, err := uc.CreateTask.ExecuteRelease(ctx, taskType, cpt, orderRef, required, req.Fragile, req.GiftWrap, sourceOrderId, sourceLineNo, req.Transfer)
+	return err
+}
+
 // checkRelocation enforces ADR 0047's pairing: work on the RELOCATE path
 // must carry a relocation move (its completion publishes the move), and a
 // move is accepted only on the RELOCATE path. Both violations are
@@ -166,6 +185,22 @@ func checkRelocation(taskType task.Type, req WorkReleasedRequest) error {
 	}
 	if taskType != task.Relocate && req.Relocation != nil {
 		return fmt.Errorf("%w: path %s (event %s)", ErrRelocationMoveOnOtherPath, taskType, req.EventId)
+	}
+	return nil
+}
+
+// checkReplenishment enforces ADR 0050's pairing, the same rule as
+// checkRelocation: work on the REPLENISH path must carry a replenishment
+// move, and a replenishment move is accepted only on the REPLENISH path. A
+// relocation move on the REPLENISH path is rejected by checkRelocation (a
+// relocation is accepted only on the RELOCATE path), and a replenishment on
+// the RELOCATE path is rejected here. Both violations are deterministic.
+func checkReplenishment(taskType task.Type, req WorkReleasedRequest) error {
+	if taskType == task.Replenish && req.Replenishment == nil {
+		return fmt.Errorf("%w (event %s)", ErrReplenishmentMoveMissing, req.EventId)
+	}
+	if taskType != task.Replenish && req.Replenishment != nil {
+		return fmt.Errorf("%w: path %s (event %s)", ErrReplenishmentMoveOnOtherPath, taskType, req.EventId)
 	}
 	return nil
 }

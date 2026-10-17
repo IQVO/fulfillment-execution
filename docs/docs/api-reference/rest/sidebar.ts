@@ -212,6 +212,12 @@ const sidebar: SidebarsConfig = {
         },
         {
           type: "doc",
+          id: "api-reference/rest/schemas/taskreplenishment",
+          label: "TaskReplenishment",
+          className: "schema",
+        },
+        {
+          type: "doc",
           id: "api-reference/rest/schemas/taskstatus",
           label: "TaskStatus",
           className: "schema",
