@@ -19,6 +19,7 @@ func TestDomainEvents_NameAndOccurredAt(t *testing.T) {
 	}{
 		{"TaskCreated", shared.NewTaskCreated("t1", eventNow), "TaskCreated"},
 		{"TaskClaimed", shared.NewTaskClaimed("t1", "s1", eventNow), "TaskClaimed"},
+		{"TaskAvailable", shared.NewTaskAvailable("t1", eventNow), "TaskAvailable"},
 		{"LeaseExpired", shared.NewLeaseExpired("t1", eventNow), "LeaseExpired"},
 		{"TaskCompleted", shared.NewTaskCompleted("t1", "s1", eventNow), "TaskCompleted"},
 		{"ItemPicked", shared.NewItemPicked("t1", eventNow), "ItemPicked"},

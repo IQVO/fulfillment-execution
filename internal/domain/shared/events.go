@@ -26,6 +26,21 @@ func NewTaskCreated(id TaskId, at time.Time) TaskCreated {
 	return TaskCreated{base: base{Name: "TaskCreated", At: at}, TaskId: id}
 }
 
+// TaskAvailable is raised whenever a task ENTERS or RE-ENTERS the pool
+// (ADR 0049): at creation (every path that raises TaskCreated) and when the
+// lease-expiry sweep returns a claimed task to Pending. At is the instant the
+// task became claimable (published as available_at). It carries only the task
+// id: the wire payload is resolved from the just-saved task row inside the use
+// case's transaction.
+type TaskAvailable struct {
+	base
+	TaskId TaskId
+}
+
+func NewTaskAvailable(id TaskId, at time.Time) TaskAvailable {
+	return TaskAvailable{base: base{Name: "TaskAvailable", At: at}, TaskId: id}
+}
+
 // TaskClaimed is raised when a station pulls a task from the pool.
 type TaskClaimed struct {
 	base

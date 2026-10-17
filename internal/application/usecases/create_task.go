@@ -71,7 +71,10 @@ func (uc *CreateTask) save(ctx context.Context, t *task.Task) (*task.Task, error
 		if err := uc.Tasks.Save(ctx, t); err != nil {
 			return err
 		}
-		return uc.Publisher.Publish(ctx, shared.NewTaskCreated(t.Id(), uc.Clock.Now()))
+		now := uc.Clock.Now()
+		// The task entered the pool: TaskCreated (analytics) and TaskAvailable
+		// (integration, ADR 0049) in the same transaction as the Save.
+		return uc.Publisher.Publish(ctx, shared.NewTaskCreated(t.Id(), now), shared.NewTaskAvailable(t.Id(), now))
 	})
 	if err != nil {
 		return nil, err

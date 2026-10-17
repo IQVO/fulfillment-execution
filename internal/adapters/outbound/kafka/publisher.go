@@ -199,6 +199,10 @@ func (p *Publisher) Encode(ctx context.Context, evts ...shared.DomainEvent) ([]E
 		switch ev := e.(type) {
 		case shared.TaskCompleted:
 			encs, err = p.encodeTaskCompleted(ctx, ev)
+		case shared.TaskAvailable:
+			encs, err = p.encodeTaskAvailable(ctx, ev)
+		case shared.TaskClaimed:
+			encs, err = p.encodeTaskClaimed(ctx, ev)
 		case shared.TaskCPTMissed:
 			encs, err = p.encodeTaskCPTMissed(ev)
 		case shared.PackageManifested:
@@ -389,6 +393,7 @@ func (p *Publisher) Publish(ctx context.Context, evts ...shared.DomainEvent) err
 func inIntegrationContract(e shared.DomainEvent) bool {
 	switch e.(type) {
 	case shared.TaskCompleted, shared.TaskCPTMissed, shared.PackageManifested,
+		shared.TaskAvailable, shared.TaskClaimed,
 		shared.TransferPicked, shared.TransferDispatched, shared.TransferArrived:
 		return true
 	default:

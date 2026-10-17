@@ -254,12 +254,15 @@ func TestOutboxRelay_PublishesInOrderAndMarksRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("relay: %v", err)
 	}
-	// integration: TaskCompleted; analytics: TaskCreated, TaskClaimed, TaskCompleted.
-	if n != 4 || len(sink.sent) != 4 {
-		t.Fatalf("expected 4 published, got n=%d sent=%d", n, len(sink.sent))
+	// integration: TaskClaimed, TaskCompleted (TaskAvailable is not raised on
+	// the wire for a PICK task: it has no location, ADR 0049); analytics:
+	// TaskCreated, TaskClaimed, TaskCompleted.
+	if n != 5 || len(sink.sent) != 5 {
+		t.Fatalf("expected 5 published, got n=%d sent=%d", n, len(sink.sent))
 	}
 	want := []struct{ topic, eventType string }{
 		{outboundkafka.AnalyticsTopic, "com.warehouse.wes.fulfillment-execution.task.TaskCreated"},
+		{outboundkafka.Topic, "com.warehouse.wes.fulfillment-execution.task.TaskClaimed"},
 		{outboundkafka.AnalyticsTopic, "com.warehouse.wes.fulfillment-execution.task.TaskClaimed"},
 		{outboundkafka.Topic, "com.warehouse.wes.fulfillment-execution.task.TaskCompleted"},
 		{outboundkafka.AnalyticsTopic, "com.warehouse.wes.fulfillment-execution.task.TaskCompleted"},
@@ -273,8 +276,8 @@ func TestOutboxRelay_PublishesInOrderAndMarksRows(t *testing.T) {
 	if got := countOutbox(t, s.pool, "published_at IS NULL"); got != 0 {
 		t.Fatalf("expected every row marked published, %d still pending", got)
 	}
-	if got := countOutbox(t, s.pool, "attempts = 1 AND last_error IS NULL"); got != 4 {
-		t.Fatalf("expected 4 rows with attempts=1 and no error, got %d", got)
+	if got := countOutbox(t, s.pool, "attempts = 1 AND last_error IS NULL"); got != 5 {
+		t.Fatalf("expected 5 rows with attempts=1 and no error, got %d", got)
 	}
 	// Every relayed message is a valid CloudEvents 1.0 event carrying the
 	// structured-mode content-type header, and its `id` is the one minted
@@ -303,7 +306,7 @@ func TestOutboxRelay_PublishesInOrderAndMarksRows(t *testing.T) {
 		}
 	}
 	n, err = relay.RelayOnce(ctx)
-	if err != nil || n != 0 || len(sink.sent) != 4 {
+	if err != nil || n != 0 || len(sink.sent) != 5 {
 		t.Fatalf("second pass should be a no-op, got n=%d err=%v sent=%d", n, err, len(sink.sent))
 	}
 }
