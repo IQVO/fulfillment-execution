@@ -148,7 +148,11 @@ components:
         confirm that line's reservation, ADR-0041). A RELOCATE task's TaskCompleted also carries the
         executed slot-plan move in the additive fields `sku`, `from_bin`, `to_bin`, `quantity` and
         `relocation_ref` (ADR-0047), which inventory-storage applies to its ledger as a RelocateStock
-        (its ADR 0039); they are omitted on every other task type. Consumed by wes-work-planning,
+        (its ADR 0039); they are omitted on every other task type. A REPLENISH task's TaskCompleted
+        (ADR-0050) carries the same `sku`, `from_bin`, `to_bin` and `quantity` plus the additive
+        `request_ref` (the replenishment request id) instead of `relocation_ref`; inventory-storage
+        applies it as a RelocateStock with reason REPLENISHMENT (its ADR 0041), `source_ref` =
+        `request_ref`. Consumed by wes-work-planning,
         labor-performance and inventory-storage.
       contentType: application/cloudevents+json
       tags:
@@ -209,6 +213,7 @@ components:
                   - DISPATCH
                   - ARRIVAL
                   - RELOCATE
+                  - REPLENISH
                   description: The completed task's own type; omitted only when the task can no longer
                     be found.
                 order_ref:
@@ -230,26 +235,27 @@ components:
                 sku:
                   type: string
                   minLength: 1
-                  description: RELOCATE only (ADR-0047; additive, the event stays v1). The SKU the
-                    executed slot-plan move relocated, from WorkReleased.data.relocation.sku. Omitted on
-                    every other task type.
+                  description: RELOCATE and REPLENISH only (ADR-0047, ADR-0050; additive, the event stays
+                    v1). The SKU the executed move relocated, from WorkReleased.data.relocation.sku /
+                    WorkReleased.data.replenishment.sku. Omitted on every other task type.
                 from_bin:
                   type: string
                   minLength: 1
-                  description: RELOCATE only. The bin the stock left - the planned from_bin, or for an
-                    Assign move the bin the operator scanned at completion.
+                  description: RELOCATE and REPLENISH only. The bin the stock left - the planned from_bin,
+                    or for a RELOCATE Assign move the bin the operator scanned at completion.
                 to_bin:
                   type: string
                   minLength: 1
-                  description: RELOCATE only. The bin the stock went to - the planned to_bin, or for a
-                    Vacate move the reserve bin the operator scanned at completion. Always different
-                    from from_bin.
+                  description: RELOCATE and REPLENISH only. The bin the stock went to - the planned to_bin,
+                    or for a RELOCATE Vacate move the reserve bin the operator scanned at completion.
+                    Always different from from_bin.
                 quantity:
                   type: integer
                   format: int32
                   minimum: 1
-                  description: RELOCATE only. The units the operator counted and confirmed at completion
-                    (v1 moves the whole on-hand quantity of the SKU at from_bin).
+                  description: RELOCATE and REPLENISH only. The units the operator counted and confirmed
+                    at completion (RELOCATE v1 moves the whole on-hand quantity of the SKU at from_bin; for
+                    REPLENISH it is the confirmed count, which may differ from the planned quantity).
                 relocation_ref:
                   type: string
                   minLength: 3
@@ -257,6 +263,15 @@ components:
                   description: RELOCATE only. The move reference `<plan_id>:<move_seq>` copied from
                     WorkReleased.data.relocation; inventory-storage records it as the StockRelocated
                     source_ref, and slotting-optimization matches it back to the plan's move.
+                request_ref:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                  description: REPLENISH only (ADR-0050; additive, the event stays v1; mirrors
+                    relocation_ref). The replenishment request id copied from
+                    WorkReleased.data.replenishment.request_id; inventory-storage records it as the
+                    StockRelocated source_ref (reason REPLENISHMENT) and pick-face-replenishment closes
+                    the request by it. Omitted on every other task type.
       examples:
       - name: taskCompleted
         headers:
@@ -306,6 +321,33 @@ components:
             to_bin: RSV-2
             quantity: 12
             relocation_ref: 'plan-7:3'
+      - name: taskCompletedReplenish
+        summary: A REPLENISH task (ADR-0050) - the operator confirmed 20 of the 24 planned units; the
+          additive fields are present with request_ref (no relocation_ref) and order_ref / line_no
+          are absent.
+        headers:
+          content-type: application/cloudevents+json; charset=UTF-8
+          traceparent: 00-8812c36621d214139a08949823716b93-14ddf02dbd8913ba-01
+        payload:
+          specversion: "1.0"
+          id: 6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b
+          source: /warehouse/fulfillment-execution
+          type: com.warehouse.wes.fulfillment-execution.task.TaskCompleted
+          subject: task-rep-1
+          time: '2026-09-30T15:00:00Z'
+          datacontenttype: application/json
+          dataschema: urn:warehouse:fulfillment-execution:events:TaskCompleted:v1
+          data:
+            task_id: task-rep-1
+            station_id: station-07
+            work_unit_id: replenish-req-9
+            duration_seconds: 90
+            task_type: REPLENISH
+            sku: SKU-1
+            from_bin: WH1-RSV-AMB-B02-03-02-C
+            to_bin: WH1-FWD-AMB-A01-01-01-A
+            quantity: 20
+            request_ref: req-9
     TaskCPTMissed:
       name: TaskCPTMissed
       title: TaskCPTMissed
@@ -395,8 +437,10 @@ components:
         new `available_at`). Never raised on an idempotent replay or a rejected command. Published
         on `warehouse.fulfillment.events`, keyed by task id. Consumed by task-interleaving (its local
         copy of the open-task pool). A task whose location this service cannot determine is NOT announced
-        (the consumer rejects an event without `site_id` and `from_location`): today only RELOCATE tasks
-        carry bins, so only they are announced (ADR-0049). A PICK / PACK / SLAM / REBIN / transfer task
+        (the consumer rejects an event without `site_id` and `from_location`): today only RELOCATE and
+        REPLENISH tasks carry bins, so only they are announced (ADR-0049, ADR-0050). A REPLENISH task
+        knows both bins, so it is announced with the source bin first and the destination (pick face) bin
+        last. A PICK / PACK / SLAM / REBIN / transfer task
         has no location in this service.'
       contentType: application/cloudevents+json
       tags:
@@ -447,6 +491,7 @@ components:
                   - DISPATCH
                   - ARRIVAL
                   - RELOCATE
+                  - REPLENISH
                   description: The task's type (the process path claimNext scans).
                 site_id:
                   type: string
@@ -456,11 +501,13 @@ components:
                 from_location:
                   type: string
                   description: Where the operator must go first. RELOCATE - the source bin (for an Assign move,
-                    whose source the operator scans at completion, the destination bin).
+                    whose source the operator scans at completion, the destination bin). REPLENISH - the
+                    source (reserve) bin.
                 to_location:
                   type: string
                   description: Where the operator ends. RELOCATE - the destination bin (for a Vacate move,
-                    whose destination the operator scans at completion, the source bin).
+                    whose destination the operator scans at completion, the source bin). REPLENISH - the
+                    destination (pick face) bin.
                 required_capabilities:
                   type: array
                   description: The capabilities claimNext matches a station against, sorted; an empty array
@@ -475,7 +522,9 @@ components:
                   type: string
                   description: 'OPAQUE. Equal across exactly the tasks claimNext orders as peers (same task type
                     and same CPT instant), different for any two it orders strictly. Today `<task_type>:<cpt
-                    UTC RFC 3339>`; consumers compare for equality only and must not parse it (ADR-0049).'
+                    UTC RFC 3339>`; consumers compare for equality only and must not parse it (ADR-0049).
+                    claimNext orders by CPT only, so the NORMAL or URGENT priority of a REPLENISH task does
+                    not enter the band (ADR-0050).'
                 available_at:
                   type: string
                   format: date-time
@@ -507,6 +556,32 @@ components:
             - relocate
             cpt: '2026-09-30T16:00:00Z'
             priority_band: RELOCATE:2026-09-30T16:00:00Z
+            available_at: '2026-09-30T15:00:00Z'
+      - name: taskAvailableReplenish
+        summary: A REPLENISH task (ADR-0050) - both bins are known, so source bin first and pick face last.
+        headers:
+          content-type: application/cloudevents+json; charset=UTF-8
+          traceparent: 00-8812c36621d214139a08949823716b93-14ddf02dbd8913ba-01
+        payload:
+          specversion: "1.0"
+          id: 6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b
+          source: /warehouse/fulfillment-execution
+          type: com.warehouse.wes.fulfillment-execution.task.TaskAvailable
+          subject: task-rep-1
+          time: '2026-09-30T15:00:00Z'
+          datacontenttype: application/json
+          dataschema: urn:warehouse:fulfillment-execution:events:TaskAvailable:v1
+          data:
+            task_id: task-rep-1
+            task_type: REPLENISH
+            site_id: WH1
+            from_location: WH1-RSV-AMB-B02-03-02-C
+            to_location: WH1-FWD-AMB-A01-01-01-A
+            required_capabilities:
+            - forklift
+            - replenish
+            cpt: '2026-09-30T16:00:00Z'
+            priority_band: REPLENISH:2026-09-30T16:00:00Z
             available_at: '2026-09-30T15:00:00Z'
     TaskClaimed:
       name: TaskClaimed
@@ -562,6 +637,7 @@ components:
                   - DISPATCH
                   - ARRIVAL
                   - RELOCATE
+                  - REPLENISH
                   description: The task's type; empty only if the task row can no longer be read.
                 station_id:
                   type: string
@@ -1383,7 +1459,8 @@ components:
                   type: string
                   description: Release reference. For order-originated work this is the order id; it is kept
                     on the Task and published as TaskCompleted.order_ref (ADR-0040). For transfer work it is the demand id.
-                    For RELOCATE work it is the slot plan id and is not kept (ADR-0047).
+                    For RELOCATE work it is the slot plan id and is not kept (ADR-0047); for REPLENISH work it
+                    is the request id and is not kept either (ADR-0050).
                 line_no:
                   type: integer
                   format: int32
@@ -1475,6 +1552,56 @@ components:
                       minLength: 1
                       description: Destination bin (SlotPlanApproved move to_slot). Omitted for a Vacate
                         (the operator scans a reserve bin); if sent for a Vacate it is fixed.
+                replenishment:
+                  type: object
+                  description: Present ONLY on work released on the REPLENISH process path (ADR-0050;
+                    additive, the event stays v1). One pick-face replenishment request of
+                    pick-face-replenishment, planned by wes-work-planning. It turns the created Task into a
+                    REPLENISH task whose completion takes the operator-confirmed quantity and publishes the
+                    executed move on TaskCompleted with request_ref. A REPLENISH release without this
+                    object, this object on any other path (the RELOCATE path included), a `relocation`
+                    object on the REPLENISH path, or an object that is not a valid move (a blank request_id,
+                    sku or bin, from_bin equal to to_bin, a missing or non-positive quantity, a priority other
+                    than NORMAL or URGENT) is rejected and dead-lettered; no task is created.
+                  required:
+                  - request_id
+                  - sku
+                  - from_bin
+                  - to_bin
+                  - quantity
+                  - priority
+                  properties:
+                    request_id:
+                      type: string
+                      minLength: 1
+                      maxLength: 200
+                      description: The replenishment request id (pick-face-replenishment). Published as
+                        TaskCompleted.request_ref.
+                    sku:
+                      type: string
+                      minLength: 1
+                      description: The SKU to replenish.
+                    from_bin:
+                      type: string
+                      minLength: 1
+                      description: Source (reserve) bin.
+                    to_bin:
+                      type: string
+                      minLength: 1
+                      description: Destination bin (the pick face). Always different from from_bin.
+                    quantity:
+                      type: integer
+                      format: int32
+                      minimum: 1
+                      description: The planned units to move. The operator confirms the actual count at
+                        completion; it may differ.
+                    priority:
+                      type: string
+                      enum:
+                      - NORMAL
+                      - URGENT
+                      description: The request urgency. Recorded on the task and shown on its read model;
+                        claimNext orders by CPT only (ADR-0050), so urgency is expressed upstream by an earlier CPT.
       examples:
       - name: workReleased
         headers:
@@ -1522,6 +1649,33 @@ components:
               kind: Assign
               sku: SKU-1
               to_bin: WH1-FWD-A01-01-01-A
+      - name: workReleasedReplenish
+        summary: REPLENISH work (ADR-0050) - one pick-face replenishment request; ref is the request id and
+          the replenishment object carries the move.
+        headers:
+          content-type: application/cloudevents+json; charset=UTF-8
+          traceparent: 00-8812c36621d214139a08949823716b93-14ddf02dbd8913ba-01
+        payload:
+          specversion: "1.0"
+          id: 3c8e1f47-9a2d-4b6e-8f10-7d5a2c9e4b68
+          source: /warehouse/wes-work-planning
+          type: com.warehouse.wes.work-planning.workunit.WorkReleased
+          subject: replenish-req-9
+          time: '2026-09-30T15:00:00Z'
+          datacontenttype: application/json
+          dataschema: urn:warehouse:wes-work-planning:events:WorkReleased:v1
+          data:
+            path_id: REPLENISH
+            work_unit_id: replenish-req-9
+            cpt: '2026-09-30T16:00:00Z'
+            ref: req-9
+            replenishment:
+              request_id: req-9
+              sku: SKU-1
+              from_bin: WH1-RSV-AMB-B02-03-02-C
+              to_bin: WH1-FWD-AMB-A01-01-01-A
+              quantity: 24
+              priority: URGENT
     TransferPicked:
       name: TransferPicked
       title: TransferPicked
