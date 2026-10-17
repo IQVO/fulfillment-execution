@@ -39,7 +39,10 @@ func (uc *ExpireLeases) Execute(ctx context.Context) (int, error) {
 			if err := uc.Tasks.Save(ctx, t); err != nil {
 				return err
 			}
-			return uc.Publisher.Publish(ctx, shared.NewLeaseExpired(t.Id(), now))
+			// LeaseExpired (analytics) and TaskAvailable (integration, ADR
+			// 0049): the task re-enters the pool at `now`, in the same
+			// transaction as the Save.
+			return uc.Publisher.Publish(ctx, shared.NewLeaseExpired(t.Id(), now), shared.NewTaskAvailable(t.Id(), now))
 		})
 		if err != nil {
 			return freed, err
