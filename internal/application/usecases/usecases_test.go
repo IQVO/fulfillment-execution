@@ -60,8 +60,13 @@ func TestCreateTask_PutsTaskInPool(t *testing.T) {
 	if got == nil {
 		t.Fatalf("expected task to be persisted")
 	}
-	if len(h.publisher.Events()) != 1 || h.publisher.Events()[0].EventName() != "TaskCreated" {
-		t.Fatalf("expected a single TaskCreated event, got %+v", h.publisher.Events())
+	evs := h.publisher.Events()
+	if len(evs) != 2 || evs[0].EventName() != "TaskCreated" || evs[1].EventName() != "TaskAvailable" {
+		t.Fatalf("expected TaskCreated then TaskAvailable, got %+v", evs)
+	}
+	avail, ok := evs[1].(shared.TaskAvailable)
+	if !ok || avail.TaskId != tk.Id() || !avail.OccurredAt().Equal(epoch) {
+		t.Fatalf("TaskAvailable must name the new task at the creation instant, got %+v", evs[1])
 	}
 }
 

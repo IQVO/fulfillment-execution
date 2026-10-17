@@ -60,7 +60,8 @@ errored — that is how the two Rebin events stay in-process.
 | Event | Full CloudEvents `type` | Raised by (use case) | Domain payload | `warehouse.fulfillment.events` (integration) `data` | `warehouse.fulfillment.analytics` `data` |
 | --- | --- | --- | --- | --- | --- |
 | `TaskCreated` | `com.warehouse.wes.fulfillment-execution.task.TaskCreated` | `CreateTask` (REST `POST /tasks`, the `WorkReleased` consumer, and `ArriveAtRebin` on consolidation) | `TaskId` | — | `task_id`, `task_type` |
-| `TaskClaimed` | `com.warehouse.wes.fulfillment-execution.task.TaskClaimed` | `ClaimNext` | `TaskId`, `StationId` | — | `task_id`, `task_type`, `station_id` |
+| `TaskAvailable` | `com.warehouse.wes.fulfillment-execution.task.TaskAvailable` | `CreateTask` (every creation path, right after `TaskCreated`) and `ExpireLeases` (a freed task re-enters the pool, next to `LeaseExpired`) | `TaskId` (the payload is resolved from the task row in the same transaction) | `task_id`, `task_type`, `site_id`, `from_location`, `to_location`, `required_capabilities`, `cpt`?, `priority_band`, `available_at`; only for tasks with a determinable location (RELOCATE today) ([ADR-0049](../adr/0049-task-pool-events-task-available-and-task-claimed.md)) | — |
+| `TaskClaimed` | `com.warehouse.wes.fulfillment-execution.task.TaskClaimed` | `ClaimNext` | `TaskId`, `StationId` | `task_id`, `task_type`, `station_id`, `claimed_at` ([ADR-0049](../adr/0049-task-pool-events-task-available-and-task-claimed.md)) | `task_id`, `task_type`, `station_id` |
 | `LeaseExpired` | `com.warehouse.wes.fulfillment-execution.task.LeaseExpired` | `ExpireLeases` | `TaskId` | — | `task_id`, `task_type` |
 | `TaskCompleted` | `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` | `CompleteTask` (REST and MCP `complete_task`) | `TaskId`, `StationId` | `task_id`, `station_id`, `work_unit_id`, `associate_id`?, `duration_seconds`?, `task_type`?, `order_ref`? ([ADR-0040](../adr/0040-task-completed-carries-order-ref.md)), `line_no`? ([ADR-0041](../adr/0041-task-completed-carries-line-no.md)); RELOCATE tasks only: `sku`, `from_bin`, `to_bin`, `quantity`, `relocation_ref` ([ADR-0047](../adr/0047-relocate-tasks-execute-slot-plan-moves.md)) | `task_id`, `task_type`, `station_id`, `order_ref`?, `line_no`? |
 | `TaskCPTMissed` | `com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed` | `SweepCPTMisses` | `TaskId`, `OrderRef`, `TaskType`, `CPT` | `task_id`, `order_ref`, `task_type`?, `cpt` | — |
@@ -84,13 +85,16 @@ every `package.*` row.
 Source: `internal/domain/shared/events.go`,
 `internal/adapters/outbound/kafka/publisher.go` (`inIntegrationContract`,
 `TaskCompletedData`, `TaskCPTMissedData`, `PackageManifestedData`),
+`internal/adapters/outbound/kafka/task_pool_events.go` (`TaskAvailableData`,
+`TaskClaimedData`),
 `internal/adapters/outbound/kafka/analytics_publisher.go`
 (`inAnalyticsContract`, `marshalData`), `apis/asyncapi.yaml`.
 
 :::caution[Published is not the same as defined]
-Only **`TaskCompleted`, `TaskCPTMissed` and `PackageManifested`** form the
+Only **`TaskAvailable`, `TaskClaimed`, `TaskCompleted`, `TaskCPTMissed` and
+`PackageManifested`** (plus the three transfer facts) form the
 integration contract. Ten events go to the analytics topic (everything but
-`TaskCPTMissed` and the two Rebin events). `ItemArrivedAtRebin` and
+`TaskAvailable`, `TaskCPTMissed` and the two Rebin events). `ItemArrivedAtRebin` and
 `OrderConsolidated` (ADR-0016) are in neither allowlist and are not in
 `apis/asyncapi.yaml`; if they are ever published their entity would be
 `orderconsolidation`.

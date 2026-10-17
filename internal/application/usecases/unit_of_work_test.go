@@ -3,6 +3,7 @@ package usecases_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -567,8 +568,9 @@ func TestArriveAtRebin_Completion_NestedCreateTaskJoinsTheOuterScope(t *testing.
 	if !allTrue(consolidations.savesInScope) || !allTrue(tasks.savesInScope) || !pub.allInScope() {
 		t.Fatalf("every write must be inside the scope: consolidation=%v task=%v publish=%v", consolidations.savesInScope, tasks.savesInScope, pub.inScope)
 	}
-	if len(pub.names) != 3 || pub.names[0] != "ItemArrivedAtRebin" || pub.names[1] != "TaskCreated" || pub.names[2] != "OrderConsolidated" {
-		t.Fatalf("expected ItemArrivedAtRebin, TaskCreated, OrderConsolidated in order, got %v", pub.names)
+	want := []string{"ItemArrivedAtRebin", "TaskCreated", "TaskAvailable", "OrderConsolidated"}
+	if !slices.Equal(pub.names, want) {
+		t.Fatalf("expected %v in order, got %v", want, pub.names)
 	}
 }
 
