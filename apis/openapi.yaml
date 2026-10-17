@@ -631,7 +631,12 @@ paths:
         Vacate (see the task's `relocation`). A scan of a side the plan fixed
         must equal the planned bin. The confirmed move is published on
         `TaskCompleted` (`sku`, `from_bin`, `to_bin`, `quantity`,
-        `relocation_ref`). Any other task type takes none of these fields.
+        `relocation_ref`). A `REPLENISH` task (a pick-face replenishment,
+        ADR-0050) completes only with `quantity` (counted, at least 1);
+        `fromBin` and `toBin` are optional scans that must equal the task's
+        planned `replenishment` bins. The confirmed move is published on
+        `TaskCompleted` (`sku`, `from_bin`, `to_bin`, `quantity`,
+        `request_ref`). Any other task type takes none of these fields.
       parameters:
         - name: id
           in: path
@@ -648,7 +653,7 @@ paths:
               $ref: "#/components/schemas/CompleteTaskRequest"
             examples:
               anyTask:
-                summary: Any task type except RELOCATE
+                summary: Any task type except RELOCATE and REPLENISH
                 value:
                   stationId: station-1
               relocateVacate:
@@ -657,6 +662,11 @@ paths:
                   stationId: station-1
                   quantity: 12
                   toBin: WH1-RSV-B02-01-01-A
+              replenish:
+                summary: A REPLENISH task - the counted quantity (the bins are optional scans)
+                value:
+                  stationId: station-1
+                  quantity: 20
       responses:
         "204":
           description: Task completed. No response body.
@@ -696,7 +706,11 @@ paths:
             `invalid-relocation-confirmation` (an open side not scanned, a
             scan that differs from the planned bin, or equal bins), or
             `not-relocation-task` (`quantity`/`fromBin`/`toBin` sent for a
-            task that is not RELOCATE). The task stays Claimed.
+            task that is neither RELOCATE nor REPLENISH). The REPLENISH
+            confirmation (ADR-0050) is `replenishment-confirmation-required`
+            (a REPLENISH task completed without `quantity`) or
+            `invalid-replenishment-confirmation` (a quantity below 1, or a
+            scan that differs from the planned bin). The task stays Claimed.
           content:
             application/problem+json:
               schema:
@@ -1027,7 +1041,7 @@ paths:
         - name: taskType
           in: path
           required: true
-          description: The process path to count (conventionally PICK, PACK, SLAM or RELOCATE).
+          description: The process path to count (conventionally PICK, PACK, SLAM, RELOCATE or REPLENISH).
           schema:
             type: string
             example: PICK
@@ -1341,10 +1355,11 @@ components:
       description: >
         Every task type a task can have and a station can claim: the
         creatable TaskType values plus `RELOCATE` (a slot-plan move,
-        ADR-0047). RELOCATE tasks are created only from WorkReleased on the
-        RELOCATE process path, never through `POST /tasks`, because they
+        ADR-0047) and `REPLENISH` (a pick-face replenishment, ADR-0050).
+        RELOCATE and REPLENISH tasks are created only from WorkReleased on
+        their process paths, never through `POST /tasks`, because they
         need the planned move.
-      enum: [PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL, RELOCATE]
+      enum: [PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL, RELOCATE, REPLENISH]
       example: PICK
 
     TaskRelocation:
@@ -1401,6 +1416,57 @@ components:
             toBin:
               type: string
               example: WH1-RSV-B02-01-01-A
+
+    TaskReplenishment:
+      type: object
+      description: >
+        The pick-face replenishment move a REPLENISH task executes
+        (ADR-0050), from WorkReleased.data.replenishment. Both bins are
+        always known. `priority` is recorded for the operator's view;
+        claimNext orders by CPT only.
+      required: [requestId, sku, fromBin, toBin, quantity, priority]
+      properties:
+        requestId:
+          type: string
+          description: The replenishment request id, published as TaskCompleted.request_ref.
+          example: req-9
+        sku:
+          type: string
+          example: SKU-1
+        fromBin:
+          type: string
+          description: Source (reserve) bin.
+          example: WH1-RSV-AMB-B02-03-02-C
+        toBin:
+          type: string
+          description: Destination bin (the pick face).
+          example: WH1-FWD-AMB-A01-01-01-A
+        quantity:
+          type: integer
+          format: int32
+          minimum: 1
+          description: The planned units to move.
+          example: 24
+        priority:
+          type: string
+          enum: [NORMAL, URGENT]
+          example: URGENT
+        executed:
+          type: object
+          description: The executed move, present once the task is completed.
+          required: [quantity, fromBin, toBin]
+          properties:
+            quantity:
+              type: integer
+              format: int32
+              minimum: 1
+              example: 20
+            fromBin:
+              type: string
+              example: WH1-RSV-AMB-B02-03-02-C
+            toBin:
+              type: string
+              example: WH1-FWD-AMB-A01-01-01-A
 
     TaskStatus:
       type: string
@@ -1539,6 +1605,8 @@ components:
           example: "2026-01-01T12:05:00Z"
         relocation:
           $ref: "#/components/schemas/TaskRelocation"
+        replenishment:
+          $ref: "#/components/schemas/TaskReplenishment"
 
     ClaimNextRequest:
       type: object
@@ -1581,9 +1649,11 @@ components:
           format: int32
           minimum: 1
           description: >
-            RELOCATE only (ADR-0047): the units the operator counted and
-            moved (v1 moves the whole on-hand quantity of the SKU at the
-            source bin). Required for a RELOCATE task, rejected (422
+            RELOCATE and REPLENISH only (ADR-0047, ADR-0050): the units the
+            operator counted and moved (RELOCATE v1 moves the whole on-hand
+            quantity of the SKU at the source bin; REPLENISH takes the
+            counted quantity, which may differ from the planned one).
+            Required for a RELOCATE or REPLENISH task, rejected (422
             `not-relocation-task`) for any other. A value below 1 is a 400.
           example: 12
         fromBin:
@@ -1591,20 +1661,22 @@ components:
           minLength: 1
           pattern: '\S'
           description: >
-            RELOCATE only: the source bin the operator scanned. Required
-            when the move left the source open (an Assign); when sent for a
-            planned source it must equal it. A blank value (no character
-            outside ECMA-262 `\s`) is a 400.
+            RELOCATE and REPLENISH only: the source bin the operator
+            scanned. Required when a RELOCATE move left the source open (an
+            Assign); when sent for a planned source (always for REPLENISH)
+            it must equal it. A blank value (no character outside ECMA-262
+            `\s`) is a 400.
           example: WH1-RSV-B02-01-01-A
         toBin:
           type: string
           minLength: 1
           pattern: '\S'
           description: >
-            RELOCATE only: the destination bin the operator scanned.
-            Required when the move left the destination open (a Vacate);
-            when sent for a planned destination it must equal it. A blank
-            value (no character outside ECMA-262 `\s`) is a 400.
+            RELOCATE and REPLENISH only: the destination bin the operator
+            scanned. Required when a RELOCATE move left the destination
+            open (a Vacate); when sent for a planned destination (always
+            for REPLENISH) it must equal it. A blank value (no character
+            outside ECMA-262 `\s`) is a 400.
           example: WH1-RSV-B02-01-01-A
       example:
         stationId: station-1

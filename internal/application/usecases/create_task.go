@@ -66,6 +66,13 @@ func (uc *CreateTask) ExecuteRelocation(ctx context.Context, cpt shared.CPT, ord
 	return uc.save(ctx, task.NewRelocationTask(uc.NewId(), cpt, orderRef, required, move))
 }
 
+// ExecuteReplenishment creates a REPLENISH task carrying the pick-face
+// replenishment move (ADR 0050), released by the WorkReleased consumer on
+// the REPLENISH path.
+func (uc *CreateTask) ExecuteReplenishment(ctx context.Context, cpt shared.CPT, orderRef shared.OrderRef, required shared.CapabilitySet, move task.ReplenishmentMove) (*task.Task, error) {
+	return uc.save(ctx, task.NewReplenishmentTask(uc.NewId(), cpt, orderRef, required, move))
+}
+
 func (uc *CreateTask) save(ctx context.Context, t *task.Task) (*task.Task, error) {
 	err := atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
 		if err := uc.Tasks.Save(ctx, t); err != nil {

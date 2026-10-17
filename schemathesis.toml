@@ -21,16 +21,20 @@ include-operation-id = "arriveAtRebin"
 checks.positive_data_acceptance.expected-statuses = ["2xx", "401", "403", "404", "409", "422", "429", "5xx"]
 
 # completeTask (POST /tasks/{id}/complete): the optional quantity / fromBin /
-# toBin are valid only for a RELOCATE task, and for that task they must match
-# the stored planned move (ADR 0047). A schema-valid body is therefore
-# correctly rejected with 422 not-relocation-task (inputs on a PICK task),
-# relocation-confirmation-required (a RELOCATE task without them) or
-# invalid-relocation-confirmation (a scan that differs from the plan). These
+# toBin are valid only for a RELOCATE or REPLENISH task, and for that task they
+# must match the stored planned move (ADR 0047, ADR 0050). A schema-valid body
+# is therefore correctly rejected with 422 not-relocation-task (inputs on a
+# PICK task), relocation-confirmation-required / replenishment-confirmation-
+# required (a RELOCATE / REPLENISH task without them) or
+# invalid-relocation-confirmation / invalid-replenishment-confirmation (a scan
+# that differs from the plan). These
 # rules depend on the task's stored type and move, which OpenAPI 3.0.3 cannot
 # express. The 422 is documented on the operation. Tested by
 # internal/adapters/inbound/http/relocate_test.go
-# (TestRelocate_CompletionRejections, TestRelocate_InputsOnANonRelocateTaskAre422)
-# and the task.CompleteRelocation unit tests. Default positive_data_acceptance
+# (TestRelocate_CompletionRejections, TestRelocate_InputsOnANonRelocateTaskAre422),
+# internal/adapters/inbound/http/replenish_test.go
+# (TestReplenish_CompletionRejections)
+# and the task.CompleteRelocation / task.CompleteReplenishment unit tests. Default positive_data_acceptance
 # statuses plus 422; status-code / response-schema conformance, negative data
 # rejection and not_a_server_error still run unchanged.
 [[operations]]

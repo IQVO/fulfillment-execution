@@ -89,6 +89,13 @@ type TaskCompletedData struct {
 	ToBin         string `json:"to_bin,omitempty"`
 	Quantity      int    `json:"quantity,omitempty"`
 	RelocationRef string `json:"relocation_ref,omitempty"`
+	// RequestRef is the additive REPLENISH field (ADR 0050): the
+	// replenishment request id, present only on a REPLENISH task's
+	// TaskCompleted (which also carries sku, from_bin, to_bin and quantity
+	// above) and omitted on every other one. It mirrors relocation_ref;
+	// inventory-storage applies the move as a RelocateStock with reason
+	// REPLENISHMENT and source_ref = request_ref (its ADR 0041).
+	RequestRef string `json:"request_ref,omitempty"`
 }
 
 // TaskCPTMissedData is the payload of a published TaskCPTMissed event: a
@@ -265,6 +272,7 @@ func (p *Publisher) encodeTaskCompleted(ctx context.Context, tc shared.TaskCompl
 		LineNo:          lineNo,
 	}
 	withRelocation(&data, tc.Relocation)
+	withReplenishment(&data, tc.Replenishment)
 	enc, err := p.encodeIntegration(entityTask, "TaskCompleted", string(tc.TaskId), tc.OccurredAt(), data)
 	if err != nil {
 		return nil, err
@@ -281,6 +289,17 @@ func withRelocation(data *TaskCompletedData, r *shared.TaskRelocation) {
 	}
 	data.SKU, data.FromBin, data.ToBin = r.SKU, r.FromBin, r.ToBin
 	data.Quantity, data.RelocationRef = r.Quantity, r.Ref
+}
+
+// withReplenishment copies a REPLENISH completion's executed move onto the
+// TaskCompleted payload (ADR 0050); a nil move leaves the fields empty, so
+// they are omitted from the wire.
+func withReplenishment(data *TaskCompletedData, r *shared.TaskReplenishment) {
+	if r == nil {
+		return
+	}
+	data.SKU, data.FromBin, data.ToBin = r.SKU, r.FromBin, r.ToBin
+	data.Quantity, data.RequestRef = r.Quantity, r.RequestRef
 }
 
 func (p *Publisher) encodeTaskCPTMissed(ev shared.TaskCPTMissed) ([]Encoded, error) {
