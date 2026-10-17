@@ -152,13 +152,33 @@ func (r completeTaskRequest) validate() string {
 		return "stationId is required"
 	case r.Quantity != nil && *r.Quantity < 1:
 		return "quantity must be at least 1"
-	case r.FromBin != nil && strings.TrimSpace(*r.FromBin) == "":
+	case r.FromBin != nil && isBlankPerContract(*r.FromBin):
 		return "fromBin must not be blank"
-	case r.ToBin != nil && strings.TrimSpace(*r.ToBin) == "":
+	case r.ToBin != nil && isBlankPerContract(*r.ToBin):
 		return "toBin must not be blank"
 	default:
 		return ""
 	}
+}
+
+// isBlankPerContract reports whether s has no character outside ECMA-262's
+// \s class, the set the OpenAPI contract's `pattern: '\S'` uses for fromBin
+// and toBin (JSON Schema patterns are ECMA-262). strings.TrimSpace follows
+// unicode.IsSpace instead, which counts U+0085 as space and U+FEFF as not, so
+// request validation and the schema disagreed on both (Schemathesis finding).
+func isBlankPerContract(s string) bool {
+	return strings.TrimFunc(s, isContractWhitespace) == ""
+}
+
+// isContractWhitespace is ECMA-262's \s (WhiteSpace + LineTerminator): TAB,
+// LF, VT, FF, CR, SPACE, NBSP, ZWNBSP (U+FEFF), U+1680, U+2000-U+200A,
+// U+2028, U+2029, U+202F, U+205F, U+3000.
+func isContractWhitespace(r rune) bool {
+	switch r {
+	case '\t', '\n', '\v', '\f', '\r', ' ', '\u00a0', '\ufeff', '\u1680', '\u2028', '\u2029', '\u202f', '\u205f', '\u3000':
+		return true
+	}
+	return r >= '\u2000' && r <= '\u200a'
 }
 
 // confirmation maps the optional RELOCATE inputs onto the domain's
