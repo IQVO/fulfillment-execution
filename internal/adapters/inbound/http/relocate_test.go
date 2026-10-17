@@ -174,6 +174,38 @@ func TestCompleteTask_MalformedRelocationInputsAre400(t *testing.T) {
 	}
 }
 
+// TestCompleteTask_ContractWhitespaceBinsAre400: a bin is blank exactly when
+// it has no character outside ECMA-262's \s, the set the OpenAPI contract's
+// `pattern: '\S'` uses (JSON Schema patterns are ECMA-262). Go's
+// unicode.IsSpace differs: a TrimSpace check accepted U+FEFF (the schema
+// rejects it) and rejected U+0085 (the schema accepts it). Found by
+// Schemathesis, which sent fromBin "\n" to a spec that only said minLength 1.
+func TestCompleteTask_ContractWhitespaceBinsAre400(t *testing.T) {
+	for name, blank := range map[string]string{
+		"line feed": "\n", "nbsp": "\u00a0", "zwnbsp": "\ufeff", "ideographic space": "\u3000",
+		"line separator": "\u2028", "mixed": " \t\u00a0\ufeff",
+	} {
+		for _, field := range []string{"fromBin", "toBin"} {
+			t.Run(field+"/"+name, func(t *testing.T) {
+				srv, _, _, _, _ := newTestServer()
+				rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/any/complete", map[string]any{"stationId": "s1", field: blank})
+				assertProblemDetails(t, rec, stdhttp.StatusBadRequest, problemBase+"invalid-request", "/tasks/any/complete")
+			})
+		}
+	}
+}
+
+// TestCompleteTask_NELBinIsNotBlankForTheContract: U+0085 is outside
+// ECMA-262's \s, so the contract accepts it as a bin. The request must get
+// past request validation (the unknown task then answers 404, not 400).
+func TestCompleteTask_NELBinIsNotBlankForTheContract(t *testing.T) {
+	srv, _, _, _, _ := newTestServer()
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/any/complete", map[string]any{"stationId": "s1", "fromBin": "\u0085"})
+	if rec.Code == stdhttp.StatusBadRequest {
+		t.Fatalf("U+0085 is not whitespace for the contract; got 400: %s", rec.Body.String())
+	}
+}
+
 // TestPostTask_RelocateIsNotCreatable: RELOCATE work needs a planned move,
 // so POST /tasks keeps rejecting it (400), while claim-next accepts it.
 func TestPostTask_RelocateIsNotCreatable(t *testing.T) {
