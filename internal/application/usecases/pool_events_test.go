@@ -80,6 +80,9 @@ func TestPoolEvents_EveryCreationPathRaisesOneTaskAvailable(t *testing.T) {
 		"ExecuteRelocation": func(uc *usecases.CreateTask) (*task.Task, error) {
 			return uc.ExecuteRelocation(ctx, cpt, "o", shared.NewCapabilitySet("relocate"), *relocationMove(t, "Relocate", "WH1-A-B-C-D-E-F", "WH1-A-B-C-D-E-G"))
 		},
+		"ExecuteReplenishment": func(uc *usecases.CreateTask) (*task.Task, error) {
+			return uc.ExecuteReplenishment(ctx, cpt, "o", shared.NewCapabilitySet("replenish"), *replenishmentMove(t, "NORMAL"))
+		},
 	}
 	for name, run := range paths {
 		t.Run(name, func(t *testing.T) {
