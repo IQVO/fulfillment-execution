@@ -54,12 +54,14 @@ channels:
     subscribe:
       operationId: consumeFulfillmentIntegrationEvents
       summary: Consume Fulfillment Execution integration events.
-      description: Receive the TaskCompleted, TaskCPTMissed and PackageManifested CloudEvents this bounded
-        context publishes.
+      description: Receive the TaskAvailable, TaskClaimed, TaskCompleted, TaskCPTMissed and PackageManifested
+        CloudEvents this bounded context publishes.
       tags:
       - name: fulfillment-execution
       message:
         oneOf:
+        - $ref: '#/components/messages/TaskAvailable'
+        - $ref: '#/components/messages/TaskClaimed'
         - $ref: '#/components/messages/TaskCompleted'
         - $ref: '#/components/messages/TaskCPTMissed'
         - $ref: '#/components/messages/PackageManifested'
@@ -383,6 +385,210 @@ components:
             order_ref: wu-8a1f
             task_type: PICK
             cpt: '2026-09-30T14:55:00Z'
+    TaskAvailable:
+      name: TaskAvailable
+      title: TaskAvailable
+      summary: A task entered or re-entered the open-task pool and is claimable.
+      description: 'Raised in the same transaction as the state change, through the transactional outbox
+        (ADR-0020), whenever a task ENTERS the pool (released from WorkReleased, or created through
+        the API) or RE-ENTERS it (the lease-expiry sweep returned a claimed task to Pending, with a
+        new `available_at`). Never raised on an idempotent replay or a rejected command. Published
+        on `warehouse.fulfillment.events`, keyed by task id. Consumed by task-interleaving (its local
+        copy of the open-task pool). A task whose location this service cannot determine is NOT announced
+        (the consumer rejects an event without `site_id` and `from_location`): today only RELOCATE tasks
+        carry bins, so only they are announced (ADR-0049). A PICK / PACK / SLAM / REBIN / transfer task
+        has no location in this service.'
+      contentType: application/cloudevents+json
+      tags:
+      - name: task
+      headers:
+        $ref: '#/components/schemas/KafkaHeaders'
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          required:
+          - type
+          - source
+          - dataschema
+          - data
+          properties:
+            type:
+              type: string
+              const: com.warehouse.wes.fulfillment-execution.task.TaskAvailable
+            source:
+              type: string
+              const: /warehouse/fulfillment-execution
+            dataschema:
+              type: string
+              const: urn:warehouse:fulfillment-execution:events:TaskAvailable:v1
+            data:
+              type: object
+              required:
+              - task_id
+              - task_type
+              - site_id
+              - from_location
+              - to_location
+              - required_capabilities
+              - priority_band
+              - available_at
+              properties:
+                task_id:
+                  type: string
+                  description: The pooled task; also the Kafka key and CloudEvents subject.
+                task_type:
+                  type: string
+                  enum:
+                  - PICK
+                  - PACK
+                  - SLAM
+                  - REBIN
+                  - DISPATCH
+                  - ARRIVAL
+                  - RELOCATE
+                  description: The task's type (the process path claimNext scans).
+                site_id:
+                  type: string
+                  description: The site the task is worked at - the first segment of the bin's facility-layout
+                    LocationCode (`site-area-zone-aisle-bay-level-position`), derived from the task's own
+                    bins, never looked up in another context.
+                from_location:
+                  type: string
+                  description: Where the operator must go first. RELOCATE - the source bin (for an Assign move,
+                    whose source the operator scans at completion, the destination bin).
+                to_location:
+                  type: string
+                  description: Where the operator ends. RELOCATE - the destination bin (for a Vacate move,
+                    whose destination the operator scans at completion, the source bin).
+                required_capabilities:
+                  type: array
+                  description: The capabilities claimNext matches a station against, sorted; an empty array
+                    (never null) when the task requires none.
+                  items:
+                    type: string
+                cpt:
+                  type: string
+                  format: date-time
+                  description: The task's committed promise time (UTC). Omitted when the task has none.
+                priority_band:
+                  type: string
+                  description: 'OPAQUE. Equal across exactly the tasks claimNext orders as peers (same task type
+                    and same CPT instant), different for any two it orders strictly. Today `<task_type>:<cpt
+                    UTC RFC 3339>`; consumers compare for equality only and must not parse it (ADR-0049).'
+                available_at:
+                  type: string
+                  format: date-time
+                  description: The instant the task became claimable (UTC) - the creation instant, or the
+                    sweep instant on re-entry after a lease expiry.
+      examples:
+      - name: taskAvailable
+        summary: A RELOCATE task released with a CPT and two required capabilities.
+        headers:
+          content-type: application/cloudevents+json; charset=UTF-8
+          traceparent: 00-8812c36621d214139a08949823716b93-14ddf02dbd8913ba-01
+        payload:
+          specversion: "1.0"
+          id: 6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b
+          source: /warehouse/fulfillment-execution
+          type: com.warehouse.wes.fulfillment-execution.task.TaskAvailable
+          subject: task-rel-1
+          time: '2026-09-30T15:00:00Z'
+          datacontenttype: application/json
+          dataschema: urn:warehouse:fulfillment-execution:events:TaskAvailable:v1
+          data:
+            task_id: task-rel-1
+            task_type: RELOCATE
+            site_id: WH1
+            from_location: WH1-RSV-AMB-B02-03-02-C
+            to_location: WH1-FWD-AMB-A01-01-01-A
+            required_capabilities:
+            - forklift
+            - relocate
+            cpt: '2026-09-30T16:00:00Z'
+            priority_band: RELOCATE:2026-09-30T16:00:00Z
+            available_at: '2026-09-30T15:00:00Z'
+    TaskClaimed:
+      name: TaskClaimed
+      title: TaskClaimed
+      summary: A station claimed a task; it left the open-task pool.
+      description: 'Raised in the same transaction as the claim, through the transactional outbox (ADR-0020),
+        for every task type. Never raised when the claim is rejected or loses the at-most-once race.
+        Published on `warehouse.fulfillment.events` (the richer integration row), keyed by task id; the
+        analytics-topic TaskClaimed `{task_id, task_type, station_id}` is unchanged. Consumed by
+        task-interleaving (removes the task from its pool copy and learns the station''s next position).'
+      contentType: application/cloudevents+json
+      tags:
+      - name: task
+      headers:
+        $ref: '#/components/schemas/KafkaHeaders'
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          required:
+          - type
+          - source
+          - dataschema
+          - data
+          properties:
+            type:
+              type: string
+              const: com.warehouse.wes.fulfillment-execution.task.TaskClaimed
+            source:
+              type: string
+              const: /warehouse/fulfillment-execution
+            dataschema:
+              type: string
+              const: urn:warehouse:fulfillment-execution:events:TaskClaimed:v1
+            data:
+              type: object
+              required:
+              - task_id
+              - task_type
+              - station_id
+              - claimed_at
+              properties:
+                task_id:
+                  type: string
+                  description: The claimed task; also the Kafka key and CloudEvents subject.
+                task_type:
+                  type: string
+                  enum:
+                  - PICK
+                  - PACK
+                  - SLAM
+                  - REBIN
+                  - DISPATCH
+                  - ARRIVAL
+                  - RELOCATE
+                  description: The task's type; empty only if the task row can no longer be read.
+                station_id:
+                  type: string
+                  description: The station that now holds the lease.
+                claimed_at:
+                  type: string
+                  format: date-time
+                  description: The claim instant (UTC).
+      examples:
+      - name: taskClaimed
+        headers:
+          content-type: application/cloudevents+json; charset=UTF-8
+          traceparent: 00-8812c36621d214139a08949823716b93-14ddf02dbd8913ba-01
+        payload:
+          specversion: "1.0"
+          id: 6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b
+          source: /warehouse/fulfillment-execution
+          type: com.warehouse.wes.fulfillment-execution.task.TaskClaimed
+          subject: task-rel-1
+          time: '2026-09-30T15:00:00Z'
+          datacontenttype: application/json
+          dataschema: urn:warehouse:fulfillment-execution:events:TaskClaimed:v1
+          data:
+            task_id: task-rel-1
+            task_type: RELOCATE
+            station_id: station-07
+            claimed_at: '2026-09-30T15:00:00Z'
     PackageManifested:
       name: PackageManifested
       title: PackageManifested

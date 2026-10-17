@@ -115,6 +115,8 @@ per service via `KAFKA_BROKERS`.
 
 | `type` | `data` fields | Consumed by |
 | --- | --- | --- |
+| `com.warehouse.wes.fulfillment-execution.task.TaskAvailable` | `task_id`, `task_type`, `site_id`, `from_location`, `to_location`, `required_capabilities`, `cpt`?, `priority_band`, `available_at` ([ADR-0049](../adr/0049-task-pool-events-task-available-and-task-claimed.md)) | task-interleaving |
+| `com.warehouse.wes.fulfillment-execution.task.TaskClaimed` | `task_id`, `task_type`, `station_id`, `claimed_at` ([ADR-0049](../adr/0049-task-pool-events-task-available-and-task-claimed.md)) | task-interleaving |
 | `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` | `task_id`, `station_id`, `work_unit_id`, `associate_id`, `duration_seconds`, `task_type`, `order_ref`? ([ADR-0040](../adr/0040-task-completed-carries-order-ref.md)), `line_no`? ([ADR-0041](../adr/0041-task-completed-carries-line-no.md)) | wes-work-planning, labor-performance, inventory-storage (pick confirmation) |
 | `com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed` | `task_id`, `order_ref`, `task_type`, `cpt` | order-management |
 | `com.warehouse.wes.fulfillment-execution.package.PackageManifested` | `package_id`, `order_ref` | order-management |

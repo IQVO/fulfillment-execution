@@ -42,7 +42,7 @@ CloudEvents 1.0 event:
 
 | direction | topic | content |
 |-----------|-------|---------|
-| publish | `warehouse.fulfillment.events` | integration events (`TaskCompleted`, `TaskCPTMissed`, `PackageManifested`) |
+| publish | `warehouse.fulfillment.events` | integration events (`TaskAvailable`, `TaskClaimed`, `TaskCompleted`, `TaskCPTMissed`, `PackageManifested`; [ADR-0049](./0049-task-pool-events-task-available-and-task-claimed.md)) |
 | publish | `warehouse.fulfillment.analytics` | analytics events (10 types, see below) |
 | consume | `warehouse.work-planning.events` | `WorkReleased` from wes-work-planning |
 | consume | `warehouse.process-path-management.events` | `ProcessPath*` catalogue events |
@@ -98,6 +98,8 @@ occurrence on both topics; `dataschema` distinguishes the payload shape.
 **Published — integration (`warehouse.fulfillment.events`):**
 
 ```
+com.warehouse.wes.fulfillment-execution.task.TaskAvailable        -> task-interleaving (open-task pool copy; ADR-0049)
+com.warehouse.wes.fulfillment-execution.task.TaskClaimed          -> task-interleaving (leaves the pool copy; ADR-0049)
 com.warehouse.wes.fulfillment-execution.task.TaskCompleted        -> wes-work-planning, labor-performance
 com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed        -> order-management
 com.warehouse.wes.fulfillment-execution.package.PackageManifested -> order-management
