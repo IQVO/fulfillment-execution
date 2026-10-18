@@ -175,8 +175,10 @@ func TestMigration0020_UpAndDown(t *testing.T) {
 
 	// The migrated schema stores a REPLENISH task through the repository.
 	rig.saveReplenish(t)
-	if err := rig.m.Steps(-1); err != nil {
-		t.Fatalf("migrate down one step: %v", err)
+	// Down to 0019 explicitly, not Steps(-1): newer migrations (0021+) sit on
+	// top of 0020, and this test asserts 0020's own up/down, not the head's.
+	if err := rig.m.Migrate(19); err != nil {
+		t.Fatalf("migrate down to 0019: %v", err)
 	}
 	if got := rig.columns(t); got != 0 {
 		t.Fatalf("after the down step there are %d replenishment columns, want 0", got)

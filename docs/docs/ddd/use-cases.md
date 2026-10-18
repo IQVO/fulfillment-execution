@@ -251,9 +251,12 @@ the memory adapter uses a mutex-guarded map.
 
 Its contract is "Pending or lease-expired tasks of this type, **ordered by
 earliest CPT first**." Because `ClaimNext` has no optimiser, that ordering
-*is* the dispatch policy — any future sophistication (aisle batching,
-interleaving) would have to change this query, which is exactly where it
-should live.
+*is* the dispatch policy — any future sophistication (aisle batching, a real
+optimiser) would have to change this query, which is exactly where it should
+live. The one exception by design: task-interleaving's advisory hint
+([ADR-0051](../adr/0051-interleaving-hints-advise-claimnext.md)) re-orders
+peers *inside* one priority band (same type, same CPT instant) without ever
+crossing the CPT ordering this query guarantees.
 
 ## How the layers connect
 

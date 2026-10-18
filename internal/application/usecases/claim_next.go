@@ -2,6 +2,8 @@ package usecases
 
 import (
 	"context"
+	"log/slog"
+	"sort"
 	"time"
 
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
@@ -27,6 +29,15 @@ type ClaimNext struct {
 	// UnitOfWork brackets Save + Publish atomically (ADR 0020); nil runs
 	// them back to back.
 	UnitOfWork ports.UnitOfWork
+	// Hints, when non-nil, is the local copy of task-interleaving's
+	// advisory hints (ADR 0051). It only re-orders peers INSIDE one
+	// priority band (same task type, same CPT instant): the band order —
+	// earliest CPT first — is never crossed. Nil means no hints at all
+	// (exactly the pre-ADR-0051 behavior).
+	Hints ports.InterleavingHintLookup
+	// Logger receives the WARN when a hint read fails (claiming then
+	// proceeds without the hint — fail-open). Nil means slog.Default().
+	Logger *slog.Logger
 }
 
 // Execute finds the best-fit pending task for stationId and leases it.
@@ -44,6 +55,7 @@ func (uc *ClaimNext) Execute(ctx context.Context, stationId shared.StationId, ta
 	if err != nil {
 		return nil, err
 	}
+	candidates = uc.orderWithHint(ctx, stationId, now, candidates)
 
 	leaseDuration := uc.LeaseDuration
 	if leaseDuration <= 0 {
@@ -70,6 +82,88 @@ func (uc *ClaimNext) Execute(ctx context.Context, stationId shared.StationId, ta
 	}
 
 	return nil, ErrNoClaimableTask
+}
+
+// orderWithHint applies the station's active interleaving hint (ADR 0051)
+// as an advisory tie-break. candidates arrive ordered earliest-CPT-first;
+// the priority band of a task is (its type — uniform here —, its CPT
+// instant), so a band is a maximal run of candidates sharing one CPT
+// instant. Within each band the hinted candidates still in the pool come
+// first, lowest rank (the producer's preference) before higher, followed by
+// the unhinted peers in the repository's own order. Bands themselves are
+// NEVER reordered: a hinted candidate with a later CPT stays behind every
+// candidate of an earlier band.
+//
+// Fail-open everywhere: no Hints lookup wired, no hint stored, an expired
+// hint, a hint whose candidates are all gone from the pool, or a hint read
+// that fails — every one of these returns candidates unchanged, so an
+// ignored hint costs nothing and can never stop dispatch.
+func (uc *ClaimNext) orderWithHint(ctx context.Context, stationId shared.StationId, now time.Time, candidates []*task.Task) []*task.Task {
+	if uc.Hints == nil || len(candidates) < 2 {
+		return candidates
+	}
+	hint, err := uc.Hints.ActiveForStation(ctx, stationId, now)
+	if err != nil {
+		uc.logger().WarnContext(ctx, "interleaving hint lookup failed; claiming without it (fail-open)",
+			"station_id", logSafe(string(stationId)), "error", logSafe(err.Error()))
+		return candidates
+	}
+	if hint == nil || !hint.ExpiresAt.After(now) || len(hint.Candidates) == 0 {
+		return candidates
+	}
+	rank := make(map[shared.TaskId]int, len(hint.Candidates))
+	for _, c := range hint.Candidates {
+		id := shared.TaskId(c.TaskId)
+		if r, seen := rank[id]; !seen || c.Rank < r {
+			rank[id] = c.Rank
+		}
+	}
+	if !anyHinted(candidates, rank) {
+		return candidates
+	}
+	out := make([]*task.Task, 0, len(candidates))
+	for i := 0; i < len(candidates); {
+		j := i + 1
+		for j < len(candidates) && candidates[j].CPT().Time().Equal(candidates[i].CPT().Time()) {
+			j++
+		}
+		out = append(out, hintFirst(candidates[i:j], rank)...)
+		i = j
+	}
+	return out
+}
+
+// anyHinted reports whether any candidate is a hinted task.
+func anyHinted(candidates []*task.Task, rank map[shared.TaskId]int) bool {
+	for _, t := range candidates {
+		if _, ok := rank[t.Id()]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// hintFirst orders one priority band: hinted candidates by ascending rank
+// first, then the unhinted peers in their incoming order.
+func hintFirst(band []*task.Task, rank map[shared.TaskId]int) []*task.Task {
+	hinted := make([]*task.Task, 0, len(band))
+	rest := make([]*task.Task, 0, len(band))
+	for _, t := range band {
+		if _, ok := rank[t.Id()]; ok {
+			hinted = append(hinted, t)
+		} else {
+			rest = append(rest, t)
+		}
+	}
+	sort.SliceStable(hinted, func(i, j int) bool { return rank[hinted[i].Id()] < rank[hinted[j].Id()] })
+	return append(hinted, rest...)
+}
+
+func (uc *ClaimNext) logger() *slog.Logger {
+	if uc.Logger != nil {
+		return uc.Logger
+	}
+	return slog.Default()
 }
 
 // persistClaim saves t's claim and publishes TaskClaimed atomically. It is

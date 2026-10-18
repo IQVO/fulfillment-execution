@@ -50,11 +50,6 @@ func main() {
 func run() error {
 	logger := newLogger(getenv("LOG_LEVEL", "info"))
 	slog.SetDefault(logger)
-	classificationCfg, err := classificationConfigFromEnv()
-	if err != nil {
-		return err
-	}
-
 	rootCtx := context.Background()
 	httpAddr := getenv("HTTP_ADDR", ":8080")
 	databaseURL := os.Getenv("DATABASE_URL")
@@ -129,15 +124,20 @@ func run() error {
 	// the drain window that follows.
 	readiness := &inboundhttp.Readiness{}
 
-	classification, err := buildClassification(classificationCfg, storage, kafkaBrokers, logger)
+	classification, err := setupClassification(storage, kafkaBrokers, logger)
 	if err != nil {
 		return err
 	}
 	defer classification.close() // after its loop stopped (LIFO), before the pool
+	interleaving, err := setupInterleaving(storage, kafkaBrokers, logger)
+	if err != nil {
+		return err
+	}
+	defer interleaving.close()
 	lookups := buildOutboundLookups(classification.lookup, logger)
 
 	createTask := &usecases.CreateTask{Tasks: storage.taskRepo, Publisher: publisher, Clock: clock, NewId: newTaskId, UnitOfWork: storage.uow}
-	srv := newHTTPServer(storage, publisher, clock, metrics, lookups, createTask, readiness, logger, httpAddr)
+	srv := newHTTPServer(storage, publisher, clock, metrics, lookups, interleaving.lookup, createTask, readiness, logger, httpAddr)
 
 	// ApplyWorkReleased wraps the same CreateTask the HTTP surface uses,
 	// plus the processed-events claim, inside ONE UnitOfWork — the
@@ -163,6 +163,7 @@ func run() error {
 	consumerDone := joinDone(
 		startWorkReleasedConsumer(consumer, consumerCtx, logger, kafkaBrokers),
 		startProductClassifiedConsumer(classification.consumer, consumerCtx, logger),
+		startInterleavingHintConsumer(interleaving.consumer, consumerCtx, logger),
 	)
 
 	// The outbox relay (ADR 0020) runs alongside the HTTP server in the
@@ -266,8 +267,8 @@ func buildOutboundLookups(classification ports.ProductClassificationLookup, logg
 
 // newHTTPServer builds the handler set and the HTTP server around it,
 // with the idempotency pool bound when Postgres is configured.
-func newHTTPServer(storage storageAdapters, publisher ports.EventPublisher, clock memory.SystemClock, metrics *observability.Metrics, lookups outboundLookups, createTask *usecases.CreateTask, readiness *inboundhttp.Readiness, logger *slog.Logger, httpAddr string) *http.Server {
-	handlers := buildHandlers(storage, publisher, clock, metrics, lookups.classification, lookups.locationRole, createTask, readiness)
+func newHTTPServer(storage storageAdapters, publisher ports.EventPublisher, clock memory.SystemClock, metrics *observability.Metrics, lookups outboundLookups, hintLookup ports.InterleavingHintLookup, createTask *usecases.CreateTask, readiness *inboundhttp.Readiness, logger *slog.Logger, httpAddr string) *http.Server {
+	handlers := buildHandlers(storage, publisher, clock, metrics, lookups.classification, lookups.locationRole, hintLookup, createTask, readiness, logger)
 	router := inboundhttp.NewRouter(handlers, logger, inboundhttp.WithIdempotencyPool(storage.pool))
 	return &http.Server{Addr: httpAddr, Handler: router, ReadHeaderTimeout: 5 * time.Second}
 }
@@ -471,10 +472,10 @@ func openStorage(rootCtx context.Context, logger *slog.Logger, databaseURL, migr
 // buildHandlers wires every use case into its inbound HTTP handler.
 // createTask is built by the caller (the WorkReleased consumer shares it)
 // and passed in; everything else is constructed here.
-func buildHandlers(storage storageAdapters, publisher ports.EventPublisher, clock memory.SystemClock, metrics *observability.Metrics, classificationLookup ports.ProductClassificationLookup, locationRoleLookup ports.LocationRoleLookup, createTask *usecases.CreateTask, readiness *inboundhttp.Readiness) *inboundhttp.Handlers {
+func buildHandlers(storage storageAdapters, publisher ports.EventPublisher, clock memory.SystemClock, metrics *observability.Metrics, classificationLookup ports.ProductClassificationLookup, locationRoleLookup ports.LocationRoleLookup, hintLookup ports.InterleavingHintLookup, createTask *usecases.CreateTask, readiness *inboundhttp.Readiness, logger *slog.Logger) *inboundhttp.Handlers {
 	return &inboundhttp.Handlers{
 		CreateTask:         createTask,
-		ClaimNext:          &usecases.ClaimNext{Tasks: storage.taskRepo, Stations: storage.stationRepo, Publisher: publisher, Clock: clock, Metrics: metricsPort(metrics), UnitOfWork: storage.uow},
+		ClaimNext:          &usecases.ClaimNext{Tasks: storage.taskRepo, Stations: storage.stationRepo, Publisher: publisher, Clock: clock, Metrics: metricsPort(metrics), UnitOfWork: storage.uow, Hints: hintLookup, Logger: logger},
 		RenewLease:         &usecases.RenewLease{Tasks: storage.taskRepo, Clock: clock},
 		CompleteTask:       &usecases.CompleteTask{Tasks: storage.taskRepo, Publisher: publisher, Clock: clock, Metrics: metricsPort(metrics), UnitOfWork: storage.uow},
 		SealPackage:        &usecases.SealPackage{Tasks: storage.taskRepo, Packages: storage.packageRepo, Publisher: publisher, Clock: clock, NewId: newPackageId, ClassificationLookup: classificationLookup, UnitOfWork: storage.uow},
