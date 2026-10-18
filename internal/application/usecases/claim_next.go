@@ -105,7 +105,7 @@ func (uc *ClaimNext) orderWithHint(ctx context.Context, stationId shared.Station
 	hint, err := uc.Hints.ActiveForStation(ctx, stationId, now)
 	if err != nil {
 		uc.logger().WarnContext(ctx, "interleaving hint lookup failed; claiming without it (fail-open)",
-			"station_id", string(stationId), "error", err)
+			"station_id", logSafe(string(stationId)), "error", logSafe(err.Error()))
 		return candidates
 	}
 	if hint == nil || !hint.ExpiresAt.After(now) || len(hint.Candidates) == 0 {
