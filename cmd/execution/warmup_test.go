@@ -11,9 +11,16 @@ import (
 
 	inboundhttp "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/http"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/events"
+	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/system"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
 )
+
+// inMemoryStorage is a test-double storage for the HTTP-only warm-up tests:
+// they exercise /healthz and /readyz, never a store.
+func inMemoryStorage() storageAdapters {
+	return storageAdapters{processedEvents: memory.NewProcessedEventsRepo()}
+}
 
 // freeAddr reserves a loopback port and releases it for the server to bind.
 func freeAddr(t *testing.T) string {

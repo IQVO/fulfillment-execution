@@ -1262,11 +1262,18 @@ paths:
       summary: Readiness check
       description: >
         Returns `200 {"status":"ready"}` while the service is ready to
-        accept new traffic, and `503 {"status":"not_ready"}` once graceful
-        shutdown has begun (ADR-0029) — the readiness gate is flipped as
-        the FIRST step of shutdown, before the HTTP server stops accepting
-        connections, so a Kubernetes readinessProbe pointed here has a
-        window to stop routing new traffic before the listener closes.
+        accept new traffic. Ready means: the service is not draining AND
+        Postgres answers a ping AND a Kafka broker answers a metadata
+        request (reachability only; topics are never required, the
+        service's writers auto-create them). The dependency verdict is
+        cached for a few seconds. Returns `503 {"status":"not_ready"}`
+        once graceful shutdown has begun (ADR-0029) — the readiness gate
+        is flipped as the FIRST step of shutdown, before the HTTP server
+        stops accepting connections, so a Kubernetes readinessProbe
+        pointed here has a window to stop routing new traffic before the
+        listener closes — and a `503` problem+json of type
+        `dependency-unavailable` (the detail names the failing
+        dependencies) while Postgres or Kafka is not reachable.
         With `PATH_CATALOGUE_SOURCE=kafka` it also returns `503` from boot
         until the process-path catalogue replay has caught up: the listener
         starts before the replay so `/healthz` answers at once (ADR-0044).
@@ -1286,7 +1293,9 @@ paths:
               example:
                 status: ready
         "503":
-          description: The service has begun graceful shutdown and is no longer accepting new traffic.
+          description: >-
+            The service is draining, warming up, or Postgres or Kafka is
+            not reachable, and must not receive new traffic.
           content:
             application/json:
               schema:
@@ -1298,6 +1307,9 @@ paths:
                     enum: [not_ready]
               example:
                 status: not_ready
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
 
 components:
   schemas:

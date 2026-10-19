@@ -2,7 +2,10 @@
 // server: it wires env config to outbound adapters, adapters to the read use
 // cases, and those to the inbound MCP adapter, then serves MCP over Streamable
 // HTTP. It is a second, independent deployable alongside cmd/execution (the
-// HTTP service), per ADR-0008.
+// HTTP service), per ADR-0008. It runs on real Postgres and real Kafka only
+// (the real-wiring ADR): DATABASE_URL and KAFKA_BROKERS are required, and
+// EVENT_PUBLISHER may only be kafka (or unset); a missing one is a boot error
+// that names the variable.
 package main
 
 import (
@@ -19,7 +22,6 @@ import (
 
 	inboundmcp "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/mcp"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/bootretry"
-	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/postgres"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/system"
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
@@ -38,6 +40,12 @@ func main() {
 func run() error {
 	logger := newLogger(getenv("LOG_LEVEL", "info"))
 	slog.SetDefault(logger)
+
+	// Misconfiguration is refused before anything is opened or bound.
+	cfg, err := loadBootConfig(os.Getenv)
+	if err != nil {
+		return err
+	}
 
 	// Same non-blocking telemetry setup as the HTTP service: an unreachable
 	// Collector degrades to dropped telemetry, never a server that won't start.
@@ -60,16 +68,14 @@ func run() error {
 	}
 
 	httpAddr := getenv("MCP_ADDR", ":8090")
-	databaseURL := os.Getenv("DATABASE_URL")
 	// See cmd/execution/main.go's identical fallback and openStorage's
 	// doc comment for the full "why" (session-scoped pg_advisory_lock vs
 	// PgBouncer transaction-pooling incompatibility, ADR-0031 and
 	// order-management's ADR-0029, the reference implementation this
 	// mirrors). This binary also runs migrations on start (buildStorage
-	// below), so it needs the same direct-connection split.
-	migrationsDatabaseURL := getenv("MIGRATIONS_DATABASE_URL", databaseURL)
-
-	st, closeStorage, err := buildStorage(rootCtx, databaseURL, migrationsDatabaseURL, "migrations", logger)
+	// below), so it needs the same direct-connection split
+	// (cfg.migrationsDatabaseURL, falling back to DATABASE_URL).
+	st, closeStorage, err := buildStorage(rootCtx, cfg.databaseURL, cfg.migrationsDatabaseURL, "migrations", logger)
 	if err != nil {
 		return err
 	}
@@ -78,10 +84,13 @@ func run() error {
 	// complete_task is a WRITE use case, so it must publish TaskCompleted
 	// exactly like the REST path does (ADR-0008, ADR-0020): through the same
 	// composition.BuildEventPublisher wiring cmd/execution uses, with the same
-	// UnitOfWork. With EVENT_PUBLISHER=kafka and DATABASE_URL the events go
-	// into outbox_events (integration + analytics topics) in the use case's
-	// transaction; the outbox relay keeps running only in cmd/execution.
-	publisher, closePublisher := buildPublisher(st, strings.Split(getenv("KAFKA_BROKERS", "localhost:9092"), ","), logger)
+	// UnitOfWork. The events go into outbox_events (integration + analytics
+	// topics) in the use case's transaction; the outbox relay keeps running
+	// only in cmd/execution.
+	publisher, closePublisher, err := buildPublisher(st, cfg.kafkaBrokers, logger)
+	if err != nil {
+		return err
+	}
 	defer closePublisher()
 
 	metrics, err := observability.NewMetrics()
@@ -153,9 +162,8 @@ func getenv(key, fallback string) string {
 	return fallback
 }
 
-// storage groups the environment-selected persistence adapters this binary
-// needs. pool and uow are nil when running in-memory: the use cases then run
-// Save and Publish back to back (see ports.UnitOfWork).
+// storage groups the Postgres persistence adapters this binary needs. pool
+// and uow are always set by buildStorage.
 type storage struct {
 	tasks    ports.TaskRepo
 	stations ports.StationRepo
@@ -166,13 +174,12 @@ type storage struct {
 // buildPublisher builds the event publisher through the wiring shared with
 // cmd/execution (composition.BuildEventPublisher). RunRelay is false: only
 // cmd/execution drains outbox_events onto Kafka; this process only inserts.
-func buildPublisher(st storage, brokers []string, logger *slog.Logger) (ports.EventPublisher, func()) {
-	publisher, _, closeFn := composition.BuildEventPublisher(composition.PublisherConfig{
-		Kind:     getenv("EVENT_PUBLISHER", "log"),
+func buildPublisher(st storage, brokers []string, logger *slog.Logger) (ports.EventPublisher, func(), error) {
+	publisher, _, closeFn, err := composition.BuildEventPublisher(composition.PublisherConfig{
 		Brokers:  brokers,
 		RunRelay: false,
 	}, st.pool, st.tasks, st.stations, logger)
-	return publisher, closeFn
+	return publisher, closeFn, err
 }
 
 // buildDeps wires the MCP adapter's use cases. CompleteTask gets the same
@@ -201,7 +208,8 @@ func metricsPort(m *observability.Metrics) ports.Metrics {
 	return m
 }
 
-// buildStorage selects the in-memory or Postgres outbound adapters.
+// buildStorage opens the Postgres outbound adapters; an empty databaseURL is
+// the boot error errNoDatabase (there is no in-memory path).
 // The Postgres path runs the schema migrations, opens the pool, and
 // verifies it with a ping, each under boot retry: this fleet's Istio
 // native sidecars reset EVERY pod's first outbound TCP dial ~10s after
@@ -233,8 +241,7 @@ func buildStorage(ctx context.Context, databaseURL, migrationsDatabaseURL, migra
 	noop := func() {}
 
 	if databaseURL == "" {
-		logger.Info("database url not configured; using in-memory adapters")
-		return storage{tasks: memory.NewTaskRepo(), stations: memory.NewStationRepo()}, noop, nil
+		return storage{}, noop, errNoDatabase
 	}
 
 	if err := bootretry.Retry(ctx, logger, "run migrations", func() error {
