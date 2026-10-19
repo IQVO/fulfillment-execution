@@ -22,10 +22,13 @@ type bootConfig struct {
 	// connection string used ONLY for the golang-migrate startup step; it
 	// falls back to databaseURL (see openStorage's doc comment and ADR-0031).
 	migrationsDatabaseURL string
-	kafkaBrokers          []string
-	workReleasedGroup     string
-	classification        classificationConfig
-	interleaving          interleavingConfig
+	// migrationsPath is the golang-migrate source directory (MIGRATIONS_PATH,
+	// default "migrations", the directory the image ships).
+	migrationsPath    string
+	kafkaBrokers      []string
+	workReleasedGroup string
+	classification    classificationConfig
+	interleaving      interleavingConfig
 }
 
 // parseBrokers splits KAFKA_BROKERS (comma separated), trimming blanks. It
@@ -64,11 +67,15 @@ func loadBootConfig(env func(string) string) (bootConfig, error) {
 	cfg := bootConfig{
 		databaseURL:           databaseURL,
 		migrationsDatabaseURL: databaseURL,
+		migrationsPath:        "migrations",
 		kafkaBrokers:          parseBrokers(env("KAFKA_BROKERS")),
 		workReleasedGroup:     strings.TrimSpace(env("WORK_RELEASED_CONSUMER_GROUP")),
 	}
 	if v := env("MIGRATIONS_DATABASE_URL"); v != "" {
 		cfg.migrationsDatabaseURL = v
+	}
+	if v := env("MIGRATIONS_PATH"); v != "" {
+		cfg.migrationsPath = v
 	}
 	var errs []error
 	if cfg.databaseURL == "" {

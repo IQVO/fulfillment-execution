@@ -9,6 +9,7 @@
 //
 //	DATABASE_URL                           Postgres DSN (REQUIRED)
 //	MIGRATIONS_DATABASE_URL                direct DSN for the boot migrations (default DATABASE_URL)
+//	MIGRATIONS_PATH                        golang-migrate source directory (default migrations)
 //	KAFKA_BROKERS                          comma-separated brokers (REQUIRED: relay, consumers, /readyz)
 //	WORK_RELEASED_CONSUMER_GROUP           stable group of the WorkReleased consumer (REQUIRED)
 //	PRODUCT_CLASSIFICATION_CONSUMER_GROUP  stable group of the ProductClassified consumer (REQUIRED)
@@ -106,7 +107,7 @@ func run(ctx context.Context) error {
 	}
 	defer closeCatalogue(catalogue.kafka)
 
-	storage, err := openStorage(ctx, logger, cfg.databaseURL, cfg.migrationsDatabaseURL, "migrations")
+	storage, err := openStorage(ctx, logger, cfg.databaseURL, cfg.migrationsDatabaseURL, cfg.migrationsPath)
 	if err != nil {
 		return err
 	}
