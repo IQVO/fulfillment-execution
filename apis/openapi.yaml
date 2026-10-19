@@ -106,26 +106,19 @@ paths:
         status, headers and task id — including a cached 4xx) instead of
         creating a duplicate. Reusing a key with a different body is
         rejected with `422 idempotency-key-reused`; omitting the header is
-        `400 idempotency-key-required`. (Key enforcement requires the
-        Postgres-backed deployment; the in-memory development
-        configuration skips it.) Without a repeated key every call creates
-        a new task with a fresh, server-generated id.
+        `400 idempotency-key-required`. Postgres is the only runtime, so
+        the check is on in every deployment. Without a repeated key every
+        call creates a new task with a fresh, server-generated id.
       parameters:
         - name: Idempotency-Key
           in: header
-          # Declared optional in the schema because enforcement is
-          # deployment-dependent: with Postgres (every real deployment) a
-          # missing key is 400 idempotency-key-required; the in-memory
-          # development/contract-test configuration has no idempotency store
-          # and ignores the header. Clients MUST always send it.
-          required: false
+          required: true
           description: >
             Caller-supplied unique key (e.g. a UUID) identifying this
             creation attempt. **Clients must always send a non-empty key**: a
-            Postgres-backed deployment rejects a missing key with `400
-            idempotency-key-required` (the in-memory development
-            configuration ignores the header, which is why the schema marks
-            it optional). Retries of the same logical request must reuse it;
+            missing key is rejected with `400 idempotency-key-required`
+            (Postgres is the only runtime, so the check is on in every
+            deployment). Retries of the same logical request must reuse it;
             a genuinely different request must use a new one.
           schema:
             type: string
