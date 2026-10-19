@@ -1,6 +1,29 @@
 // Command execution is the composition root for the Fulfillment Execution
 // service: it wires env config to adapters, adapters to use cases, and use
-// cases to the HTTP router.
+// cases to the HTTP router, the Kafka consumers and the outbox relay, all on
+// real Postgres and real Kafka (the real-wiring ADR: there is no in-memory
+// runtime and no log sink).
+//
+// Environment (every REQUIRED variable is a boot error that names it, before
+// the listener binds):
+//
+//	DATABASE_URL                           Postgres DSN (REQUIRED)
+//	MIGRATIONS_DATABASE_URL                direct DSN for the boot migrations (default DATABASE_URL)
+//	MIGRATIONS_PATH                        golang-migrate source directory (default migrations)
+//	KAFKA_BROKERS                          comma-separated brokers (REQUIRED: relay, consumers, /readyz)
+//	WORK_RELEASED_CONSUMER_GROUP           stable group of the WorkReleased consumer (REQUIRED)
+//	PRODUCT_CLASSIFICATION_CONSUMER_GROUP  stable group of the ProductClassified consumer (REQUIRED)
+//	TASK_INTERLEAVING_CONSUMER_GROUP       stable group of the InterleavingHintIssued consumer (REQUIRED)
+//	PRODUCT_CLASSIFICATION_MODE            kafka (default); permissive/off/http are boot errors
+//	TASK_INTERLEAVING_MODE                 kafka (default); permissive/off are boot errors
+//	EVENT_PUBLISHER                        kafka (default); log is a boot error
+//	OUTBOX_RELAY_INTERVAL, OUTBOX_MAX_ATTEMPTS, PATH_CATALOGUE_SOURCE, PATH_CATALOGUE_FILE,
+//	LOCATION_ROLE_MODE, FACILITY_LAYOUT_BASE_URL, HTTP_ADDR, LOG_LEVEL, OTEL_*
+//
+// GET /readyz is 200 only while Postgres answers a ping AND a Kafka broker
+// answers a metadata request (verdict cached 3s, bounded 2s) and, with
+// PATH_CATALOGUE_SOURCE=kafka, after the catalogue replay; /healthz is
+// liveness only.
 package main
 
 import (
@@ -26,8 +49,8 @@ import (
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/filecatalog"
 	outboundkafka "github.com/claudioed/fulfillment-execution/internal/adapters/outbound/kafka"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/kafkacatalog"
-	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/postgres"
+	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/system"
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
 	"github.com/claudioed/fulfillment-execution/internal/composition"
@@ -41,55 +64,30 @@ import (
 const workReleasedTopic = "warehouse.work-planning.events"
 
 func main() {
-	if err := run(); err != nil {
+	if err := run(context.Background()); err != nil {
 		slog.Error("service exited with error", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
+// run boots the service and serves until SIGINT/SIGTERM or until ctx is
+// cancelled (the integration test stops the real entry point that way).
+func run(ctx context.Context) error {
 	logger := newLogger(getenv("LOG_LEVEL", "info"))
 	slog.SetDefault(logger)
-	classificationCfg, err := classificationConfigFromEnv()
+
+	// Misconfiguration is refused before anything is opened or bound.
+	cfg, err := loadBootConfig(os.Getenv)
 	if err != nil {
 		return err
 	}
-
-	rootCtx := context.Background()
 	httpAddr := getenv("HTTP_ADDR", ":8080")
-	databaseURL := os.Getenv("DATABASE_URL")
-	// MIGRATIONS_DATABASE_URL, when set, is a DIRECT (non-pooled,
-	// session-mode) Postgres connection string used ONLY for the
-	// golang-migrate startup step inside openStorage below — the pgxpool
-	// this process serves requests through still uses databaseURL,
-	// unchanged. See openStorage's doc comment and ADR-0031 for the full
-	// "why": golang-migrate's postgres driver takes a session-scoped
-	// `SELECT pg_advisory_lock($1)` to serialize concurrent migration
-	// runs, which PgBouncer's transaction-pooling mode (this fleet's
-	// pool_mode for every OLTP DATABASE_URL, warehouse-infra PR #43)
-	// does not support — see order-management ADR-0029, the reference
-	// implementation this fix mirrors. Falls back to databaseURL when
-	// unset, which is every environment that doesn't provision the split
-	// (local dev, CI integration tests, a cluster whose Terraform
-	// predates this fix) — byte-identical to this service's behavior
-	// before this change in that case.
-	migrationsDatabaseURL := getenv("MIGRATIONS_DATABASE_URL", databaseURL)
-	kafkaBrokers := strings.Split(getenv("KAFKA_BROKERS", "localhost:9092"), ",")
 
-	// Telemetry comes up right after the logger and before any adapter, so
-	// everything built below is instrumented. An unreachable Collector is
-	// not fatal: the OTLP exporters dial lazily, so the service starts and
-	// serves normally with telemetry dropped on the floor.
-	otelShutdown := setupTelemetry(rootCtx, logger)
-	if otelShutdown != nil {
-		defer func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := otelShutdown(ctx); err != nil {
-				logger.Error("opentelemetry shutdown failed", "error", err)
-			}
-		}()
-	}
+	// Telemetry comes up right after the config check and before any
+	// adapter, so everything built below is instrumented. An unreachable
+	// Collector is not fatal: the OTLP exporters dial lazily, so the service
+	// starts and serves normally with telemetry dropped on the floor.
+	defer telemetryCloser(setupTelemetry(ctx, logger), logger)()
 
 	metrics := buildMetrics(logger)
 
@@ -103,41 +101,47 @@ func run() error {
 	// In Kafka mode the replay runs in the background from here on; the
 	// wait for it (waitCatalogue) happens only after the HTTP listener is
 	// up (gap fix D24, ADR-0044). File mode returns a nil waitCatalogue.
-	catalogue, kafkaCatalogue, waitCatalogue, err := loadCatalogue(rootCtx, consumerCtx, kafkaBrokers, logger)
+	catalogue, err := loadCatalogue(ctx, consumerCtx, cfg.kafkaBrokers, logger)
 	if err != nil {
 		return err
 	}
-	defer closeCatalogue(kafkaCatalogue)
+	defer closeCatalogue(catalogue.kafka)
 
-	storage, err := openStorage(rootCtx, logger, databaseURL, migrationsDatabaseURL, "migrations")
+	storage, err := openStorage(ctx, logger, cfg.databaseURL, cfg.migrationsDatabaseURL, cfg.migrationsPath)
 	if err != nil {
 		return err
 	}
-	if storage.pool != nil {
-		defer storage.pool.Close()
-	}
+	defer storage.pool.Close()
 
-	publisher, relay, closePublisher := buildEventPublisher(storage.pool, kafkaBrokers, storage.taskRepo, storage.stationRepo, logger)
+	publisher, relay, closePublisher, err := buildEventPublisher(storage, cfg.kafkaBrokers, logger)
+	if err != nil {
+		return err
+	}
 	defer closePublisher()
-	clock := memory.SystemClock{}
+	clock := system.Clock{}
 
-	// readiness gates GET /readyz (ADR-0029 §graceful shutdown). The
-	// zero value is ready; SetNotReady is called as the FIRST step of
-	// the shutdown sequence below, before the HTTP server itself stops
-	// accepting connections, so a Kubernetes readinessProbe has a
-	// chance to observe the flip and stop routing new traffic during
-	// the drain window that follows.
-	readiness := &inboundhttp.Readiness{}
+	// readiness gates GET /readyz (ADR-0029 §graceful shutdown): the drain
+	// gate, the catalogue warm-up and the Postgres + Kafka dependency
+	// checks. SetNotReady is called as the FIRST step of the shutdown
+	// sequence below, before the HTTP server itself stops accepting
+	// connections, so a Kubernetes readinessProbe has a chance to observe
+	// the flip and stop routing new traffic during the drain window.
+	readiness := newReadiness(storage.pool.Ping, cfg.kafkaBrokers)
 
-	classification, err := buildClassification(classificationCfg, storage, kafkaBrokers, logger)
+	classification, err := buildClassification(cfg.classification, storage, cfg.kafkaBrokers, logger)
 	if err != nil {
 		return err
 	}
 	defer classification.close() // after its loop stopped (LIFO), before the pool
+	interleaving, err := buildInterleaving(cfg.interleaving, storage, cfg.kafkaBrokers, logger)
+	if err != nil {
+		return err
+	}
+	defer interleaving.close()
 	lookups := buildOutboundLookups(classification.lookup, logger)
 
 	createTask := &usecases.CreateTask{Tasks: storage.taskRepo, Publisher: publisher, Clock: clock, NewId: newTaskId, UnitOfWork: storage.uow}
-	srv := newHTTPServer(storage, publisher, clock, metrics, lookups, createTask, readiness, logger, httpAddr)
+	srv := newHTTPServer(storage, publisher, clock, metrics, lookups, interleaving.lookup, createTask, readiness, logger, httpAddr)
 
 	// ApplyWorkReleased wraps the same CreateTask the HTTP surface uses,
 	// plus the processed-events claim, inside ONE UnitOfWork — the
@@ -145,10 +149,10 @@ func run() error {
 	// has the full story). CreateTask.UnitOfWork is the SAME instance, so
 	// its nested Execute joins the outer scope instead of opening a
 	// second transaction.
-	consumer, closeConsumer := wireWorkReleasedConsumer(kafkaBrokers, &usecases.ApplyWorkReleased{
+	consumer, closeConsumer := wireWorkReleasedConsumer(cfg.kafkaBrokers, cfg.workReleasedGroup, &usecases.ApplyWorkReleased{
 		CreateTask: createTask,
 		Processed:  storage.processedEvents,
-		Catalogue:  catalogue,
+		Catalogue:  catalogue.catalogue,
 		UnitOfWork: storage.uow,
 	}, logger)
 	defer closeConsumer()
@@ -157,21 +161,38 @@ func run() error {
 	// startup/liveness probes (/healthz) see a live process while /readyz
 	// stays 503 until the replay is done; the WorkReleased consumer, which
 	// needs the complete catalogue, starts only afterwards (ADR-0044).
-	if err := serveWhileWarmingUp(srv, readiness, waitCatalogue, kafkacatalog.WaitReadyTimeout, logger); err != nil {
+	if err := serveWhileWarmingUp(srv, readiness, catalogue.wait, kafkacatalog.WaitReadyTimeout, logger); err != nil {
 		return err
 	}
-	consumerDone := joinDone(
-		startWorkReleasedConsumer(consumer, consumerCtx, logger, kafkaBrokers),
-		startProductClassifiedConsumer(classification.consumer, consumerCtx, logger),
-	)
+	workReleasedDone := startWorkReleasedConsumer(consumer, consumerCtx, logger, cfg.kafkaBrokers)
+	classificationDone := startProductClassifiedConsumer(classification.consumer, consumerCtx, logger)
+	interleavingDone := startInterleavingHintConsumer(interleaving.consumer, consumerCtx, logger)
 
 	// The outbox relay (ADR 0020) runs alongside the HTTP server in the
 	// same process, draining outbox_events onto both Kafka topics. It is
-	// only wired when both Postgres and the kafka publisher are configured.
+	// always on.
 	stopRelay, relayDone := startRelay(relay, logger)
 	defer stopRelay()
 
-	return waitForShutdown(logger, srv, readiness, stopRelay, relayDone, cancelConsumer, consumerDone)
+	return serveUntilSignal(ctx, logger, srv, readiness, stopRelay, relayDone, cancelConsumer,
+		joinDone(workReleasedDone, classificationDone, interleavingDone),
+		namedDone{"outbox relay", relayDone},
+		namedDone{"WorkReleased consumer", workReleasedDone},
+		namedDone{"product classification consumer", classificationDone},
+		namedDone{"interleaving hint consumer", interleavingDone},
+		namedDone{"process-path catalogue consumer", catalogue.done},
+	)
+}
+
+// newReadiness builds the /readyz gate: the drain gate plus a Postgres ping
+// and a Kafka broker answering a topic-less metadata request (never topics:
+// the broker auto-creates them on first write), cached 3s, bounded 2s. The
+// ping is a parameter so the gate is testable without a pool.
+func newReadiness(ping func(context.Context) error, brokers []string) *inboundhttp.Readiness {
+	return inboundhttp.NewReadiness(inboundhttp.DefaultReadinessTTL, inboundhttp.DefaultReadinessTimeout,
+		inboundhttp.Dependency{Name: "postgres", Check: ping},
+		inboundhttp.Dependency{Name: "kafka", Check: outboundkafka.NewBrokerCheck(brokers).Check},
+	)
 }
 
 // buildMetrics creates the task counters. A failure is logged, never
@@ -221,17 +242,12 @@ func closeCatalogue(c *kafkacatalog.Consumer) {
 	}
 }
 
-// startRelay runs the outbox relay in the background when one is wired and
-// returns its stop func plus a channel closed once it has returned
-// (closed immediately when there is no relay).
+// startRelay runs the outbox relay in the background and returns its stop
+// func plus a channel closed once it has returned.
 func startRelay(relay *postgres.OutboxRelay, logger *slog.Logger) (context.CancelFunc, <-chan struct{}) {
 	relayDone := make(chan struct{})
 	relayCtx, stopRelay := context.WithCancel(context.Background())
-	if relay != nil {
-		go runRelay(relayCtx, relayDone, relay, logger)
-	} else {
-		close(relayDone)
-	}
+	go runRelay(relayCtx, relayDone, relay, logger)
 	return stopRelay, relayDone
 }
 
@@ -253,6 +269,9 @@ type outboundLookups struct {
 // (invalid instrument name only, a programming error) -- non-fatal: a nil
 // recorder just means this process runs without the gauge, never without
 // the breaker itself.
+//
+// LOCATION_ROLE_MODE is a REST sync edge to facility-layout, not a database
+// or a broker: it stays out of the real-wiring migration (ADR-0024).
 func buildOutboundLookups(classification ports.ProductClassificationLookup, logger *slog.Logger) outboundLookups {
 	circuitBreakerMetrics, cbmErr := observability.NewCircuitBreakerMetrics()
 	if cbmErr != nil {
@@ -264,26 +283,23 @@ func buildOutboundLookups(classification ports.ProductClassificationLookup, logg
 	}
 }
 
-// newHTTPServer builds the handler set and the HTTP server around it,
-// with the idempotency pool bound when Postgres is configured.
-func newHTTPServer(storage storageAdapters, publisher ports.EventPublisher, clock memory.SystemClock, metrics *observability.Metrics, lookups outboundLookups, createTask *usecases.CreateTask, readiness *inboundhttp.Readiness, logger *slog.Logger, httpAddr string) *http.Server {
-	handlers := buildHandlers(storage, publisher, clock, metrics, lookups.classification, lookups.locationRole, createTask, readiness)
+// newHTTPServer builds the handler set and the HTTP server around it, with
+// the idempotency pool bound (the real runtime always has one; only the unit
+// tests build a server over test doubles without it).
+func newHTTPServer(storage storageAdapters, publisher ports.EventPublisher, clock system.Clock, metrics *observability.Metrics, lookups outboundLookups, hintLookup ports.InterleavingHintLookup, createTask *usecases.CreateTask, readiness *inboundhttp.Readiness, logger *slog.Logger, httpAddr string) *http.Server {
+	handlers := buildHandlers(storage, publisher, clock, metrics, lookups.classification, lookups.locationRole, hintLookup, createTask, readiness, logger)
 	router := inboundhttp.NewRouter(handlers, logger, inboundhttp.WithIdempotencyPool(storage.pool))
 	return &http.Server{Addr: httpAddr, Handler: router, ReadHeaderTimeout: 5 * time.Second}
 }
 
 // wireWorkReleasedConsumer builds the WorkReleased consumer plus its
-// dead-letter writer (when EVENT_PUBLISHER=kafka) and returns one close
-// func releasing the DLQ writer and then the consumer, mirroring the
-// original defer registration order.
-func wireWorkReleasedConsumer(brokers []string, apply *usecases.ApplyWorkReleased, logger *slog.Logger) (*inboundkafka.Consumer, func()) {
-	consumerGroup := getenv("WORK_RELEASED_CONSUMER_GROUP", "fulfillment-execution")
+// dead-letter writer (<topic>.dlq, ADR-0004's documented gap) and returns one
+// close func releasing the DLQ writer and then the consumer.
+func wireWorkReleasedConsumer(brokers []string, consumerGroup string, apply *usecases.ApplyWorkReleased, logger *slog.Logger) (*inboundkafka.Consumer, func()) {
 	consumer := inboundkafka.NewConsumerWithGroup(brokers, workReleasedTopic, consumerGroup, apply, logger)
-	dlqWriter := maybeWireDeadLetter(consumer, brokers, logger)
+	dlqWriter := wireDeadLetter(consumer, brokers, logger)
 	return consumer, func() {
-		if dlqWriter != nil {
-			_ = dlqWriter.Close()
-		}
+		_ = dlqWriter.Close()
 		_ = consumer.Close()
 	}
 }
@@ -308,10 +324,37 @@ func setupTelemetry(rootCtx context.Context, logger *slog.Logger) func(context.C
 	return otelShutdown
 }
 
+// telemetryCloser returns the func that flushes OTel on exit (a no-op when
+// telemetry is disabled), bounded to 5s.
+func telemetryCloser(otelShutdown func(context.Context) error, logger *slog.Logger) func() {
+	if otelShutdown == nil {
+		return func() {}
+	}
+	return func() {
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := otelShutdown(flushCtx); err != nil {
+			logger.Error("opentelemetry shutdown failed", "error", err)
+		}
+	}
+}
+
+// loadedCatalogue is the resolved process-path catalogue source: the
+// catalogue itself, and (Kafka source only) its consumer, the replay wait
+// and a channel closed when the consumer loop returned.
+type loadedCatalogue struct {
+	catalogue ports.PathCatalogue
+	kafka     *kafkacatalog.Consumer
+	wait      func(context.Context) error
+	done      <-chan struct{}
+}
+
 // loadCatalogue resolves the process-path catalogue from its switchable
 // SOURCE (PATH_CATALOGUE_SOURCE=file|kafka, defaulting to "file" so
-// nothing about existing deployments changes unless explicitly opted in —
-// same additive-and-defaulted-off convention as EVENT_PUBLISHER).
+// nothing about existing deployments changes unless explicitly opted in).
+// The catalogue source is configuration, not a database or a broker
+// stand-in: the real-wiring ADR leaves it as it was (warehouse-infra sets
+// kafka; "file" is the documented rollback switch).
 //
 // "file": the original behavior. Loaded and validated once at boot,
 // before anything else stands up — a missing or malformed catalogue
@@ -324,48 +367,49 @@ func setupTelemetry(rootCtx context.Context, logger *slog.Logger) func(context.C
 // the full rationale and how it preserves the same "never serve
 // traffic against an incomplete catalogue" guarantee via a
 // readiness gate rather than a boot-time file read). The consumer loop
-// is started here on consumerCtx, and the returned waitReady blocks
+// is started here on consumerCtx, and the returned wait blocks
 // until the replay reaches the startup watermark; the caller runs it
 // only after the HTTP listener is up, with /readyz false meanwhile
-// (gap fix D24, ADR-0044). waitReady is nil in file mode.
-func loadCatalogue(rootCtx, consumerCtx context.Context, brokers []string, logger *slog.Logger) (ports.PathCatalogue, *kafkacatalog.Consumer, func(context.Context) error, error) {
-	switch getenv("PATH_CATALOGUE_SOURCE", "file") {
-	case "kafka":
-		var kafkaCatalogue *kafkacatalog.Consumer
-		// Retried: kafkacatalog.NewConsumer's newTargetOffsets dials the
-		// broker synchronously (kafkago.DialContext) to capture the
-		// readiness watermark before any consuming begins, and that dial
-		// is exactly this fleet's known ~10s post-start
-		// first-outbound-dial reset (Istio native sidecars;
-		// holdApplicationUntilProxyStarts is a no-op for them). A single
-		// attempt turns that transient condition into CrashLoopBackOff.
-		if err := bootretry.Retry(rootCtx, logger, "dial process-path kafka catalogue", func() error {
-			c, err := kafkacatalog.NewConsumer(rootCtx, brokers, logger)
-			if err != nil {
-				return err
-			}
-			kafkaCatalogue = c
-			return nil
-		}); err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to start the process-path Kafka catalogue: %w", err)
-		}
-		logger.Info("process-path catalogue source configured", "source", "kafka", "topic", kafkacatalog.Topic)
-
-		go func() {
-			logger.Info("process-path catalogue consumer running", "topic", kafkacatalog.Topic)
-			if err := kafkaCatalogue.Run(consumerCtx); err != nil {
-				logger.Error("process-path catalogue consumer stopped", "error", err)
-			}
-		}()
-		return kafkaCatalogue, kafkaCatalogue, catalogueWaiter(kafkaCatalogue, logger), nil
-	default:
+// (gap fix D24, ADR-0044). wait is nil in file mode.
+func loadCatalogue(rootCtx, consumerCtx context.Context, brokers []string, logger *slog.Logger) (loadedCatalogue, error) {
+	if getenv("PATH_CATALOGUE_SOURCE", "file") != "kafka" {
 		catalogue, err := filecatalog.Load(getenv("PATH_CATALOGUE_FILE", "/etc/fulfillment-execution/process-paths.yaml"))
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to load the process-path catalogue: %w", err)
+			return loadedCatalogue{}, fmt.Errorf("failed to load the process-path catalogue: %w", err)
 		}
 		logger.Info("process-path catalogue source configured", "source", "file", "paths", catalogue.Ids())
-		return catalogue, nil, nil, nil
+		return loadedCatalogue{catalogue: catalogue}, nil
 	}
+
+	var kafkaCatalogue *kafkacatalog.Consumer
+	// Retried: kafkacatalog.NewConsumer's newTargetOffsets dials the
+	// broker synchronously (kafkago.DialContext) to capture the
+	// readiness watermark before any consuming begins, and that dial
+	// is exactly this fleet's known ~10s post-start
+	// first-outbound-dial reset (Istio native sidecars;
+	// holdApplicationUntilProxyStarts is a no-op for them). A single
+	// attempt turns that transient condition into CrashLoopBackOff.
+	if err := bootretry.Retry(rootCtx, logger, "dial process-path kafka catalogue", func() error {
+		c, err := kafkacatalog.NewConsumer(rootCtx, brokers, logger)
+		if err != nil {
+			return err
+		}
+		kafkaCatalogue = c
+		return nil
+	}); err != nil {
+		return loadedCatalogue{}, fmt.Errorf("failed to start the process-path Kafka catalogue: %w", err)
+	}
+	logger.Info("process-path catalogue source configured", "source", "kafka", "topic", kafkacatalog.Topic)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		logger.Info("process-path catalogue consumer running", "topic", kafkacatalog.Topic)
+		if err := kafkaCatalogue.Run(consumerCtx); err != nil {
+			logger.Error("process-path catalogue consumer stopped", "error", err)
+		}
+	}()
+	return loadedCatalogue{catalogue: kafkaCatalogue, kafka: kafkaCatalogue, wait: catalogueWaiter(kafkaCatalogue, logger), done: done}, nil
 }
 
 // catalogueWaiter returns the replay wait for the Kafka catalogue: it
@@ -381,9 +425,9 @@ func catalogueWaiter(c *kafkacatalog.Consumer, logger *slog.Logger) func(context
 	}
 }
 
-// storageAdapters groups the environment-selected persistence adapters.
-// pool and uow are nil when running in-memory: the use cases then run
-// Save and Publish back to back (see ports.UnitOfWork).
+// storageAdapters groups the Postgres persistence adapters. pool and uow are
+// always set by openStorage; the zero-pool form exists only for unit tests
+// that build a server over test doubles.
 type storageAdapters struct {
 	taskRepo          ports.TaskRepo
 	stationRepo       ports.StationRepo
@@ -394,14 +438,14 @@ type storageAdapters struct {
 	uow               ports.UnitOfWork
 }
 
-// openStorage selects the in-memory or Postgres outbound adapters. The
-// Postgres path runs the schema migrations, opens the pool, and verifies
-// it with a ping, each under boot retry: this fleet's Istio native
-// sidecars reset EVERY pod's first outbound TCP dial ~10s after the app
-// starts (holdApplicationUntilProxyStarts is a no-op for native
-// sidecars). A single attempt turns that transient condition into
-// CrashLoopBackOff; the retry still fails closed once its budget is
-// exhausted.
+// openStorage opens the Postgres outbound adapters; an empty databaseURL is
+// the boot error errNoDatabase (there is no in-memory path). It runs the
+// schema migrations, opens the pool, and verifies it with a ping, each
+// under boot retry: this fleet's Istio native sidecars reset EVERY pod's
+// first outbound TCP dial ~10s after the app starts
+// (holdApplicationUntilProxyStarts is a no-op for native sidecars). A single
+// attempt turns that transient condition into CrashLoopBackOff; the retry
+// still fails closed once its budget is exhausted.
 //
 // migrationsDatabaseURL is used ONLY for the golang-migrate step below —
 // the pgxpool opened just after it (and used for every subsequent
@@ -422,18 +466,10 @@ type storageAdapters struct {
 // a direct, non-pooled DSN alongside DATABASE_URL for all 9 OLTP
 // services, PR #44) or fall back to databaseURL itself for any
 // environment that doesn't provision the split (local dev, CI
-// integration tests) — byte-identical to this function's behavior before
-// this parameter existed in that case.
+// integration tests).
 func openStorage(rootCtx context.Context, logger *slog.Logger, databaseURL, migrationsDatabaseURL, migrationsPath string) (storageAdapters, error) {
 	if databaseURL == "" {
-		logger.Info("database url not configured; using in-memory adapters")
-		return storageAdapters{
-			taskRepo:          memory.NewTaskRepo(),
-			stationRepo:       memory.NewStationRepo(),
-			packageRepo:       memory.NewPackageRepo(),
-			processedEvents:   memory.NewProcessedEventsRepo(),
-			consolidationRepo: memory.NewOrderConsolidationRepo(),
-		}, nil
+		return storageAdapters{}, errNoDatabase
 	}
 
 	if err := bootretry.Retry(rootCtx, logger, "run migrations", func() error {
@@ -471,10 +507,10 @@ func openStorage(rootCtx context.Context, logger *slog.Logger, databaseURL, migr
 // buildHandlers wires every use case into its inbound HTTP handler.
 // createTask is built by the caller (the WorkReleased consumer shares it)
 // and passed in; everything else is constructed here.
-func buildHandlers(storage storageAdapters, publisher ports.EventPublisher, clock memory.SystemClock, metrics *observability.Metrics, classificationLookup ports.ProductClassificationLookup, locationRoleLookup ports.LocationRoleLookup, createTask *usecases.CreateTask, readiness *inboundhttp.Readiness) *inboundhttp.Handlers {
+func buildHandlers(storage storageAdapters, publisher ports.EventPublisher, clock system.Clock, metrics *observability.Metrics, classificationLookup ports.ProductClassificationLookup, locationRoleLookup ports.LocationRoleLookup, hintLookup ports.InterleavingHintLookup, createTask *usecases.CreateTask, readiness *inboundhttp.Readiness, logger *slog.Logger) *inboundhttp.Handlers {
 	return &inboundhttp.Handlers{
 		CreateTask:         createTask,
-		ClaimNext:          &usecases.ClaimNext{Tasks: storage.taskRepo, Stations: storage.stationRepo, Publisher: publisher, Clock: clock, Metrics: metricsPort(metrics), UnitOfWork: storage.uow},
+		ClaimNext:          &usecases.ClaimNext{Tasks: storage.taskRepo, Stations: storage.stationRepo, Publisher: publisher, Clock: clock, Metrics: metricsPort(metrics), UnitOfWork: storage.uow, Hints: hintLookup, Logger: logger},
 		RenewLease:         &usecases.RenewLease{Tasks: storage.taskRepo, Clock: clock},
 		CompleteTask:       &usecases.CompleteTask{Tasks: storage.taskRepo, Publisher: publisher, Clock: clock, Metrics: metricsPort(metrics), UnitOfWork: storage.uow},
 		SealPackage:        &usecases.SealPackage{Tasks: storage.taskRepo, Packages: storage.packageRepo, Publisher: publisher, Clock: clock, NewId: newPackageId, ClassificationLookup: classificationLookup, UnitOfWork: storage.uow},
@@ -505,18 +541,14 @@ func buildHandlers(storage storageAdapters, publisher ports.EventPublisher, cloc
 	}
 }
 
-// maybeWireDeadLetter wires the WorkReleased consumer's dead-letter writer
+// wireDeadLetter wires the WorkReleased consumer's dead-letter writer
 // (ADR-0004's documented gap): a message that fails processing is
-// published to <topic>.dlq instead of only being logged. Wired the same
-// way EVENT_PUBLISHER is — only when EVENT_PUBLISHER=kafka, since the DLQ
-// writer needs the same brokers and there is no dead-letter concept for
-// the log publisher's local/no-broker dev mode. AllowAutoTopicCreation
-// mirrors every other writer in this codebase (outboundkafka.NewPublisher).
-// It returns the writer for the caller to close, or nil when not wired.
-func maybeWireDeadLetter(consumer *inboundkafka.Consumer, brokers []string, logger *slog.Logger) *kafkago.Writer {
-	if getenv("EVENT_PUBLISHER", "log") != "kafka" {
-		return nil
-	}
+// published to <topic>.dlq instead of only being logged. The DLQ writer
+// needs the same brokers as every other writer and is always wired now that
+// there is no log-only mode. AllowAutoTopicCreation mirrors every other
+// writer in this codebase (outboundkafka.NewDeadLetterWriter). It returns
+// the writer for the caller to close.
+func wireDeadLetter(consumer *inboundkafka.Consumer, brokers []string, logger *slog.Logger) *kafkago.Writer {
 	dlqWriter := newDeadLetterWriter(brokers)
 	consumer.DeadLetter = dlqWriter
 	logger.Info("dead-letter handling configured", "dlq_topic", inboundkafka.DeadLetterTopic(workReleasedTopic))
@@ -558,13 +590,46 @@ func runRelay(ctx context.Context, done chan<- struct{}, relay *postgres.OutboxR
 	}
 }
 
-// waitForShutdown blocks until SIGINT/SIGTERM, stops the Kafka consumers,
-// and drains the HTTP server and the outbox relay, bounded by a 10s
-// deadline.
-func waitForShutdown(logger *slog.Logger, srv *http.Server, readiness *inboundhttp.Readiness, stopRelay context.CancelFunc, relayDone <-chan struct{}, cancelConsumer context.CancelFunc, consumerDone <-chan struct{}) error {
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	<-stop
+// namedDone is a background loop and the channel closed when it returned.
+type namedDone struct {
+	name string
+	done <-chan struct{}
+}
+
+// watchDone returns a channel that receives the name of every loop that
+// returns. The loops only return when stopped or on an unrecoverable failure,
+// so a value read while the service is serving means one died on its own.
+func watchDone(loops ...namedDone) <-chan string {
+	died := make(chan string, len(loops))
+	for _, l := range loops {
+		if l.done == nil {
+			continue
+		}
+		go func() {
+			<-l.done
+			died <- l.name
+		}()
+	}
+	return died
+}
+
+// serveUntilSignal blocks until SIGINT/SIGTERM, ctx cancellation or one of
+// the loops returning on its own, then stops the Kafka consumers and drains
+// the HTTP server and the outbox relay, bounded by a 10s deadline. A loop
+// that died on its own is returned as an error so the process exits non-zero
+// and the orchestrator restarts it, instead of sitting "alive" with a dead
+// consumer or relay.
+func serveUntilSignal(ctx context.Context, logger *slog.Logger, srv *http.Server, readiness *inboundhttp.Readiness, stopRelay context.CancelFunc, relayDone <-chan struct{}, cancelConsumer context.CancelFunc, consumerDone <-chan struct{}, loops ...namedDone) error {
+	sigCtx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	died := watchDone(loops...)
+	var dead error
+	select {
+	case <-sigCtx.Done():
+	case name := <-died:
+		dead = fmt.Errorf("%s stopped unexpectedly: exiting so the orchestrator restarts the service", name)
+		logger.Error("a background loop stopped on its own; shutting down", "loop", name)
+	}
 
 	// Graceful shutdown (ADR-0029 §graceful shutdown), in order:
 	//
@@ -576,8 +641,8 @@ func waitForShutdown(logger *slog.Logger, srv *http.Server, readiness *inboundht
 	//     here only to hit a closing connection.
 	//  2. Stop accepting new HTTP connections and drain in-flight
 	//     requests, bounded by shutdownCtx.
-	//  3. Stop the outbox relay and the WorkReleased Kafka consumer's
-	//     loop cleanly: cancel their contexts (no new message is
+	//  3. Stop the outbox relay and the Kafka consumers' loops
+	//     cleanly: cancel their contexts (no new message is
 	//     fetched/handled after this) and wait, bounded by the SAME
 	//     shutdownCtx, for their goroutines to actually finish
 	//     in-flight work rather than merely asking them to stop and
@@ -588,9 +653,9 @@ func waitForShutdown(logger *slog.Logger, srv *http.Server, readiness *inboundht
 	//     has already stopped touching them, not before).
 	readiness.SetNotReady()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	err := srv.Shutdown(ctx)
+	err := srv.Shutdown(shutdownCtx)
 
 	// Let the relay finish its in-flight pass so an event committed by a
 	// request that completed just before shutdown is not stranded until
@@ -598,37 +663,36 @@ func waitForShutdown(logger *slog.Logger, srv *http.Server, readiness *inboundht
 	stopRelay()
 	select {
 	case <-relayDone:
-	case <-ctx.Done():
+	case <-shutdownCtx.Done():
 		logger.Warn("outbox relay did not stop before the shutdown deadline")
 	}
 
-	// Stop the WorkReleased consumer's loop cleanly: cancel so no NEW
-	// message is fetched, then wait (bounded) for any message already
-	// being handled to finish before this function returns and the
-	// deferred consumer.Close()/kafkaCatalogue.Close() calls run.
+	// Stop the consumers' loops cleanly: cancel so no NEW message is
+	// fetched, then wait (bounded) for any message already being handled
+	// to finish before this function returns and the deferred
+	// consumer.Close()/kafkaCatalogue.Close() calls run.
 	cancelConsumer()
 	select {
 	case <-consumerDone:
-	case <-ctx.Done():
+	case <-shutdownCtx.Done():
 		logger.Warn("kafka consumer did not stop before the shutdown deadline")
 	}
 
-	return err
+	return errors.Join(dead, err)
 }
 
-// buildEventPublisher resolves the publisher env config (EVENT_PUBLISHER,
-// OUTBOX_RELAY_INTERVAL, OUTBOX_MAX_ATTEMPTS) and delegates to the wiring shared with cmd/mcp
-// (composition.BuildEventPublisher), so both deployables publish through
-// the SAME transactional outbox (ADR-0008, ADR-0020). This is the one
-// process that also runs the outbox relay (RunRelay).
-func buildEventPublisher(pool *pgxpool.Pool, brokers []string, tasks ports.TaskRepo, stations ports.StationRepo, logger *slog.Logger) (ports.EventPublisher, *postgres.OutboxRelay, func()) {
+// buildEventPublisher resolves the publisher env config
+// (OUTBOX_RELAY_INTERVAL, OUTBOX_MAX_ATTEMPTS) and delegates to the wiring
+// shared with cmd/mcp (composition.BuildEventPublisher), so both deployables
+// publish through the SAME transactional outbox (ADR-0008, ADR-0020). This is
+// the one process that also runs the outbox relay.
+func buildEventPublisher(storage storageAdapters, brokers []string, logger *slog.Logger) (ports.EventPublisher, *postgres.OutboxRelay, func(), error) {
 	return composition.BuildEventPublisher(composition.PublisherConfig{
-		Kind:             getenv("EVENT_PUBLISHER", "log"),
 		Brokers:          brokers,
 		RunRelay:         true,
 		RelayInterval:    durationEnv("OUTBOX_RELAY_INTERVAL", time.Second),
 		RelayMaxAttempts: outboxMaxAttempts(logger),
-	}, pool, tasks, stations, logger)
+	}, storage.pool, storage.taskRepo, storage.stationRepo, logger)
 }
 
 // outboxMaxAttempts parses OUTBOX_MAX_ATTEMPTS (gap fix D12, ADR 0042): how
@@ -713,7 +777,8 @@ func getenv(key, fallback string) string {
 // adapter via LOCATION_ROLE_MODE (http|permissive), defaulting to
 // "permissive" so existing tests, CI and deployments that do not set the
 // env var are unaffected (see ADR-0024). "http" requires
-// FACILITY_LAYOUT_BASE_URL.
+// FACILITY_LAYOUT_BASE_URL. This is a REST sync edge to a sibling context,
+// out of scope of the real-wiring migration (a follow-up).
 //
 // In http mode the real Client is wrapped in retry (jittered, max 3
 // attempts -- GetRole is a pure read, safe to retry) plus a

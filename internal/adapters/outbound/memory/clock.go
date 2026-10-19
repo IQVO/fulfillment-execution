@@ -5,11 +5,6 @@ import (
 	"time"
 )
 
-// SystemClock implements ports.Clock using wall-clock time.
-type SystemClock struct{}
-
-func (SystemClock) Now() time.Time { return time.Now() }
-
 // FixedClock implements ports.Clock with a settable time, for deterministic
 // tests of lease expiry.
 type FixedClock struct {

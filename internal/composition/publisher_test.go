@@ -2,6 +2,7 @@ package composition_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"testing"
@@ -9,7 +10,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/events"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/postgres"
 	"github.com/claudioed/fulfillment-execution/internal/composition"
@@ -21,7 +21,7 @@ func quietLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard
 // the wiring can be asserted without a database.
 func lazyPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	pool, err := pgxpool.New(context.Background(), "postgres://u:p@127.0.0.1:1/db?sslmode=disable")
+	pool, err := pgxpool.New(context.Background(), "postgres://u:***@127.0.0.1:1/db?sslmode=disable")
 	if err != nil {
 		t.Fatalf("pgxpool.New: %v", err)
 	}
@@ -29,45 +29,50 @@ func lazyPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-func TestBuildEventPublisher_DefaultsToLogPublisher(t *testing.T) {
-	for _, kind := range []string{"", "log", "anything-else"} {
-		pub, relay, closeFn := composition.BuildEventPublisher(
-			composition.PublisherConfig{Kind: kind, RunRelay: true},
-			nil, memory.NewTaskRepo(), memory.NewStationRepo(), quietLogger())
-		if _, ok := pub.(*events.LogPublisher); !ok {
-			t.Errorf("kind %q: publisher = %T, want *events.LogPublisher", kind, pub)
-		}
-		if relay != nil {
-			t.Errorf("kind %q: relay must be nil for the log publisher", kind)
-		}
-		closeFn()
+// There is no log sink and no direct-to-Kafka path: without a pool or
+// without brokers the wiring is an error, never a degraded publisher.
+func TestBuildEventPublisher_RefusesAnythingButTheRealRuntime(t *testing.T) {
+	pool := lazyPool(t)
+	cases := []struct {
+		name    string
+		cfg     composition.PublisherConfig
+		pool    bool
+		wantErr error
+	}{
+		{"no pool", composition.PublisherConfig{Brokers: []string{"127.0.0.1:1"}, RunRelay: true}, false, composition.ErrNoPool},
+		{"no brokers", composition.PublisherConfig{RunRelay: true}, true, composition.ErrNoBrokers},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := pool
+			if !tc.pool {
+				p = nil
+			}
+			pub, relay, closeFn, err := composition.BuildEventPublisher(tc.cfg, p, memory.NewTaskRepo(), memory.NewStationRepo(), quietLogger())
+			defer closeFn()
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+			if pub != nil || relay != nil {
+				t.Fatalf("publisher = %v, relay = %v, want none", pub, relay)
+			}
+		})
 	}
 }
 
-func TestBuildEventPublisher_KafkaWithoutPoolPublishesDirect(t *testing.T) {
-	pub, relay, closeFn := composition.BuildEventPublisher(
-		composition.PublisherConfig{Kind: composition.KafkaPublisher, Brokers: []string{"127.0.0.1:1"}, RunRelay: true},
-		nil, memory.NewTaskRepo(), memory.NewStationRepo(), quietLogger())
-	defer closeFn()
-
-	if _, ok := pub.(*events.MultiPublisher); !ok {
-		t.Errorf("publisher = %T, want *events.MultiPublisher (direct mode)", pub)
-	}
-	if relay != nil {
-		t.Error("direct mode has no outbox, so no relay")
-	}
-}
-
-// With Postgres, the publisher is ALWAYS the transactional OutboxPublisher
-// (ADR-0020). The relay exists only for the process that asked to run it:
-// cmd/execution does, cmd/mcp must not.
-func TestBuildEventPublisher_KafkaWithPoolUsesOutbox(t *testing.T) {
+// The publisher is ALWAYS the transactional OutboxPublisher (ADR-0020). The
+// relay exists only for the process that asked to run it: cmd/execution
+// does, cmd/mcp must not.
+func TestBuildEventPublisher_UsesTheOutbox(t *testing.T) {
 	pool := lazyPool(t)
 
 	t.Run("relay requested (cmd/execution)", func(t *testing.T) {
-		pub, relay, closeFn := composition.BuildEventPublisher(
-			composition.PublisherConfig{Kind: composition.KafkaPublisher, Brokers: []string{"127.0.0.1:1"}, RunRelay: true, RelayInterval: time.Second, RelayMaxAttempts: 7},
+		pub, relay, closeFn, err := composition.BuildEventPublisher(
+			composition.PublisherConfig{Brokers: []string{"127.0.0.1:1"}, RunRelay: true, RelayInterval: time.Second, RelayMaxAttempts: 7},
 			pool, postgres.NewTaskRepo(pool), postgres.NewStationRepo(pool), quietLogger())
+		if err != nil {
+			t.Fatal(err)
+		}
 		defer closeFn()
 
 		if _, ok := pub.(*postgres.OutboxPublisher); !ok {
@@ -83,9 +88,12 @@ func TestBuildEventPublisher_KafkaWithPoolUsesOutbox(t *testing.T) {
 	})
 
 	t.Run("writer only (cmd/mcp)", func(t *testing.T) {
-		pub, relay, closeFn := composition.BuildEventPublisher(
-			composition.PublisherConfig{Kind: composition.KafkaPublisher, Brokers: []string{"127.0.0.1:1"}, RunRelay: false},
+		pub, relay, closeFn, err := composition.BuildEventPublisher(
+			composition.PublisherConfig{Brokers: []string{"127.0.0.1:1"}, RunRelay: false},
 			pool, postgres.NewTaskRepo(pool), postgres.NewStationRepo(pool), quietLogger())
+		if err != nil {
+			t.Fatal(err)
+		}
 		defer closeFn()
 
 		if _, ok := pub.(*postgres.OutboxPublisher); !ok {

@@ -99,28 +99,34 @@ is a reserved keyword) — imported as `pack "github.com/claudioed/fulfillment-e
 
 ## Run
 
-### In-memory (no database required)
+### Requirements: a real Postgres and a real Kafka
 
-Every mode needs a process-path catalogue first: `cmd/execution` loads
+There is no in-memory mode ([ADR-0052](docs/docs/adr/0052-postgres-and-kafka-are-the-only-runtime.md)):
+`cmd/execution` refuses to start without `DATABASE_URL`, `KAFKA_BROKERS` and a
+consumer group per Kafka consumer, naming the missing variable. (The in-memory
+adapters in `internal/adapters/outbound/memory` are test doubles only.)
+
+Every run also needs a process-path catalogue first: `cmd/execution` loads
 `PATH_CATALOGUE_FILE` (default `/etc/fulfillment-execution/process-paths.yaml`)
 at boot and exits if it is missing or invalid
 ([ADR-0017](docs/docs/adr/0017-process-path-catalogue-as-configuration.md)). Point it at the fleet catalogue in `warehouse-infra`:
 
 ```sh
 export PATH_CATALOGUE_FILE=~/warehouse-systems/warehouse-infra/config/process-paths/sortable-fc.yaml
-go run ./cmd/execution
-```
-
-The service starts on `:8080` using in-memory adapters whenever
-`DATABASE_URL` is unset.
-
-### With Postgres
-
-```sh
 docker compose up -d postgres
-export DATABASE_URL="postgres://fulfillment:fulfillment@localhost:5432/fulfillment_execution?sslmode=disable"
+docker run -d --rm --name fe-kafka -p 9092:9092 confluentinc/confluent-local:7.6.1
+export DATABASE_URL="postgres://fulfillment:<POSTGRES_PASSWORD of docker-compose.yml>@localhost:5432/fulfillment_execution?sslmode=disable"
+export KAFKA_BROKERS=localhost:9092
+export WORK_RELEASED_CONSUMER_GROUP=fulfillment-execution
+export PRODUCT_CLASSIFICATION_CONSUMER_GROUP=fulfillment-execution-product-classification
+export TASK_INTERLEAVING_CONSUMER_GROUP=fulfillment-execution-interleaving
 go run ./cmd/execution
 ```
+
+The service starts on `:8080`; `GET /readyz` is 200 once Postgres answers a
+ping and the broker answers a metadata request. The three consumed topics must
+exist when their consumers start (the cluster creates them; locally, produce
+once or create them with the broker's tooling).
 
 On startup, `main.go` applies every migration under `migrations/` via
 `golang-migrate` before serving traffic. To manage migrations independently
@@ -194,14 +200,15 @@ Terraform, and warehouse-ops-agent's `FULFILLMENT_MCP_ENDPOINT` points at
 | Env var        | Default | Purpose                          |
 |----------------|---------|-----------------------------------|
 | `HTTP_ADDR`    | `:8080` | HTTP listen address               |
-| `DATABASE_URL` | (unset) | Postgres DSN; unset selects memory adapters |
+| `DATABASE_URL` | (required) | Postgres DSN; unset is a boot error ([ADR-0052](docs/docs/adr/0052-postgres-and-kafka-are-the-only-runtime.md)): there is no in-memory mode |
 | `MIGRATIONS_DATABASE_URL` | `DATABASE_URL` | Direct (non-PgBouncer) DSN used only for the golang-migrate startup step, in `cmd/execution` and `cmd/mcp` — see [ADR-0031](docs/docs/adr/0031-migrations-direct-postgres-connection.md) |
-| `KAFKA_BROKERS` | `localhost:9092` | Comma-separated Kafka broker list, used by the consumers, the publishers and the outbox relay |
-| `WORK_RELEASED_CONSUMER_GROUP` | `fulfillment-execution` | Consumer group of the `WorkReleased` consumer on `warehouse.work-planning.events` |
+| `KAFKA_BROKERS` | (required) | Comma-separated Kafka broker list, used by the consumers, the publishers, the outbox relay and `/readyz`; unset is a boot error, there is no `localhost:9092` default |
+| `WORK_RELEASED_CONSUMER_GROUP` | (required) | Stable consumer group of the `WorkReleased` consumer on `warehouse.work-planning.events` (the chart renders `fulfillment-execution`) |
+| `PRODUCT_CLASSIFICATION_CONSUMER_GROUP`, `TASK_INTERLEAVING_CONSUMER_GROUP` | (required) | Stable consumer groups of the `ProductClassified` and `InterleavingHintIssued` consumers; `PRODUCT_CLASSIFICATION_MODE` and `TASK_INTERLEAVING_MODE` accept only `kafka` (unset = `kafka`) |
 | `PATH_CATALOGUE_SOURCE` | `file` | `file` loads `PATH_CATALOGUE_FILE` at boot; `kafka` replays `warehouse.process-path-management.events` into memory and blocks readiness until the replay catches up — see [ADR-0017](docs/docs/adr/0017-process-path-catalogue-as-configuration.md) |
 | `PATH_CATALOGUE_FILE` | `/etc/fulfillment-execution/process-paths.yaml` | Path to the declared process-path catalogue YAML (see `warehouse-infra`'s `config/process-paths/sortable-fc.yaml`). Loaded once at startup; a missing or invalid file is a fatal boot-time error — see [ADR-0017](docs/docs/adr/0017-process-path-catalogue-as-configuration.md) |
-| `EVENT_PUBLISHER` | `log` | `log` publishes domain events to stdout only; `kafka` additionally publishes `TaskCompleted`, `TaskCPTMissed` and `PackageManifested` to `warehouse.fulfillment.events` AND fans every domain event to `warehouse.fulfillment.analytics` (feeds the report). When `DATABASE_URL` is also set, both topics are fed through the **transactional outbox** (`outbox_events`, committed in the use case's own transaction and drained by an in-process relay — see [ADR-0020](docs/docs/adr/0020-transactional-outbox.md)); without Postgres, events go straight to the broker |
-| `OUTBOX_RELAY_INTERVAL` | `1s` | How long the outbox relay sleeps between passes when it found nothing to publish (Go duration, e.g. `500ms`). Only used with `EVENT_PUBLISHER=kafka` and `DATABASE_URL` set |
+| `EVENT_PUBLISHER` | `kafka` | `kafka` is the only accepted value (`log` is a boot error): `TaskCompleted`, `TaskCPTMissed` and `PackageManifested` go to `warehouse.fulfillment.events` AND every domain event to `warehouse.fulfillment.analytics` (feeds the report), both through the **transactional outbox** (`outbox_events`, committed in the use case's own transaction and drained by the always-on in-process relay — see [ADR-0020](docs/docs/adr/0020-transactional-outbox.md)) |
+| `OUTBOX_RELAY_INTERVAL` | `1s` | How long the outbox relay sleeps between passes when it found nothing to publish (Go duration, e.g. `500ms`) |
 | `ANALYTICS_DATABASE_URL` | (unset) | Analytical DB DSN, read by `cmd/fulfillment-projector` (read-write) and `cmd/fulfillment-reports` (read-only role). MUST be a different database from `DATABASE_URL` |
 | `ANALYTICS_MIGRATIONS_PATH` | `migrations/analytics` | Analytical golang-migrate migrations the projector runs on start |
 | `ADMIN_ADDR` | `:8091` | `cmd/fulfillment-projector` admin/health listen address |
@@ -210,6 +217,8 @@ Terraform, and warehouse-ops-agent's `FULFILLMENT_MCP_ENDPOINT` points at
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:5173,http://localhost:5184` | Comma-separated browser origins allowed by the CORS middleware on the OLTP API ([ADR-0013](docs/docs/adr/0013-fulfillment-mfe-console-adoption.md)) |
 | `PRODUCT_CLASSIFICATION_MODE` | `permissive` | `permissive` (default, no-op, every scanned SKU treated as unclassified) or `kafka` — SealPackage's per-scanned-SKU DOT hazard lookup reads a local copy of product-master's `ProductClassified` events (ADR-0039). `http` was removed and fails the boot |
 | `PRODUCT_CLASSIFICATION_CONSUMER_GROUP` | (unset) | Consumer group of the `ProductClassified` consumer on `warehouse.product-master.events`; required (boot error when unset) with `PRODUCT_CLASSIFICATION_MODE=kafka` |
+| `TASK_INTERLEAVING_MODE` | `permissive` | `permissive` (default, no-op, claimNext ignores interleaving hints) or `kafka` — claimNext reads a local copy of task-interleaving's `InterleavingHintIssued` events as an advisory tie-break inside one priority band (ADR-0051) |
+| `TASK_INTERLEAVING_CONSUMER_GROUP` | (unset) | Consumer group of the `InterleavingHintIssued` consumer on `warehouse.task-interleaving.events`; required (boot error when unset) with `TASK_INTERLEAVING_MODE=kafka` |
 | `LOCATION_ROLE_MODE` | `permissive` | `permissive` (default, no-op, a supplied `locationCode` is recorded unchecked) or `http` — live registration-time lookup of a station's `locationCode` role from facility-layout, rejecting a KNOWN non-WorkCenter role (ADR-0024) |
 | `FACILITY_LAYOUT_BASE_URL` | (unset) | Base URL for facility-layout's REST API; required when `LOCATION_ROLE_MODE=http` |
 | `LOG_LEVEL`    | `info`  | `debug` \| `info` \| `warn` \| `error`, case-insensitive |

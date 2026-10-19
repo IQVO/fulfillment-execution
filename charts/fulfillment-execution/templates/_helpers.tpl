@@ -49,6 +49,16 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 {{- end }}
 
+{{/*
+Postgres is the only runtime (ADR 0052): the api and mcp binaries refuse to boot
+without DATABASE_URL, so the chart refuses to render without a source for it.
+*/}}
+{{- define "fulfillment-execution.requireDatabase" -}}
+{{- if not (or .Values.database.url .Values.database.existingSecret) -}}
+{{- fail "database.url or database.existingSecret is required: DATABASE_URL is mandatory, this service runs only on a real Postgres" -}}
+{{- end -}}
+{{- end }}
+
 {{- define "fulfillment-execution.analyticsSecretName" -}}
 {{- if .Values.analytics.database.existingSecret }}
 {{- .Values.analytics.database.existingSecret }}

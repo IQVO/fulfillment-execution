@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"strings"
 
 	inboundkafka "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/kafka"
@@ -14,68 +13,55 @@ import (
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
 )
 
-// PRODUCT_CLASSIFICATION_MODE values (ADR-0039). "http" (the live lookup to
-// inventory-storage, ADR-0010) was removed and is rejected at boot, so a
-// stale deployment fails loudly instead of silently running permissive.
+// PRODUCT_CLASSIFICATION_MODE values (ADR-0039, then the real-wiring ADR).
+// The consumer always runs: "kafka" (the default) is the only accepted
+// value. "http" (the live lookup to inventory-storage, ADR-0010) was removed
+// earlier; "permissive" and "off" (no consumer, no lookup) are removed now.
+// Both are rejected at boot, so a stale deployment fails loudly instead of
+// silently running without product classifications.
 const (
-	classificationModeKafka      = "kafka"
-	classificationModePermissive = "permissive"
-	classificationModeRemoved    = "http"
+	classificationModeKafka   = "kafka"
+	classificationModeRemoved = "http"
 )
 
 // classificationConfig is the validated product-classification env config.
 type classificationConfig struct {
-	mode          string
 	consumerGroup string
 }
 
 // errClassificationModeHTTPRemoved is the boot error for the retired mode.
 var errClassificationModeHTTPRemoved = errors.New(
-	"PRODUCT_CLASSIFICATION_MODE=http was removed (ADR-0039): classifications now come from a local copy of " +
-		"product-master's ProductClassified events; set PRODUCT_CLASSIFICATION_MODE=kafka together with " +
-		"PRODUCT_CLASSIFICATION_CONSUMER_GROUP, or permissive")
-
-// classificationConfigFromEnv reads and validates
-// PRODUCT_CLASSIFICATION_MODE and PRODUCT_CLASSIFICATION_CONSUMER_GROUP.
-// run() calls it first, before anything dials: an unknown or removed mode
-// (including the retired "http") or kafka mode without a consumer group
-// stops the boot loudly.
-func classificationConfigFromEnv() (classificationConfig, error) {
-	return parseClassificationConfig(
-		getenv("PRODUCT_CLASSIFICATION_MODE", classificationModePermissive),
-		os.Getenv("PRODUCT_CLASSIFICATION_CONSUMER_GROUP"),
-	)
-}
+	"PRODUCT_CLASSIFICATION_MODE=http was removed (ADR-0039): classifications come from a local copy of " +
+		"product-master's ProductClassified events; leave PRODUCT_CLASSIFICATION_MODE unset (or kafka) and set " +
+		"PRODUCT_CLASSIFICATION_CONSUMER_GROUP")
 
 // parseClassificationConfig validates PRODUCT_CLASSIFICATION_MODE (empty =
-// permissive, case-insensitive) and PRODUCT_CLASSIFICATION_CONSUMER_GROUP.
-// Every invalid combination is a boot error, checked before anything dials.
+// kafka, case-insensitive) and PRODUCT_CLASSIFICATION_CONSUMER_GROUP. Every
+// invalid combination is a boot error naming the variable, checked before
+// anything dials.
 func parseClassificationConfig(mode, consumerGroup string) (classificationConfig, error) {
 	m := strings.ToLower(strings.TrimSpace(mode))
-	if m == "" {
-		m = classificationModePermissive
-	}
-	switch m {
-	case classificationModePermissive:
-		return classificationConfig{mode: m}, nil
-	case classificationModeKafka:
-		group := strings.TrimSpace(consumerGroup)
-		if group == "" {
-			return classificationConfig{}, errors.New(
-				"PRODUCT_CLASSIFICATION_MODE=kafka requires PRODUCT_CLASSIFICATION_CONSUMER_GROUP (a stable consumer group id for the warehouse.product-master.events consumer)")
-		}
-		return classificationConfig{mode: m, consumerGroup: group}, nil
-	case classificationModeRemoved:
+	if m == classificationModeRemoved {
 		return classificationConfig{}, errClassificationModeHTTPRemoved
-	default:
-		return classificationConfig{}, fmt.Errorf("unknown PRODUCT_CLASSIFICATION_MODE %q: want kafka or permissive", mode)
 	}
+	if m == "permissive" || m == "off" {
+		return classificationConfig{}, fmt.Errorf("PRODUCT_CLASSIFICATION_MODE=%s is not supported: this context runs on real Kafka", m)
+	}
+	if m != "" && m != classificationModeKafka {
+		return classificationConfig{}, fmt.Errorf("unknown PRODUCT_CLASSIFICATION_MODE %q: want kafka", mode)
+	}
+	group := strings.TrimSpace(consumerGroup)
+	if group == "" {
+		return classificationConfig{}, errors.New(
+			"PRODUCT_CLASSIFICATION_CONSUMER_GROUP is required: the product-classification consumer always runs on real Kafka (a stable consumer group id for the warehouse.product-master.events consumer)")
+	}
+	return classificationConfig{consumerGroup: group}, nil
 }
 
 // classificationWiring is what the composition root needs from the
-// product-classification choice: the lookup SealPackage reads and, in kafka
-// mode, the ProductClassified consumer that feeds the copy plus the func
-// that closes its reader.
+// product-classification choice: the lookup SealPackage reads, the
+// ProductClassified consumer that feeds the copy and the func that closes
+// its reader.
 type classificationWiring struct {
 	lookup   ports.ProductClassificationLookup
 	apply    *usecases.ApplyProductClassified
@@ -83,31 +69,19 @@ type classificationWiring struct {
 	close    func()
 }
 
-// buildClassification wires the adapters for cfg. kafka mode reads and
-// writes the Postgres copy (product_classification_copy) when a database is
-// configured, or an in-memory copy otherwise, dedupes on the SAME
+// buildClassification wires the adapters for cfg: it reads and writes the
+// Postgres copy (product_classification_copy), dedupes on the SAME
 // processed_events store and UnitOfWork the WorkReleased consumer uses, and
 // builds (but does not start) the warehouse.product-master.events consumer.
+// A storage without a Postgres pool is an error: there is no in-memory copy.
 func buildClassification(cfg classificationConfig, storage storageAdapters, brokers []string, logger *slog.Logger) (classificationWiring, error) {
-	if cfg.mode != classificationModeKafka {
-		logger.Info("product classification lookup configured", "mode", classificationModePermissive)
-		return classificationWiring{lookup: productclassificationcopy.NewPermissiveLookup(), close: func() {}}, nil
+	if storage.pool == nil {
+		return classificationWiring{}, errNoDatabase
 	}
-	var (
-		lookup ports.ProductClassificationLookup
-		store  ports.ProductClassificationCopy
-	)
-	if storage.pool != nil {
-		pg := productclassificationcopy.NewPostgresStore(storage.pool)
-		lookup, store = pg, pg
-	} else {
-		mem := productclassificationcopy.NewMemoryStore()
-		lookup, store = mem, mem
-		logger.Warn("product classification copy is in memory (DATABASE_URL unset): it is rebuilt from the topic only for a new consumer group")
-	}
+	pg := productclassificationcopy.NewPostgresStore(storage.pool)
 	apply := &usecases.ApplyProductClassified{
 		Processed:  storage.processedEvents,
-		Copy:       store,
+		Copy:       pg,
 		UnitOfWork: storage.uow,
 	}
 	consumer, err := inboundkafka.NewProductClassifiedConsumer(brokers, inboundkafka.ProductMasterTopic, cfg.consumerGroup, apply, logger)
@@ -117,7 +91,7 @@ func buildClassification(cfg classificationConfig, storage storageAdapters, brok
 	logger.Info("product classification lookup configured", "mode", classificationModeKafka,
 		"topic", inboundkafka.ProductMasterTopic, "consumer_group", cfg.consumerGroup)
 	return classificationWiring{
-		lookup:   lookup,
+		lookup:   pg,
 		apply:    apply,
 		consumer: consumer,
 		close:    func() { _ = consumer.Close() },

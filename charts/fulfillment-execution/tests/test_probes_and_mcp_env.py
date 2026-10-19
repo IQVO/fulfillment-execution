@@ -2,10 +2,12 @@
 """Assert the OLTP probes follow ADR-0029 and the MCP pod can publish events.
 
 - The OLTP Deployment's readinessProbe must hit /readyz (it flips to 503 as the
-  first step of graceful shutdown); startup/liveness stay on /healthz.
+  first step of graceful shutdown and, since ADR 0052, while Postgres or Kafka
+  is unreachable); startup/liveness stay on /healthz.
 - The MCP Deployment must carry EVENT_PUBLISHER and KAFKA_BROKERS so
   complete_task writes the same outbox rows as REST (ADR-0008, ADR-0020).
-  EVENT_PUBLISHER inherits config.eventPublisher unless mcp.eventPublisher is set.
+  EVENT_PUBLISHER is config.eventPublisher (kafka, the only accepted value);
+  there is no per-MCP override any more.
 
 Run: python3 charts/fulfillment-execution/tests/test_probes_and_mcp_env.py
 """
@@ -17,11 +19,14 @@ import sys
 from pathlib import Path
 
 CHART_DIR = Path(__file__).resolve().parents[1]
+# Postgres is the only runtime (ADR 0052): the chart refuses to render without
+# a DATABASE_URL source.
+REQUIRED = ["--set", "database.url=postgres://u@example.invalid:5432/db"]
 
 
 def render(extra_args: list[str]) -> list[dict]:
     out = subprocess.run(
-        ["helm", "template", "fulfillment-execution", str(CHART_DIR), *extra_args],
+        ["helm", "template", "fulfillment-execution", str(CHART_DIR), *REQUIRED, *extra_args],
         capture_output=True, text=True, check=True,
     ).stdout
     try:
@@ -58,15 +63,12 @@ def main() -> int:
     for key in ("EVENT_PUBLISHER", "KAFKA_BROKERS"):
         if not mcp_env.get(key):
             failures.append(f"MCP deployment must set {key}")
+    if mcp_env.get("EVENT_PUBLISHER") != "kafka":
+        failures.append("MCP EVENT_PUBLISHER must be kafka by default")
 
     docs = render(["--set", "mcp.enabled=true", "--set", "config.eventPublisher=kafka"])
     if env(container(docs, "fulfillment-execution-mcp")).get("EVENT_PUBLISHER") != "kafka":
-        failures.append("MCP EVENT_PUBLISHER must inherit config.eventPublisher")
-
-    docs = render(["--set", "mcp.enabled=true", "--set", "config.eventPublisher=kafka",
-                   "--set", "mcp.eventPublisher=log"])
-    if env(container(docs, "fulfillment-execution-mcp")).get("EVENT_PUBLISHER") != "log":
-        failures.append("mcp.eventPublisher must override config.eventPublisher")
+        failures.append("MCP EVENT_PUBLISHER must come from config.eventPublisher")
 
     if failures:
         for f in failures:

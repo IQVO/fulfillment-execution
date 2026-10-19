@@ -1,5 +1,7 @@
 # Fulfillment Execution (Core Bounded Context)
 
+<!-- harness-template: v4 -->
+
 Turns released work into completed physical operations: the **task lifecycle**
 for Pick, Pack, SLAM, and Rebin. Downstream of Work Planning; issues commands
 to WCS/equipment (seam only — no WCS tier exists yet). **Study project**, not

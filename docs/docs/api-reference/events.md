@@ -107,6 +107,7 @@ rejected.
 | `warehouse.fulfillment.analytics` | published, consumed by this service's own projector | Analytics events ([ADR-0012](../adr/0012-analytical-data-product.md)) |
 | `warehouse.work-planning.events` | consumed | `WorkReleased` from wes-work-planning |
 | `warehouse.process-path-management.events` | consumed (when `PATH_CATALOGUE_SOURCE=kafka`) | `ProcessPath*` catalogue events |
+| `warehouse.task-interleaving.events` | consumed (when `TASK_INTERLEAVING_MODE=kafka`) | `InterleavingHintIssued` from task-interleaving ([ADR-0051](../adr/0051-interleaving-hints-advise-claimnext.md)) |
 
 Server: `kafka.warehouse-systems.internal:9092`, protocol `kafka`, configured
 per service via `KAFKA_BROKERS`.
@@ -177,6 +178,7 @@ and are not published on either topic.
 | --- | --- | --- | --- |
 | `wes-work-planning` | `warehouse.work-planning.events` | `com.warehouse.wes.work-planning.workunit.WorkReleased` | Creates a `Task` via the `CreateTask` use case |
 | `process-path-management` | `warehouse.process-path-management.events` | `com.warehouse.wes.process-path-management.processpath.ProcessPathCreated` / `ProcessPathUpdated` / `ProcessPathDeactivated` | Maintains the in-memory process-path catalogue |
+| `task-interleaving` | `warehouse.task-interleaving.events` | `com.warehouse.wes.task-interleaving.stationtrip.InterleavingHintIssued` | Supersedes the station's row of `interleaving_hints`; `ClaimNext` reads it as an advisory tie-break inside one priority band ([ADR-0051](../adr/0051-interleaving-hints-advise-claimnext.md)) |
 
 Consumers dispatch on the **full** `type` string — never a short name, never a
 suffix match — and silently ignore unknown types, so new event types upstream

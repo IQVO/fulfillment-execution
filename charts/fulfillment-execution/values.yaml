@@ -167,12 +167,24 @@ autoscaling:
 
 config:
   httpAddr: ":8080"
-  # "log" or "kafka". "kafka" gates ALL Kafka event publishing, not just
-  # TaskCompleted: both outbox encoders (the integration topic —
-  # TaskCompleted, TaskCPTMissed, PackageManifested — and the analytics
-  # topic) and the WorkReleased consumer's dead-letter (<topic>.dlq) writer.
-  # "log" only logs events; no event reaches a broker and no DLQ is wired.
-  eventPublisher: "log"
+  # EVENT_PUBLISHER. "kafka" is the ONLY accepted value (Postgres and Kafka
+  # are the only runtime, ADR 0052): "log" and any other value fail the boot
+  # naming the variable. Both outbox encoders (the integration topic and the
+  # analytics topic), the always-on outbox relay and the WorkReleased
+  # consumer's dead-letter (<topic>.dlq) writer run in every deployment.
+  eventPublisher: "kafka"
+  # Stable consumer group of the WorkReleased consumer
+  # (WORK_RELEASED_CONSUMER_GROUP, REQUIRED by the binary: an empty value is a
+  # boot error). The default is the group the binary used before the variable
+  # became mandatory, so an upgrade keeps its committed offsets.
+  workReleasedConsumerGroup: "fulfillment-execution"
+  # The other two consumer groups. PRODUCT_CLASSIFICATION_CONSUMER_GROUP and
+  # TASK_INTERLEAVING_CONSUMER_GROUP are REQUIRED by the binary too. The chart
+  # renders these defaults ONLY when extraEnv does not already carry the same
+  # name (warehouse-infra sets both through extraEnv, and a duplicate env
+  # entry breaks ArgoCD's diff), so extraEnv wins and nothing is duplicated.
+  productClassificationConsumerGroup: "fulfillment-execution-product-classification"
+  taskInterleavingConsumerGroup: "fulfillment-execution-interleaving"
   # Outbox relay attempt cap (gap fix D12, ADR-0042); OUTBOX_MAX_ATTEMPTS. A row
   # that has failed this many sends is excluded from the relay's claims (it
   # stays in outbox_events with attempts/last_error, logged at ERROR) so one
@@ -198,14 +210,13 @@ database:
   # incompatibility this key exists to route migrations around.
   migrationsExistingSecretKey: "MIGRATIONS_DATABASE_URL"
 
-# IMPORTANT: unlike the other three services, this one's inbound Kafka
-# consumer (WorkReleased -> CreateTask) starts UNCONDITIONALLY at boot and
-# always needs a reachable KAFKA_BROKERS value (the binary defaults to
-# localhost:9092 if unset, which is never correct inside a cluster). Keep
-# kafka.brokers pointed at a real broker even if kafka.enabled (the outbound
-# TaskCompleted publisher toggle) is false.
+# Every binary of this chart requires a reachable broker (the WorkReleased,
+# ProductClassified and InterleavingHintIssued consumers, the outbox relay,
+# the DLQ writer, the MCP outbox writer, the analytics projector and /readyz
+# all use it); there is no local default and no "disabled" switch, so
+# KAFKA_BROKERS is always rendered and the render fails when kafka.brokers is
+# empty. /readyz checks broker reachability only, never a topic.
 kafka:
-  enabled: false
   brokers: "kafka:9092"
 
 # Deployment environment, exported as the deployment.environment.name
@@ -222,10 +233,11 @@ otel:
   serviceName: "fulfillment-execution"
 
 # Extra env for the execution container. Product classification (ADR-0039)
-# has no dedicated values: set PRODUCT_CLASSIFICATION_MODE=kafka together with
-# PRODUCT_CLASSIFICATION_CONSUMER_GROUP here (the binary defaults to
-# permissive). PRODUCT_CLASSIFICATION_MODE=http was removed and fails the
-# boot, and INVENTORY_STORAGE_BASE_URL is no longer read.
+# and task-interleaving hints (ADR 0051) run only in kafka mode:
+# PRODUCT_CLASSIFICATION_MODE / TASK_INTERLEAVING_MODE default to kafka,
+# "permissive", "off" and PRODUCT_CLASSIFICATION_MODE=http fail the boot, and
+# INVENTORY_STORAGE_BASE_URL is no longer read. The consumer groups come from
+# config.* above unless an entry here names them first.
 extraEnv: []
 
 # ---------------------------------------------------------------------------
@@ -459,10 +471,9 @@ mcp:
   replicaCount: 1
   httpAddr: ":8090"       # MCP_ADDR — Streamable HTTP at / and /mcp, /healthz
   logLevel: "info"
-  # EVENT_PUBLISHER for the MCP process. Empty inherits config.eventPublisher.
-  # With "kafka" and a database, complete_task writes outbox_events rows that
-  # the main deployment's relay publishes (ADR-0008, ADR-0020).
-  eventPublisher: ""
+  # complete_task writes outbox_events rows that the main deployment's relay
+  # publishes (ADR-0008, ADR-0020); EVENT_PUBLISHER is config.eventPublisher
+  # (kafka, the only accepted value).
   service:
     type: ClusterIP
     port: 8090

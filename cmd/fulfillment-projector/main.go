@@ -32,6 +32,23 @@ import (
 // without it.
 var errMissingAnalyticsURL = errors.New("ANALYTICS_DATABASE_URL is required")
 
+// errMissingBrokers is returned when KAFKA_BROKERS is unset: the projector
+// consumes the analytics topic on real Kafka and there is no localhost
+// default (the real-wiring ADR).
+var errMissingBrokers = errors.New("KAFKA_BROKERS is required: this context runs on real Kafka")
+
+// parseBrokers splits KAFKA_BROKERS (comma separated), trimming blanks. It
+// returns nil when nothing is configured.
+func parseBrokers(raw string) []string {
+	var brokers []string
+	for _, b := range strings.Split(raw, ",") {
+		if b = strings.TrimSpace(b); b != "" {
+			brokers = append(brokers, b)
+		}
+	}
+	return brokers
+}
+
 func main() {
 	if err := run(); err != nil {
 		slog.Error("fulfillment-projector exited with error", "error", err)
@@ -53,7 +70,10 @@ func run() error {
 	if analyticsURL == "" {
 		return errMissingAnalyticsURL
 	}
-	kafkaBrokers := strings.Split(getenv("KAFKA_BROKERS", "localhost:9092"), ",")
+	kafkaBrokers := parseBrokers(os.Getenv("KAFKA_BROKERS"))
+	if len(kafkaBrokers) == 0 {
+		return errMissingBrokers
+	}
 	migrationsPath := getenv("ANALYTICS_MIGRATIONS_PATH", "migrations/analytics")
 
 	pool, err := openAnalyticsPool(rootCtx, logger, analyticsURL, migrationsPath)
