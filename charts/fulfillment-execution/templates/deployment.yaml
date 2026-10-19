@@ -67,12 +67,30 @@ spec:
             # Outbox relay attempt cap (gap fix D12, ADR-0042).
             - name: OUTBOX_MAX_ATTEMPTS
               value: {{ .Values.config.outboxMaxAttempts | quote }}
-            # KAFKA_BROKERS is always set: the inbound WorkReleased consumer
-            # in this service starts unconditionally at boot, unlike the
-            # other three services where it's gated by kafka.enabled.
+            # KAFKA_BROKERS is always set and required: Postgres and Kafka are
+            # the only runtime (ADR 0052), so the render fails when it is empty.
             - name: KAFKA_BROKERS
-              value: {{ .Values.kafka.brokers | quote }}
-            {{- if or .Values.database.url .Values.database.existingSecret }}
+              value: {{ required "kafka.brokers is required: every binary of this chart runs on a real Kafka" .Values.kafka.brokers | quote }}
+            # One stable consumer group per Kafka consumer; a missing one is a
+            # boot error. extraEnv wins: warehouse-infra sets the
+            # classification and interleaving groups there and a duplicate env
+            # entry breaks ArgoCD's diff, so the chart default is rendered
+            # only when extraEnv does not name the variable.
+            {{- $extra := dict }}
+            {{- range .Values.extraEnv }}
+            {{- $_ := set $extra .name true }}
+            {{- end }}
+            - name: WORK_RELEASED_CONSUMER_GROUP
+              value: {{ required "config.workReleasedConsumerGroup is required" .Values.config.workReleasedConsumerGroup | quote }}
+            {{- if not (hasKey $extra "PRODUCT_CLASSIFICATION_CONSUMER_GROUP") }}
+            - name: PRODUCT_CLASSIFICATION_CONSUMER_GROUP
+              value: {{ required "config.productClassificationConsumerGroup is required" .Values.config.productClassificationConsumerGroup | quote }}
+            {{- end }}
+            {{- if not (hasKey $extra "TASK_INTERLEAVING_CONSUMER_GROUP") }}
+            - name: TASK_INTERLEAVING_CONSUMER_GROUP
+              value: {{ required "config.taskInterleavingConsumerGroup is required" .Values.config.taskInterleavingConsumerGroup | quote }}
+            {{- end }}
+            {{- include "fulfillment-execution.requireDatabase" . }}
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -91,7 +109,6 @@ spec:
                   name: {{ include "fulfillment-execution.databaseSecretName" . }}
                   key: {{ .Values.database.migrationsExistingSecretKey }}
                   optional: true
-            {{- end }}
             {{- end }}
             {{- if .Values.otel.enabled }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT

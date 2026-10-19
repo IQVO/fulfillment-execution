@@ -8,7 +8,7 @@ data:
   HTTP_ADDR: {{ .Values.config.httpAddr | quote }}
   EVENT_PUBLISHER: {{ .Values.config.eventPublisher | quote }}
   OUTBOX_MAX_ATTEMPTS: {{ .Values.config.outboxMaxAttempts | quote }}
-  KAFKA_BROKERS: {{ .Values.kafka.brokers | quote }}
+  KAFKA_BROKERS: {{ required "kafka.brokers is required: every binary of this chart runs on a real Kafka" .Values.kafka.brokers | quote }}
   {{- if .Values.otel.enabled }}
   OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.otel.endpoint | quote }}
   OTEL_SERVICE_NAME: {{ .Values.otel.serviceName | quote }}
