@@ -15,7 +15,7 @@ import (
 
 	inboundmcp "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/mcp"
 	outboundkafka "github.com/claudioed/fulfillment-execution/internal/adapters/outbound/kafka"
-	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
+	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/system"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
 	"github.com/claudioed/fulfillment-execution/internal/domain/station"
@@ -70,7 +70,7 @@ func TestMCPCompleteTask_WritesOutboxRowsForBothTopics(t *testing.T) {
 	if err := st.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick"))); err != nil {
 		t.Fatalf("save station: %v", err)
 	}
-	clock := memory.SystemClock{}
+	clock := system.Clock{}
 	create := &usecases.CreateTask{
 		Tasks: st.tasks, Publisher: publisher, Clock: clock, UnitOfWork: st.uow,
 		NewId: func() shared.TaskId { return "mcp-t1" },

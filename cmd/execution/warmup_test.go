@@ -11,7 +11,7 @@ import (
 
 	inboundhttp "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/http"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/events"
-	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
+	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/system"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
 )
 
@@ -34,7 +34,7 @@ func warmUpServer(t *testing.T, readiness *inboundhttp.Readiness) *http.Server {
 	logger := newLogger("error")
 	storage := inMemoryStorage()
 	publisher := events.NewLogPublisher(logger)
-	clock := memory.SystemClock{}
+	clock := system.Clock{}
 	createTask := &usecases.CreateTask{Tasks: storage.taskRepo, Publisher: publisher, Clock: clock, NewId: newTaskId}
 	srv := newHTTPServer(storage, publisher, clock, nil, outboundLookups{}, nil, createTask, readiness, logger, freeAddr(t))
 	t.Cleanup(func() { _ = srv.Close() })

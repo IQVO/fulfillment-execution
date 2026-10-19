@@ -21,6 +21,7 @@ import (
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/bootretry"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/postgres"
+	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/system"
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
 	"github.com/claudioed/fulfillment-execution/internal/composition"
@@ -182,7 +183,7 @@ func buildDeps(st storage, publisher ports.EventPublisher, metrics ports.Metrics
 		CompleteTask: &usecases.CompleteTask{
 			Tasks:      st.tasks,
 			Publisher:  publisher,
-			Clock:      memory.SystemClock{},
+			Clock:      system.Clock{},
 			Metrics:    metrics,
 			UnitOfWork: st.uow,
 		},

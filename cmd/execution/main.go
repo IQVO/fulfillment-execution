@@ -28,6 +28,7 @@ import (
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/kafkacatalog"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/postgres"
+	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/system"
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
 	"github.com/claudioed/fulfillment-execution/internal/composition"
@@ -114,7 +115,7 @@ func run() error {
 
 	publisher, relay, closePublisher := buildEventPublisher(storage.pool, kafkaBrokers, storage.taskRepo, storage.stationRepo, logger)
 	defer closePublisher()
-	clock := memory.SystemClock{}
+	clock := system.Clock{}
 
 	// readiness gates GET /readyz (ADR-0029 §graceful shutdown). The
 	// zero value is ready; SetNotReady is called as the FIRST step of
@@ -267,7 +268,7 @@ func buildOutboundLookups(classification ports.ProductClassificationLookup, logg
 
 // newHTTPServer builds the handler set and the HTTP server around it,
 // with the idempotency pool bound when Postgres is configured.
-func newHTTPServer(storage storageAdapters, publisher ports.EventPublisher, clock memory.SystemClock, metrics *observability.Metrics, lookups outboundLookups, hintLookup ports.InterleavingHintLookup, createTask *usecases.CreateTask, readiness *inboundhttp.Readiness, logger *slog.Logger, httpAddr string) *http.Server {
+func newHTTPServer(storage storageAdapters, publisher ports.EventPublisher, clock system.Clock, metrics *observability.Metrics, lookups outboundLookups, hintLookup ports.InterleavingHintLookup, createTask *usecases.CreateTask, readiness *inboundhttp.Readiness, logger *slog.Logger, httpAddr string) *http.Server {
 	handlers := buildHandlers(storage, publisher, clock, metrics, lookups.classification, lookups.locationRole, hintLookup, createTask, readiness, logger)
 	router := inboundhttp.NewRouter(handlers, logger, inboundhttp.WithIdempotencyPool(storage.pool))
 	return &http.Server{Addr: httpAddr, Handler: router, ReadHeaderTimeout: 5 * time.Second}
@@ -472,7 +473,7 @@ func openStorage(rootCtx context.Context, logger *slog.Logger, databaseURL, migr
 // buildHandlers wires every use case into its inbound HTTP handler.
 // createTask is built by the caller (the WorkReleased consumer shares it)
 // and passed in; everything else is constructed here.
-func buildHandlers(storage storageAdapters, publisher ports.EventPublisher, clock memory.SystemClock, metrics *observability.Metrics, classificationLookup ports.ProductClassificationLookup, locationRoleLookup ports.LocationRoleLookup, hintLookup ports.InterleavingHintLookup, createTask *usecases.CreateTask, readiness *inboundhttp.Readiness, logger *slog.Logger) *inboundhttp.Handlers {
+func buildHandlers(storage storageAdapters, publisher ports.EventPublisher, clock system.Clock, metrics *observability.Metrics, classificationLookup ports.ProductClassificationLookup, locationRoleLookup ports.LocationRoleLookup, hintLookup ports.InterleavingHintLookup, createTask *usecases.CreateTask, readiness *inboundhttp.Readiness, logger *slog.Logger) *inboundhttp.Handlers {
 	return &inboundhttp.Handlers{
 		CreateTask:         createTask,
 		ClaimNext:          &usecases.ClaimNext{Tasks: storage.taskRepo, Stations: storage.stationRepo, Publisher: publisher, Clock: clock, Metrics: metricsPort(metrics), UnitOfWork: storage.uow, Hints: hintLookup, Logger: logger},
