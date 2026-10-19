@@ -15,18 +15,8 @@ To reach it locally:
   curl http://localhost:8080/healthz
 {{- end }}
 
-{{- if not (or .Values.database.url .Values.database.existingSecret) }}
-
-NOTE: no database.url / database.existingSecret was set — running with
-IN-MEMORY adapters (state is lost on pod restart).
-{{- end }}
-
-NOTE: this service's Kafka consumer (WorkReleased -> CreateTask) is ALWAYS
-running against kafka.brokers ({{ .Values.kafka.brokers }}), regardless of
-kafka.enabled. Point kafka.brokers at a reachable broker or the pod will log
-connection errors on every poll (it does not crash-loop, but the pull-dispatch
-integration silently does nothing until a broker is reachable).
-{{- if not .Values.kafka.enabled }}
-kafka.enabled is false — this pod does NOT publish TaskCompleted; the
-Work Planning feedback loop will not close.
-{{- end }}
+NOTE: this service runs only on a real Postgres and a real Kafka. The pod
+refuses to start without DATABASE_URL, KAFKA_BROKERS ({{ .Values.kafka.brokers }}) and a
+consumer group per Kafka consumer, and GET /readyz stays 503 until Postgres
+answers a ping and a Kafka broker answers a metadata request (it never checks
+a topic: the writers auto-create theirs).

@@ -23,6 +23,9 @@ import sys
 from pathlib import Path
 
 CHART_DIR = Path(__file__).resolve().parents[1]
+# Postgres is the only runtime (ADR 0052): the chart refuses to render without
+# a DATABASE_URL source.
+REQUIRED = ["--set", "database.url=postgres://u@example.invalid:5432/db"]
 
 ENABLE_EVERYTHING = [
     "--set", "frontend.enabled=true",
@@ -33,7 +36,7 @@ ENABLE_EVERYTHING = [
 
 def render(extra_args: list[str]) -> list[dict]:
     out = subprocess.run(
-        ["helm", "template", "fulfillment-execution", str(CHART_DIR), *extra_args],
+        ["helm", "template", "fulfillment-execution", str(CHART_DIR), *REQUIRED, *extra_args],
         capture_output=True, text=True, check=True,
     ).stdout
     try:
