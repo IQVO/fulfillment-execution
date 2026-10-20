@@ -22,21 +22,21 @@ type RouterOption func(*routerConfig)
 
 type routerConfig struct {
 	// idempotencyPool, when non-nil, wires RequireIdempotencyKey onto
-	// POST /tasks (see idempotency.go and WithIdempotencyPool). A nil
-	// pool means "no transactional Postgres backing wired" (in-memory
-	// dev/test configuration) — the idempotency middleware needs a real
-	// pgxpool.Pool to begin its own transaction, so it is simply not
-	// applied in that case, exactly this codebase's existing convention
-	// for every other optional Postgres-backed capability (UnitOfWork,
-	// the outbox relay).
+	// POST /tasks (see idempotency.go and WithIdempotencyPool). Every cmd
+	// binary passes its Postgres pool, so the check is on in every
+	// deployment; a nil pool exists only for the unit tests that build a
+	// router over in-memory test doubles with no transactional backing —
+	// the middleware needs a real pgxpool.Pool to begin its own
+	// transaction.
 	idempotencyPool *pgxpool.Pool
 }
 
 // WithIdempotencyPool wires RequireIdempotencyKey onto POST /tasks — the
 // one mutating endpoint that creates a NEW resource with a
 // server-generated id (see docs/docs/adr/0028-idempotency-key-middleware.md).
-// A nil pool (or omitting this option entirely) leaves POST /tasks
-// unprotected, matching the in-memory dev/test composition root.
+// cmd/execution always passes its pool (Postgres is the only runtime); a nil
+// pool (or omitting this option entirely) leaves POST /tasks unprotected and
+// is for unit tests over in-memory doubles only.
 func WithIdempotencyPool(pool *pgxpool.Pool) RouterOption {
 	return func(cfg *routerConfig) { cfg.idempotencyPool = pool }
 }
@@ -73,6 +73,9 @@ func NewRouter(h *Handlers, logger *slog.Logger, opts ...RouterOption) *chi.Mux 
 	r.Use(RequestLogger(logger))
 	r.Use(middleware.Recoverer)
 	r.Use(corsMiddleware())
+	// A NUL (U+0000) in a path, query or body is a client error: Postgres
+	// text cannot hold it. Before any route-scoped idempotency middleware.
+	r.Use(rejectNUL)
 
 	r.Get("/healthz", h.GetHealthz)
 	r.Get("/readyz", h.GetReadyz)

@@ -12,6 +12,8 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	inboundmcp "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/mcp"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
@@ -104,8 +106,16 @@ func TestRouterRecordsRequestDuration(t *testing.T) {
 // buildDeps must give CompleteTask the publisher and the UnitOfWork: a nil
 // UnitOfWork is exactly the bug that made complete_task over MCP silent.
 func TestBuildDepsWiresPublisherAndUnitOfWork(t *testing.T) {
-	st := storage{tasks: memory.NewTaskRepo(), stations: memory.NewStationRepo()}
-	pub, closeFn := buildPublisher(st, []string{"127.0.0.1:1"}, newLogger("error"))
+	pool, err := pgxpool.New(context.Background(), "postgres://u:***@127.0.0.1:1/db?sslmode=disable") // lazy: never dials
+	if err != nil {
+		t.Fatalf("pgxpool.New: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	st := storage{tasks: memory.NewTaskRepo(), stations: memory.NewStationRepo(), pool: pool}
+	pub, closeFn, err := buildPublisher(st, []string{"127.0.0.1:1"}, newLogger("error"))
+	if err != nil {
+		t.Fatalf("buildPublisher: %v", err)
+	}
 	defer closeFn()
 
 	deps := buildDeps(st, pub, nil)

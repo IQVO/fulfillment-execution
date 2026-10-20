@@ -42,7 +42,7 @@ spec:
             - name: ADMIN_ADDR
               value: {{ .Values.analytics.projector.adminAddr | quote }}
             - name: KAFKA_BROKERS
-              value: {{ .Values.kafka.brokers | quote }}
+              value: {{ required "kafka.brokers is required: every binary of this chart runs on a real Kafka" .Values.kafka.brokers | quote }}
             - name: ANALYTICS_MIGRATIONS_PATH
               value: {{ .Values.analytics.migrationsPath | quote }}
             - name: ANALYTICS_DATABASE_URL

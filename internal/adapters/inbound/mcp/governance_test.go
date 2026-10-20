@@ -11,6 +11,7 @@ import (
 	inboundmcp "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/mcp"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/events"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
+	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/system"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
 )
 
@@ -38,7 +39,7 @@ var toolNamePattern = regexp.MustCompile(`^[a-z]+(_[a-z]+)+$`)
 func buildDeps() inboundmcp.Deps {
 	tasks := memory.NewTaskRepo()
 	publisher := events.NewBufferedPublisher()
-	clock := memory.SystemClock{}
+	clock := system.Clock{}
 	return inboundmcp.Deps{
 		GetQueueDepth: &usecases.GetQueueDepth{Tasks: tasks},
 		CompleteTask:  &usecases.CompleteTask{Tasks: tasks, Publisher: publisher, Clock: clock},

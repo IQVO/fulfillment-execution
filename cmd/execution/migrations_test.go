@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -20,39 +21,38 @@ func migrationsDirForTest(t *testing.T) string {
 }
 
 // TestMigrationsDatabaseURLFallback proves the fallback wiring
-// cmd/execution/main.go's run() applies before calling openStorage:
-// getenv("MIGRATIONS_DATABASE_URL", databaseURL) must return
-// MIGRATIONS_DATABASE_URL's own value when it is set, and databaseURL
-// itself (DATABASE_URL) when it is unset. This is the exact env-lookup
-// line the fix for the PgBouncer/pg_advisory_lock incompatibility
+// loadBootConfig applies before openStorage runs: MIGRATIONS_DATABASE_URL
+// when it is set, DATABASE_URL itself when it is unset. This is the exact
+// lookup the fix for the PgBouncer/pg_advisory_lock incompatibility
 // (ADR-0031, mirroring order-management's ADR-0029) depends on: any
-// environment that doesn't provision the split (local dev, CI
-// integration tests, a cluster whose Terraform predates this fix) must
-// keep working exactly as before, using DATABASE_URL for everything
-// including migrations.
+// environment that doesn't provision the split (local dev, CI integration
+// tests, a cluster whose Terraform predates this fix) must keep working
+// exactly as before, using DATABASE_URL for everything including
+// migrations.
 func TestMigrationsDatabaseURLFallback(t *testing.T) {
 	const databaseURL = "postgres://u:***@pgbouncer.example:6432/fulfillment_execution?sslmode=disable"
 
 	t.Run("falls back to DATABASE_URL when MIGRATIONS_DATABASE_URL is unset", func(t *testing.T) {
-		t.Setenv("MIGRATIONS_DATABASE_URL", "")
-		os.Unsetenv("MIGRATIONS_DATABASE_URL")
-
-		got := getenv("MIGRATIONS_DATABASE_URL", databaseURL)
-		if got != databaseURL {
-			t.Fatalf("getenv fallback = %q, want the DATABASE_URL value %q", got, databaseURL)
+		cfg, err := loadBootConfig(validEnv(map[string]string{"DATABASE_URL": databaseURL}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.migrationsDatabaseURL != databaseURL {
+			t.Fatalf("migrationsDatabaseURL = %q, want the DATABASE_URL value %q", cfg.migrationsDatabaseURL, databaseURL)
 		}
 	})
 
 	t.Run("uses MIGRATIONS_DATABASE_URL when set, not DATABASE_URL", func(t *testing.T) {
 		const direct = "postgres://u:***@postgres-postgresql.example:5432/fulfillment_execution?sslmode=disable"
-		t.Setenv("MIGRATIONS_DATABASE_URL", direct)
-
-		got := getenv("MIGRATIONS_DATABASE_URL", databaseURL)
-		if got != direct {
-			t.Fatalf("getenv = %q, want the direct MIGRATIONS_DATABASE_URL value %q (must NOT silently keep using DATABASE_URL/PgBouncer)", got, direct)
+		cfg, err := loadBootConfig(validEnv(map[string]string{"DATABASE_URL": databaseURL, "MIGRATIONS_DATABASE_URL": direct}))
+		if err != nil {
+			t.Fatal(err)
 		}
-		if got == databaseURL {
-			t.Fatal("MIGRATIONS_DATABASE_URL and DATABASE_URL collapsed to the same value — the whole point of this env var is that it differs")
+		if cfg.migrationsDatabaseURL != direct {
+			t.Fatalf("migrationsDatabaseURL = %q, want the direct MIGRATIONS_DATABASE_URL value %q (must NOT silently keep using DATABASE_URL/PgBouncer)", cfg.migrationsDatabaseURL, direct)
+		}
+		if cfg.databaseURL != databaseURL {
+			t.Fatalf("databaseURL = %q, want %q: the runtime pool keeps using DATABASE_URL", cfg.databaseURL, databaseURL)
 		}
 	})
 }
@@ -100,27 +100,27 @@ func TestOpenStorage_RetriesTheDatabaseNotJustOnce(t *testing.T) {
 	elapsed := time.Since(start)
 
 	if err == nil {
-		t.Fatal("an unreachable database must fail boot, never fall back to the in-memory repo")
+		t.Fatal("an unreachable database must fail boot")
 	}
 	if elapsed < 1*time.Second {
 		t.Fatalf("elapsed = %v, want at least the first backoff (~1s) — a single attempt would return near-instantly", elapsed)
 	}
 }
 
-// TestOpenStorage_NoDatabaseURLUsesMemoryImmediately proves an unset
-// DATABASE_URL takes the in-memory path with no dial, no backoff, no
-// delay — MIGRATIONS_DATABASE_URL is irrelevant in that case.
-func TestOpenStorage_NoDatabaseURLUsesMemoryImmediately(t *testing.T) {
+// TestOpenStorage_NoDatabaseURLIsABootError proves an empty DATABASE_URL is
+// refused at once (no dial, no backoff) with the error that names the
+// variable: there is no in-memory path behind it.
+func TestOpenStorage_NoDatabaseURLIsABootError(t *testing.T) {
 	logger := newLogger("error")
 	start := time.Now()
 	storage, err := openStorage(context.Background(), logger, "", "", migrationsDirForTest(t))
-	if err != nil {
-		t.Fatalf("openStorage: %v", err)
+	if !errors.Is(err, errNoDatabase) {
+		t.Fatalf("err = %v, want errNoDatabase", err)
 	}
 	if storage.pool != nil {
-		t.Fatal("pool must be nil in the in-memory path")
+		t.Fatal("no pool may be returned alongside the error")
 	}
 	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
-		t.Fatalf("in-memory path took %v; it must not dial or sleep", elapsed)
+		t.Fatalf("the refusal took %v; it must not dial or sleep", elapsed)
 	}
 }
