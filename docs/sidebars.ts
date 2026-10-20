@@ -173,6 +173,8 @@ const sidebars: SidebarsConfig = {
         'adr/0048-sweep-cronjobs-fail-fast',
         'adr/0049-task-pool-events-task-available-and-task-claimed',
         'adr/0050-replenish-tasks-execute-pick-face-replenishment',
+        'adr/0051-interleaving-hints-advise-claimnext',
+        'adr/0052-postgres-and-kafka-are-the-only-runtime',
       ],
     },
   ],

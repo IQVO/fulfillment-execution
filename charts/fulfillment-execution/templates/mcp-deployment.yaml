@@ -45,15 +45,16 @@ spec:
             # REST path (ADR-0008/0020): the MCP process writes the SAME
             # outbox_events rows (integration + analytics topics) inside the
             # use case's transaction; the relay that drains them to Kafka runs
-            # only in the main deployment. EVENT_PUBLISHER/KAFKA_BROKERS mirror
-            # the main deployment unless mcp.eventPublisher overrides it.
+            # only in the main deployment. EVENT_PUBLISHER (kafka, the only
+            # accepted value) and KAFKA_BROKERS (required) mirror the main
+            # deployment.
             - name: EVENT_PUBLISHER
-              value: {{ .Values.mcp.eventPublisher | default .Values.config.eventPublisher | quote }}
+              value: {{ .Values.config.eventPublisher | quote }}
             - name: KAFKA_BROKERS
-              value: {{ .Values.kafka.brokers | quote }}
+              value: {{ required "kafka.brokers is required: every binary of this chart runs on a real Kafka" .Values.kafka.brokers | quote }}
             # The MCP binary runs the SAME use cases as the OLTP service over
             # the SAME database, so it reads the OLTP DATABASE_URL secret.
-            {{- if or .Values.database.url .Values.database.existingSecret }}
+            {{- include "fulfillment-execution.requireDatabase" . }}
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -69,7 +70,6 @@ spec:
                   name: {{ include "fulfillment-execution.databaseSecretName" . }}
                   key: {{ .Values.database.migrationsExistingSecretKey }}
                   optional: true
-            {{- end }}
             {{- end }}
             # The throughput report tool talks to the reports REST service
             # (never the analytical DB); it is only registered when the
