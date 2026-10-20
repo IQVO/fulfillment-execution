@@ -38,9 +38,12 @@ There is no `make run`: start a binary with `go run ./cmd/<binary>` from the
 repository root (the binaries read migrations from the relative
 `migrations/` directory).
 
-## In-memory: no infrastructure needed
+## Requirements: a real Postgres and a real Kafka
 
-Every mode of `cmd/execution` needs a process-path catalogue: with the
+There is no in-memory mode ([ADR-0052](../adr/0052-postgres-and-kafka-are-the-only-runtime.md)).
+`cmd/execution` needs `DATABASE_URL`, `KAFKA_BROKERS` and a consumer group per
+Kafka consumer, and exits at boot naming the first missing variable.
+It also needs a process-path catalogue: with the
 default `PATH_CATALOGUE_SOURCE=file` it loads `PATH_CATALOGUE_FILE` (default
 `/etc/fulfillment-execution/process-paths.yaml`) at boot and exits if it is
 missing or invalid
@@ -49,25 +52,11 @@ at the fleet catalogue in `warehouse-infra`:
 
 ```bash
 export PATH_CATALOGUE_FILE=~/warehouse-systems/warehouse-infra/config/process-paths/sortable-fc.yaml
-go run ./cmd/execution
 ```
 
-It listens on `:8080` and selects in-memory adapters whenever
-`DATABASE_URL` is unset. Startup log from a real run (timestamps removed):
-
-```json
-{"level":"INFO","msg":"process-path catalogue source configured","source":"file","paths":["PICK","PACK","REBIN","SLAM"]}
-{"level":"INFO","msg":"database url not configured; using in-memory adapters"}
-{"level":"INFO","msg":"event publisher configured","publisher":"log"}
-{"level":"INFO","msg":"product classification lookup configured","mode":"permissive"}
-{"level":"INFO","msg":"http server listening","addr":":8080"}
-{"level":"INFO","msg":"kafka consumer starting","topic":"warehouse.work-planning.events","brokers":["localhost:9092"]}
-```
-
-Two things are expected without more setup: the `WorkReleased` consumer
-starts anyway and logs `kafka read failed; retrying` when no broker is
-reachable, and the OTLP exporter logs `opentelemetry error` when no Collector
-listens on `localhost:4317`. Neither stops the service.
+`GET /readyz` is 200 only while Postgres answers a ping and a Kafka broker
+answers a metadata request; `/healthz` is liveness only. The next two sections
+start the dependencies.
 
 ## With Postgres
 
@@ -92,7 +81,8 @@ migrate -path migrations -database "$DATABASE_URL" up
 ```
 
 With Postgres, `POST /tasks` requires an `Idempotency-Key` header
-([ADR-0028](../adr/0028-idempotency-key-middleware.md)).
+([ADR-0028](../adr/0028-idempotency-key-middleware.md)); a NUL (U+0000) in a
+path, query or body is a client error (404 / 400), never a 500.
 
 ## With Kafka
 
@@ -100,25 +90,27 @@ There is **one Kafka broker for the whole platform**: the in-cluster broker of
 the warehouse-infra kind cluster, reachable from your machine at
 `localhost:9092` through its external access listener. This repo
 deliberately has no Kafka in `docker-compose.yml` (the old compose broker is
-retired), and `KAFKA_BROKERS` already defaults to `localhost:9092`.
+retired), and `KAFKA_BROKERS` has no default: export it.
 
 ```bash
-export EVENT_PUBLISHER=kafka     # publish events and wire the WorkReleased DLQ
+export KAFKA_BROKERS=localhost:9092
+export WORK_RELEASED_CONSUMER_GROUP=fulfillment-execution
+export PRODUCT_CLASSIFICATION_CONSUMER_GROUP=fulfillment-execution-product-classification
+export TASK_INTERLEAVING_CONSUMER_GROUP=fulfillment-execution-interleaving
 go run ./cmd/execution
 ```
 
-With `DATABASE_URL` set too, events go through `outbox_events` and the
-in-process relay ([ADR-0020](../adr/0020-transactional-outbox.md)). To read
+Events go through `outbox_events` and the always-on in-process relay
+([ADR-0020](../adr/0020-transactional-outbox.md)); `EVENT_PUBLISHER`, if set,
+must be `kafka`. To read
 the catalogue from process-path-management instead of the file, add
-`PATH_CATALOGUE_SOURCE=kafka`; for the hazmat copy, add
-`PRODUCT_CLASSIFICATION_MODE=kafka` and a
-`PRODUCT_CLASSIFICATION_CONSUMER_GROUP`. Every variable, for every binary, is
+`PATH_CATALOGUE_SOURCE=kafka`. Every variable, for every binary, is
 on [Configuration](../operations/configuration.md).
 
 ## The other binaries
 
 ```bash
-# MCP server on :8090 (same database as cmd/execution, or its own memory)
+# MCP server on :8090 (needs DATABASE_URL and KAFKA_BROKERS, same database as cmd/execution)
 go run ./cmd/mcp
 
 # Analytics needs a SEPARATE database, e.g. inside the compose Postgres:
@@ -128,9 +120,9 @@ go run ./cmd/fulfillment-projector   # :8091, runs migrations/analytics, reads w
 go run ./cmd/fulfillment-reports     # :8092, GET /reports/throughput
 ```
 
-Without `DATABASE_URL`, `cmd/execution` and `cmd/mcp` do **not** share state:
-each has its own in-memory store. The analytics pair only sees events when
-`cmd/execution` runs with `EVENT_PUBLISHER=kafka`.
+`cmd/execution` and `cmd/mcp` share the same Postgres, so MCP's `complete_task`
+rows are drained by `cmd/execution`'s relay. The analytics pair only sees events
+once `cmd/execution` is running.
 
 ## Seeding data
 

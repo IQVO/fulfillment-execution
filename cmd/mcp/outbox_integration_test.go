@@ -15,7 +15,7 @@ import (
 
 	inboundmcp "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/mcp"
 	outboundkafka "github.com/claudioed/fulfillment-execution/internal/adapters/outbound/kafka"
-	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
+	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/system"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
 	"github.com/claudioed/fulfillment-execution/internal/domain/station"
@@ -49,7 +49,6 @@ func TestMCPCompleteTask_WritesOutboxRowsForBothTopics(t *testing.T) {
 		t.Fatalf("connection string: %v", err)
 	}
 
-	t.Setenv("EVENT_PUBLISHER", "kafka")
 	logger := newLogger("error")
 
 	st, closeStorage, err := buildStorage(ctx, url, url, "../../migrations", logger)
@@ -63,14 +62,17 @@ func TestMCPCompleteTask_WritesOutboxRowsForBothTopics(t *testing.T) {
 
 	// Unreachable broker on purpose: cmd/mcp must only INSERT outbox rows
 	// (relay lives in cmd/execution), so it must never touch Kafka.
-	publisher, closePublisher := buildPublisher(st, []string{"127.0.0.1:1"}, logger)
+	publisher, closePublisher, err := buildPublisher(st, []string{"127.0.0.1:1"}, logger)
+	if err != nil {
+		t.Fatalf("buildPublisher: %v", err)
+	}
 	t.Cleanup(closePublisher)
 
 	// Seed a claimed PICK task directly through the repos.
 	if err := st.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick"))); err != nil {
 		t.Fatalf("save station: %v", err)
 	}
-	clock := memory.SystemClock{}
+	clock := system.Clock{}
 	create := &usecases.CreateTask{
 		Tasks: st.tasks, Publisher: publisher, Clock: clock, UnitOfWork: st.uow,
 		NewId: func() shared.TaskId { return "mcp-t1" },
