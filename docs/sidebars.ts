@@ -175,6 +175,7 @@ const sidebars: SidebarsConfig = {
         'adr/0050-replenish-tasks-execute-pick-face-replenishment',
         'adr/0051-interleaving-hints-advise-claimnext',
         'adr/0052-postgres-and-kafka-are-the-only-runtime',
+        'adr/0053-promote-package-exception-facts-to-integration-topic',
       ],
     },
   ],

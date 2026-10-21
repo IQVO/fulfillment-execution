@@ -42,7 +42,7 @@ CloudEvents 1.0 event:
 
 | direction | topic | content |
 |-----------|-------|---------|
-| publish | `warehouse.fulfillment.events` | integration events (`TaskAvailable`, `TaskClaimed`, `TaskCompleted`, `TaskCPTMissed`, `PackageManifested`; [ADR-0049](./0049-task-pool-events-task-available-and-task-claimed.md)) |
+| publish | `warehouse.fulfillment.events` | integration events (`TaskAvailable`, `TaskClaimed`, `TaskCompleted`, `TaskCPTMissed`, `PackageManifested`; [ADR-0049](./0049-task-pool-events-task-available-and-task-claimed.md); `PackageDiverted`, `WeightDiscrepancyDetected` promoted 2026-10-21, [ADR-0053](./0053-promote-package-exception-facts-to-integration-topic.md)) |
 | publish | `warehouse.fulfillment.analytics` | analytics events (10 types, see below) |
 | consume | `warehouse.work-planning.events` | `WorkReleased` from wes-work-planning |
 | consume | `warehouse.process-path-management.events` | `ProcessPath*` catalogue events |
@@ -103,6 +103,8 @@ com.warehouse.wes.fulfillment-execution.task.TaskClaimed          -> task-interl
 com.warehouse.wes.fulfillment-execution.task.TaskCompleted        -> wes-work-planning, labor-performance
 com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed        -> order-management
 com.warehouse.wes.fulfillment-execution.package.PackageManifested -> order-management
+com.warehouse.wes.fulfillment-execution.package.PackageDiverted           -> exception-management (integration + analytics; promoted 2026-10-21, for exception-management — ADR-0053)
+com.warehouse.wes.fulfillment-execution.package.WeightDiscrepancyDetected -> exception-management (integration + analytics; promoted 2026-10-21, for exception-management — ADR-0053)
 com.warehouse.wes.fulfillment-execution.transfer.TransferPicked      -> network-inventory-planning (transfer saga), destination receipt correlation
 com.warehouse.wes.fulfillment-execution.transfer.TransferDispatched  -> network-inventory-planning (transfer saga)
 com.warehouse.wes.fulfillment-execution.transfer.TransferArrived     -> network-inventory-planning (transfer saga), destination receipt/stow
