@@ -1,7 +1,8 @@
 // Package kafka provides the outbound adapter that publishes
 // fulfillment-execution domain events onto Kafka, satisfying
-// ports.EventPublisher. It forwards TaskCompleted, TaskCPTMissed, and
-// PackageManifested — every other event type is not yet part of the
+// ports.EventPublisher. It forwards TaskCompleted, TaskCPTMissed,
+// PackageManifested, PackageDiverted and WeightDiscrepancyDetected (plus the
+// task-pool and transfer facts) — every other event type is not part of the
 // published integration contract and is skipped. TaskCompleted is
 // enriched with the completed Task's OrderRef (looked up via TaskRepo,
 // since the domain event itself carries only TaskId/StationId) — the same
@@ -14,7 +15,8 @@
 // bounded context needs and that this service is the sole owner of.
 // TaskCPTMissed and PackageManifested need no repo enrichment: both carry
 // every field their wire payload needs directly on the domain event
-// itself (see ADR-0025).
+// itself (see ADR-0025); so do PackageDiverted and WeightDiscrepancyDetected,
+// promoted from the analytics topic for exception-management (ADR 0053).
 //
 // Every message is a CloudEvents 1.0 event in structured content mode
 // built by internal/adapters/kafka/cloudevents (ADR-0032); there is no
@@ -120,6 +122,28 @@ type PackageManifestedData struct {
 	OrderRef  string `json:"order_ref"`
 }
 
+// PackageDivertedData is the payload of a published PackageDiverted event:
+// a package that failed its SLAM weigh-check and was routed to the
+// problem-solve area instead of being labelled (ADR 0053). It mirrors the
+// analytics publisher's payload field for field, so the `data` bytes on
+// the integration topic are identical to the analytics occurrence; the
+// exception-management context opens its problem-solve case on it.
+type PackageDivertedData struct {
+	PackageId string `json:"package_id"`
+}
+
+// WeightDiscrepancyDetectedData is the payload of a published
+// WeightDiscrepancyDetected event: the SLAM measurement that caused the
+// divert, both weights in grams (ADR 0053). Fields are declared in
+// alphabetical order ON PURPOSE: the analytics publisher marshals this
+// payload from a map (encoding/json sorts map keys), and the integration
+// `data` is asserted byte-identical to it.
+type WeightDiscrepancyDetectedData struct {
+	ActualG   float64 `json:"actual_g"`
+	ExpectedG float64 `json:"expected_g"`
+	PackageId string  `json:"package_id"`
+}
+
 // TransferFactData is the payload of a published TransferPicked,
 // TransferDispatched or TransferArrived event: the inter-warehouse-
 // transfer correlation the completed Task carried, stamped at release
@@ -146,9 +170,8 @@ type Writer interface {
 
 // Publisher publishes fulfillment-execution domain events onto Kafka as
 // CloudEvents 1.0 structured-mode messages (ADR-0032). It satisfies
-// ports.EventPublisher. Event types other than TaskCompleted,
-// TaskCPTMissed, and PackageManifested are not part of the published
-// integration contract and are skipped.
+// ports.EventPublisher. Event types outside inIntegrationContract are not
+// part of the published integration contract and are skipped.
 type Publisher struct {
 	Writer   Writer
 	Tasks    ports.TaskRepo
@@ -214,6 +237,10 @@ func (p *Publisher) Encode(ctx context.Context, evts ...shared.DomainEvent) ([]E
 			encs, err = p.encodeTaskCPTMissed(ev)
 		case shared.PackageManifested:
 			encs, err = p.encodePackageManifested(ev)
+		case shared.PackageDiverted:
+			encs, err = p.encodePackageDiverted(ev)
+		case shared.WeightDiscrepancyDetected:
+			encs, err = p.encodeWeightDiscrepancyDetected(ev)
 		case shared.TransferPicked:
 			encs, err = p.encodeTransferFact("TransferPicked", ev.TaskId, ev.OccurredAt(), ev.TaskTransferDetails)
 		case shared.TransferDispatched:
@@ -328,6 +355,35 @@ func (p *Publisher) encodePackageManifested(ev shared.PackageManifested) ([]Enco
 	return []Encoded{enc}, nil
 }
 
+// encodePackageDiverted builds the wire form of a PackageDiverted on the
+// integration stream (ADR 0053): same type, subject (package id) and data
+// as the analytics occurrence, no repo enrichment.
+func (p *Publisher) encodePackageDiverted(ev shared.PackageDiverted) ([]Encoded, error) {
+	data := PackageDivertedData{PackageId: string(ev.PackageId)}
+	enc, err := p.encodeIntegration(entityPackage, "PackageDiverted", string(ev.PackageId), ev.OccurredAt(), data)
+	if err != nil {
+		return nil, err
+	}
+	return []Encoded{enc}, nil
+}
+
+// encodeWeightDiscrepancyDetected builds the wire form of a
+// WeightDiscrepancyDetected on the integration stream (ADR 0053): same
+// type, subject (package id) and data as the analytics occurrence, no
+// repo enrichment.
+func (p *Publisher) encodeWeightDiscrepancyDetected(ev shared.WeightDiscrepancyDetected) ([]Encoded, error) {
+	data := WeightDiscrepancyDetectedData{
+		ActualG:   ev.ActualWeight,
+		ExpectedG: ev.ExpectedWeight,
+		PackageId: string(ev.PackageId),
+	}
+	enc, err := p.encodeIntegration(entityPackage, "WeightDiscrepancyDetected", string(ev.PackageId), ev.OccurredAt(), data)
+	if err != nil {
+		return nil, err
+	}
+	return []Encoded{enc}, nil
+}
+
 // encodeTransferFact builds the wire form of one transfer fact. The
 // subject/key is the completing task's id; the CloudEvents time is the
 // completion time (the domain event's occurred-at). Every payload field
@@ -412,6 +468,7 @@ func (p *Publisher) Publish(ctx context.Context, evts ...shared.DomainEvent) err
 func inIntegrationContract(e shared.DomainEvent) bool {
 	switch e.(type) {
 	case shared.TaskCompleted, shared.TaskCPTMissed, shared.PackageManifested,
+		shared.PackageDiverted, shared.WeightDiscrepancyDetected,
 		shared.TaskAvailable, shared.TaskClaimed,
 		shared.TransferPicked, shared.TransferDispatched, shared.TransferArrived:
 		return true
