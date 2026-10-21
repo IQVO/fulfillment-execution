@@ -67,8 +67,8 @@ errored — that is how the two Rebin events stay in-process.
 | `TaskCPTMissed` | `com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed` | `SweepCPTMisses` | `TaskId`, `OrderRef`, `TaskType`, `CPT` | `task_id`, `order_ref`, `task_type`?, `cpt` | — |
 | `ItemPicked` | `com.warehouse.wes.fulfillment-execution.task.ItemPicked` | *(no use case raises it today)* | `TaskId` | — | `task_id`, `task_type` (encoder exists, never fed) |
 | `PackageSealed` | `com.warehouse.wes.fulfillment-execution.package.PackageSealed` | `SealPackage` | `PackageId` | — | `package_id` |
-| `WeightDiscrepancyDetected` | `com.warehouse.wes.fulfillment-execution.package.WeightDiscrepancyDetected` | `RunSlam` (outside tolerance) | `PackageId`, `ExpectedWeight`, `ActualWeight` | — | `package_id`, `expected_g`, `actual_g` |
-| `PackageDiverted` | `com.warehouse.wes.fulfillment-execution.package.PackageDiverted` | `RunSlam` (outside tolerance) | `PackageId` | — | `package_id` |
+| `WeightDiscrepancyDetected` | `com.warehouse.wes.fulfillment-execution.package.WeightDiscrepancyDetected` | `RunSlam` (outside tolerance) | `PackageId`, `ExpectedWeight`, `ActualWeight` | `package_id`, `expected_g`, `actual_g` ([ADR-0053](../adr/0053-promote-package-exception-facts-to-integration-topic.md)) | `package_id`, `expected_g`, `actual_g` |
+| `PackageDiverted` | `com.warehouse.wes.fulfillment-execution.package.PackageDiverted` | `RunSlam` (outside tolerance) | `PackageId` | `package_id` ([ADR-0053](../adr/0053-promote-package-exception-facts-to-integration-topic.md)) | `package_id` |
 | `LabelApplied` | `com.warehouse.wes.fulfillment-execution.package.LabelApplied` | `RunSlam` (within tolerance) | `PackageId` | — | `package_id` |
 | `PackageManifested` | `com.warehouse.wes.fulfillment-execution.package.PackageManifested` | `RunSlam` (within tolerance, alongside `LabelApplied`) | `PackageId`, `OrderRef` | `package_id`, `order_ref` | `package_id`, `order_ref`, `task_type`, `station_id`, `on_time`, `resolved` |
 | `TransferPicked` | `com.warehouse.wes.fulfillment-execution.transfer.TransferPicked` | `CompleteTask` (task with a TRANSFER_PICK correlation block) | `TaskId`, correlation block | `transfer_ref`, `demand_id`?, `work_unit_id`, `task_id`, `work_kind`, `site_id`?, `sku`?, `quantity`? | `task_id` |
@@ -84,16 +84,20 @@ every `package.*` row.
 
 Source: `internal/domain/shared/events.go`,
 `internal/adapters/outbound/kafka/publisher.go` (`inIntegrationContract`,
-`TaskCompletedData`, `TaskCPTMissedData`, `PackageManifestedData`),
+`TaskCompletedData`, `TaskCPTMissedData`, `PackageManifestedData`,
+`PackageDivertedData`, `WeightDiscrepancyDetectedData`),
 `internal/adapters/outbound/kafka/task_pool_events.go` (`TaskAvailableData`,
 `TaskClaimedData`),
 `internal/adapters/outbound/kafka/analytics_publisher.go`
 (`inAnalyticsContract`, `marshalData`), `apis/asyncapi.yaml`.
 
 :::caution[Published is not the same as defined]
-Only **`TaskAvailable`, `TaskClaimed`, `TaskCompleted`, `TaskCPTMissed` and
-`PackageManifested`** (plus the three transfer facts) form the
-integration contract. Ten events go to the analytics topic (everything but
+Only **`TaskAvailable`, `TaskClaimed`, `TaskCompleted`, `TaskCPTMissed`,
+`PackageManifested`, `PackageDiverted` and `WeightDiscrepancyDetected`**
+(plus the three transfer facts) form the integration contract — the two
+package exception facts were promoted from the analytics topic for
+exception-management ([ADR-0053](../adr/0053-promote-package-exception-facts-to-integration-topic.md)).
+Ten events go to the analytics topic (everything but
 `TaskAvailable`, `TaskCPTMissed` and the two Rebin events). `ItemArrivedAtRebin` and
 `OrderConsolidated` (ADR-0016) are in neither allowlist and are not in
 `apis/asyncapi.yaml`; if they are ever published their entity would be
@@ -112,6 +116,7 @@ because it is part of the intended model.
 | `warehouse.fulfillment.events` | `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` | `wes-work-planning` | `RecordCompletion(work_unit_id)` — the drum-buffer-rope feedback edge |
 | `warehouse.fulfillment.events` | `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` | `labor-performance` | Per-associate / per-task-type attribution ([ADR-0014](../adr/0014-labor-performance-integration-hooks.md), [ADR-0023](../adr/0023-task-type-on-wire.md)) |
 | `warehouse.fulfillment.events` | `com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed`, `com.warehouse.wes.fulfillment-execution.package.PackageManifested` | `order-management` | `RepromiseOrder` promise feedback loop ([ADR-0025](../adr/0025-cpt-missed-sweep-and-package-manifested.md)) |
+| `warehouse.fulfillment.events` | `...package.PackageDiverted`, `...package.WeightDiscrepancyDetected` | `exception-management` (planned) | Opens its problem-solve case on the divert ([ADR-0053](../adr/0053-promote-package-exception-facts-to-integration-topic.md)) |
 | `warehouse.fulfillment.events` | `...transfer.TransferPicked`, `...transfer.TransferDispatched`, `...transfer.TransferArrived` | `network-inventory-planning` (transfer saga), destination receipt/stow | Transfer custody facts, one per completed transfer task, selected by `work_kind` ([ADR-0036](../adr/0036-transfer-task-types-and-facts.md)) |
 | `warehouse.fulfillment.analytics` | `...task.TaskClaimed`, `...task.TaskCompleted`, `...task.LeaseExpired`, `...package.WeightDiscrepancyDetected`, `...package.PackageManifested` | this service's `cmd/fulfillment-projector`, group `fulfillment-analytics` | Projects the throughput rollup ([Throughput report](../analytics/throughput-report.md)); every other analytics type is acknowledged without projecting |
 
