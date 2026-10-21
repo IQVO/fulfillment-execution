@@ -17,9 +17,11 @@ shared-broker reality has already caused a real incident once
 
 Not every domain event this service raises belongs on the wire. Check
 `internal/adapters/outbound/kafka/publisher.go`'s doc comment — this
-service forwards only `TaskCompleted`, `TaskCPTMissed` and
-`PackageManifested` on the integration topic; the rest go only to the
-internal analytics topic (ADR-0012), not to sibling contexts. Before adding a new event to the
+service forwards only `TaskCompleted`, `TaskCPTMissed`,
+`PackageManifested`, `PackageDiverted` and `WeightDiscrepancyDetected`
+(plus the task-pool and transfer facts) on the integration topic; the
+rest go only to the internal analytics topic (ADR-0012), not to sibling
+contexts. Before adding a new event to the
 Kafka publisher, confirm a sibling context genuinely needs to react to
 it — `TaskCompleted` is forwarded because wes-work-planning calls
 `RecordCompletion(WorkUnitId)` off it and labor-performance consumes its
