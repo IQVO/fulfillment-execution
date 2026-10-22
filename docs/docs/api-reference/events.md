@@ -121,6 +121,8 @@ per service via `KAFKA_BROKERS`.
 | `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` | `task_id`, `station_id`, `work_unit_id`, `associate_id`, `duration_seconds`, `task_type`, `order_ref`? ([ADR-0040](../adr/0040-task-completed-carries-order-ref.md)), `line_no`? ([ADR-0041](../adr/0041-task-completed-carries-line-no.md)) | wes-work-planning, labor-performance, inventory-storage (pick confirmation) |
 | `com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed` | `task_id`, `order_ref`, `task_type`, `cpt` | order-management |
 | `com.warehouse.wes.fulfillment-execution.package.PackageManifested` | `package_id`, `order_ref` | order-management |
+| `com.warehouse.wes.fulfillment-execution.package.PackageDiverted` | `package_id` | exception-management (planned) ([ADR-0053](../adr/0053-promote-package-exception-facts-to-integration-topic.md)) |
+| `com.warehouse.wes.fulfillment-execution.package.WeightDiscrepancyDetected` | `package_id`, `expected_g`, `actual_g` | exception-management (planned) ([ADR-0053](../adr/0053-promote-package-exception-facts-to-integration-topic.md)) |
 
 ### `TaskCompleted` and the `work_unit_id` enrichment
 
@@ -152,6 +154,19 @@ never in its place — when a package passes its SLAM weigh-check. A
 diverted package (weight outside tolerance) was **not** manifested and
 does not raise this event.
 
+### `PackageDiverted` and `WeightDiscrepancyDetected` — the promoted SLAM exception facts (ADR-0053)
+
+When SLAM finds the weight outside tolerance it raises
+`WeightDiscrepancyDetected` (the measurement) and `PackageDiverted` (the
+divert to the problem-solve area). Both were analytics-only until
+[ADR-0053](../adr/0053-promote-package-exception-facts-to-integration-topic.md)
+promoted them to `warehouse.fulfillment.events` so the
+exception-management context can open a problem-solve case on the divert:
+same `type`, same `subject`/key (the package id) and **byte-identical
+`data`** to the analytics occurrence — a wire test pins the bytes, not
+just the fields. `LabelApplied`, `PackageSealed` and `LeaseExpired` stay
+analytics-only.
+
 ## Events published — analytics (`warehouse.fulfillment.analytics`)
 
 Same `type` strings, `dataschema` `urn:warehouse:fulfillment-execution:analytics:<EventName>:v1`:
@@ -164,9 +179,9 @@ Same `type` strings, `dataschema` `urn:warehouse:fulfillment-execution:analytics
 | `...task.TaskCompleted` | `task_id`, `task_type`, `station_id`, `order_ref`?, `line_no`? |
 | `...task.ItemPicked` | `task_id`, `task_type` |
 | `...package.PackageSealed` | `package_id` |
-| `...package.WeightDiscrepancyDetected` | `package_id`, `expected_g`, `actual_g` |
+| `...package.WeightDiscrepancyDetected` | `package_id`, `expected_g`, `actual_g` — also published on the integration topic ([ADR-0053](../adr/0053-promote-package-exception-facts-to-integration-topic.md)) |
 | `...package.LabelApplied` | `package_id` |
-| `...package.PackageDiverted` | `package_id` |
+| `...package.PackageDiverted` | `package_id` — also published on the integration topic ([ADR-0053](../adr/0053-promote-package-exception-facts-to-integration-topic.md)) |
 | `...package.PackageManifested` | `package_id`, `order_ref`, `task_type`, `station_id`, `on_time`, `resolved` |
 
 `ItemArrivedAtRebin` and `OrderConsolidated` (ADR-0016) are in-process only
