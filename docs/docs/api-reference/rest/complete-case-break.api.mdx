@@ -1,0 +1,71 @@
+---
+id: complete-case-break
+title: "Complete a BREAK_CASE task by breaking the sealed case in inventory-storage"
+description: "A BREAK_CASE task (ADR 0054) is created when an each pick finds only a sealed case at its source. Completing it asks inventory-storage to break the container (`POST /containers/{lpn}:break`) into the loose bin, with an Idempotency-Key stable per task, and only then completes the task and publishes `TaskCompleted`. If inventory-storage cannot be reached the task stays claimed (503); a retry does not break twice."
+sidebar_label: "Complete a BREAK_CASE task by breaking the sealed case in inventory-storage"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "post api-method"
+info_path: docs/api-reference/rest/fulfillment-execution-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Complete a BREAK_CASE task by breaking the sealed case in inventory-storage"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"post"}
+  path={"/tasks/{id}/break-case"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+A BREAK_CASE task (ADR 0054) is created when an each pick finds only a sealed case at its source. Completing it asks inventory-storage to break the container (`POST /containers/{lpn}:break`) into the loose bin, with an Idempotency-Key stable per task, and only then completes the task and publishes `TaskCompleted`. If inventory-storage cannot be reached the task stays claimed (503); a retry does not break twice.
+
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./complete-case-break.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./complete-case-break.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./complete-case-break.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

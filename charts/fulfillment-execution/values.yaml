@@ -185,6 +185,13 @@ config:
   # entry breaks ArgoCD's diff), so extraEnv wins and nothing is duplicated.
   productClassificationConsumerGroup: "fulfillment-execution-product-classification"
   taskInterleavingConsumerGroup: "fulfillment-execution-interleaving"
+  # PACK_VIEW_CONSUMER_GROUP (ADR 0054): the pack-level consumer of
+  # warehouse.product-master.events, a SECOND consumer of that topic, so its
+  # group must differ from productClassificationConsumerGroup.
+  packViewConsumerGroup: "fulfillment-execution-pack-view"
+  # INVENTORY_STORAGE_BASE_URL (ADR 0054): completing a BREAK_CASE task calls
+  # inventory-storage POST /containers/{lpn}:break.
+  inventoryStorageBaseUrl: "http://inventory-storage.warehouse-systems.svc.cluster.local:80"
   # Outbox relay attempt cap (gap fix D12, ADR-0042); OUTBOX_MAX_ATTEMPTS. A row
   # that has failed this many sends is excluded from the relay's claims (it
   # stays in outbox_events with attempts/last_error, logged at ERROR) so one
@@ -236,7 +243,8 @@ otel:
 # and task-interleaving hints (ADR 0051) run only in kafka mode:
 # PRODUCT_CLASSIFICATION_MODE / TASK_INTERLEAVING_MODE default to kafka,
 # "permissive", "off" and PRODUCT_CLASSIFICATION_MODE=http fail the boot, and
-# INVENTORY_STORAGE_BASE_URL is no longer read. The consumer groups come from
+# INVENTORY_STORAGE_BASE_URL is read again (ADR 0054: BREAK_CASE) and comes from
+# config.inventoryStorageBaseUrl above. The consumer groups come from
 # config.* above unless an entry here names them first.
 extraEnv: []
 

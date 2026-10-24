@@ -130,6 +130,8 @@ func startService(t *testing.T, ctx context.Context, e2e e2eEnv) func() error {
 	t.Setenv("WORK_RELEASED_CONSUMER_GROUP", "fe-e2e-work-released")
 	t.Setenv("PRODUCT_CLASSIFICATION_CONSUMER_GROUP", "fe-e2e-product-classification")
 	t.Setenv("TASK_INTERLEAVING_CONSUMER_GROUP", "fe-e2e-interleaving")
+	t.Setenv("PACK_VIEW_CONSUMER_GROUP", "fe-e2e-pack-view")
+	t.Setenv("INVENTORY_STORAGE_BASE_URL", "http://127.0.0.1:1")
 	t.Setenv("EVENT_PUBLISHER", "kafka")
 	t.Setenv("HTTP_ADDR", e2e.addr)
 	t.Setenv("PATH_CATALOGUE_FILE", filepath.Join(e2e.dir, "process-paths.yaml"))

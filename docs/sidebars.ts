@@ -176,6 +176,7 @@ const sidebars: SidebarsConfig = {
         'adr/0051-interleaving-hints-advise-claimnext',
         'adr/0052-postgres-and-kafka-are-the-only-runtime',
         'adr/0053-promote-package-exception-facts-to-integration-topic',
+        'adr/0054-case-and-each-pick-scans-and-break-case-task',
       ],
     },
   ],

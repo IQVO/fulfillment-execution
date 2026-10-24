@@ -29,6 +29,10 @@ type bootConfig struct {
 	workReleasedGroup string
 	classification    classificationConfig
 	interleaving      interleavingConfig
+	// packViewGroup is PACK_VIEW_CONSUMER_GROUP (ADR 0054).
+	packViewGroup string
+	// inventoryStorageURL is INVENTORY_STORAGE_BASE_URL (ADR 0054).
+	inventoryStorageURL string
 }
 
 // parseBrokers splits KAFKA_BROKERS (comma separated), trimming blanks. It
@@ -94,6 +98,12 @@ func loadBootConfig(env func(string) string) (bootConfig, error) {
 	}
 	if cfg.interleaving, err = parseInterleavingConfig(env("TASK_INTERLEAVING_MODE"), env("TASK_INTERLEAVING_CONSUMER_GROUP")); err != nil {
 		errs = append(errs, err)
+	}
+	if cfg.packViewGroup, err = parsePackViewGroup(env("PACK_VIEW_CONSUMER_GROUP"), env("PRODUCT_CLASSIFICATION_CONSUMER_GROUP")); err != nil {
+		errs = append(errs, err)
+	}
+	if cfg.inventoryStorageURL = strings.TrimSpace(env("INVENTORY_STORAGE_BASE_URL")); cfg.inventoryStorageURL == "" {
+		errs = append(errs, errNoInventoryStorage)
 	}
 	if err := errors.Join(errs...); err != nil {
 		return bootConfig{}, fmt.Errorf("invalid configuration: %w", err)

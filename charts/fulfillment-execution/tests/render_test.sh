@@ -76,6 +76,10 @@ grep -q '^  EVENT_PUBLISHER: "kafka"' <<<"$configmap" || fail "the ConfigMap mus
   || fail "PRODUCT_CLASSIFICATION_CONSUMER_GROUP is not rendered by default"
 [[ "$(env_value "$api_deployment" TASK_INTERLEAVING_CONSUMER_GROUP)" == "fulfillment-execution-interleaving" ]] \
   || fail "TASK_INTERLEAVING_CONSUMER_GROUP is not rendered by default"
+[[ "$(env_value "$api_deployment" PACK_VIEW_CONSUMER_GROUP)" == "fulfillment-execution-pack-view" ]] \
+  || fail "PACK_VIEW_CONSUMER_GROUP is not rendered by default"
+[[ "$(env_value "$api_deployment" INVENTORY_STORAGE_BASE_URL)" == "http://inventory-storage.warehouse-systems.svc.cluster.local:80" ]] \
+  || fail "INVENTORY_STORAGE_BASE_URL is not rendered by default"
 grep -A4 'name: DATABASE_URL$' <<<"$api_deployment" | grep -q 'secretKeyRef:' || fail "DATABASE_URL must come from a Secret (secretKeyRef)"
 if grep -qE '^  (MIGRATIONS_)?DATABASE_URL:' <<<"$configmap"; then fail "a DSN must never land in the ConfigMap"; fi
 

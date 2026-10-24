@@ -717,6 +717,220 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /tasks/{id}/scans:
+    post:
+      operationId: confirmPickScan
+      tags: [Tasks]
+      summary: Confirm one scan of an each or case GTIN against a PICK task
+      description: >
+        The station holding the claim on a PICK task scans a GTIN (ADR 0054).
+        The GTIN is resolved against the local copy of product-master's pack
+        levels (no synchronous call): it must identify the task's SKU and,
+        for a task planned in eaches, an EACH level; for a task planned in
+        cases, a CASE level. `count` packs are added (default 1) and the
+        answer reports the eaches confirmed so far. Quantities are always in
+        eaches; `POST /tasks/{id}/complete` and `TaskCompleted` are
+        unchanged. A rejected scan changes nothing.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The task id.
+          schema:
+            type: string
+            example: 20260101T120000.000000000
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PickScanRequest"
+            example:
+              stationId: station-1
+              gtin: "00012345678905"
+              count: 1
+      responses:
+        "200":
+          description: The scan is accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PickScanResult"
+              example:
+                scannedGtin: "00012345678905"
+                sku: SKU-1
+                level: EACH
+                addedEaches: 1
+                pickedEaches: 1
+                plannedEaches: 12
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: No task exists with this id.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/task-not-found
+                title: Task not found
+                status: 404
+                detail: "usecases: task not found"
+                instance: /tasks/20260101T120000.000000000/scans
+        "409":
+          description: The task has no active claim or `stationId` does not own it.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/task-not-owner
+                title: Station does not own the active claim on this task
+                status: 409
+                detail: "task: station does not own the claim"
+                instance: /tasks/20260101T120000.000000000/scans
+        "422":
+          description: >
+            The scan does not fit the pick: `unknown-gtin`, `scan-sku-mismatch`
+            (the GTIN of another SKU, for example the each barcode printed on
+            a case of something else), `scan-level-mismatch` (a case scan on an
+            each pick or the reverse), `no-pick-plan` or `pick-over-quantity`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+              unknownGtin:
+                value:
+                  type: https://errors.fulfillment-execution.warehouse-systems.dev/unknown-gtin
+                  title: The scanned GTIN is not a known pack level
+                  status: 422
+                  detail: "usecases: scanned GTIN is not a known pack level: 00012345678905"
+                  instance: /tasks/20260101T120000.000000000/scans
+              scanSkuMismatch:
+                value:
+                  type: https://errors.fulfillment-execution.warehouse-systems.dev/scan-sku-mismatch
+                  title: The scanned GTIN is not the SKU of this pick
+                  status: 422
+                  detail: "task: the scanned GTIN is not the SKU of this pick"
+                  instance: /tasks/20260101T120000.000000000/scans
+              scanLevelMismatch:
+                value:
+                  type: https://errors.fulfillment-execution.warehouse-systems.dev/scan-level-mismatch
+                  title: The scanned pack level does not match the pick unit
+                  status: 422
+                  detail: "task: the scanned pack level does not match the pick unit"
+                  instance: /tasks/20260101T120000.000000000/scans
+              noPickPlan:
+                value:
+                  type: https://errors.fulfillment-execution.warehouse-systems.dev/no-pick-plan
+                  title: The task carries no pick plan to scan against
+                  status: 422
+                  detail: "task: the task carries no pick plan to scan against"
+                  instance: /tasks/20260101T120000.000000000/scans
+              pickOverQuantity:
+                value:
+                  type: https://errors.fulfillment-execution.warehouse-systems.dev/pick-over-quantity
+                  title: The scan would pick more than the planned quantity
+                  status: 422
+                  detail: "task: the scan would pick more than the planned quantity"
+                  instance: /tasks/20260101T120000.000000000/scans
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /tasks/{id}/break-case:
+    post:
+      operationId: completeCaseBreak
+      tags: [Tasks]
+      summary: Complete a BREAK_CASE task by breaking the sealed case in inventory-storage
+      description: >
+        A BREAK_CASE task (ADR 0054) is created when an each pick finds only a
+        sealed case at its source. Completing it asks inventory-storage to
+        break the container (`POST /containers/{lpn}:break`) into the loose
+        bin, with an Idempotency-Key stable per task, and only then completes
+        the task and publishes `TaskCompleted`. If inventory-storage cannot be
+        reached the task stays claimed (503); a retry does not break twice.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The task id.
+          schema:
+            type: string
+            example: 20260101T120000.000000000
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompleteTaskRequest"
+            example:
+              stationId: station-1
+      responses:
+        "204":
+          description: The case was broken and the task completed. No response body.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: No task exists with this id.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/task-not-found
+                title: Task not found
+                status: 404
+                detail: "usecases: task not found"
+                instance: /tasks/20260101T120000.000000000/break-case
+        "409":
+          description: >
+            The task has no active claim, `stationId` does not own it, it is
+            already completed, or inventory-storage rejected the break
+            (`case-break-rejected`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+              caseBreakRejected:
+                value:
+                  type: https://errors.fulfillment-execution.warehouse-systems.dev/case-break-rejected
+                  title: inventory-storage rejected the case break
+                  status: 409
+                  detail: "ports: inventory-storage rejected the case break"
+                  instance: /tasks/20260101T120000.000000000/break-case
+        "422":
+          description: The task is not a BREAK_CASE task.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+              notCaseBreakTask:
+                value:
+                  type: https://errors.fulfillment-execution.warehouse-systems.dev/not-case-break-task
+                  title: The task is not a BREAK_CASE task
+                  status: 422
+                  detail: "task: not a BREAK_CASE task"
+                  instance: /tasks/20260101T120000.000000000/break-case
+        "503":
+          description: inventory-storage could not be reached; the task stays claimed and the call can be retried.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+              caseBreakUnavailable:
+                value:
+                  type: https://errors.fulfillment-execution.warehouse-systems.dev/case-break-unavailable
+                  title: inventory-storage could not be reached for the case break
+                  status: 503
+                  detail: "ports: inventory-storage is unavailable for the case break"
+                  instance: /tasks/20260101T120000.000000000/break-case
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /tasks/{id}/seal-package:
     post:
       operationId: sealPackage
@@ -1636,6 +1850,35 @@ components:
           example: station-1
       example:
         stationId: station-1
+
+    PickScanRequest:
+      type: object
+      required: [stationId, gtin]
+      additionalProperties: false
+      properties:
+        stationId:
+          type: string
+          minLength: 1
+        gtin:
+          type: string
+          minLength: 1
+          description: The scanned GTIN (8, 12, 13 or 14 digits, valid check digit; variable-measure rejected).
+        count:
+          type: integer
+          format: int32
+          minimum: 1
+          default: 1
+          description: Packs scanned - eaches for an EACH GTIN, cases for a CASE GTIN.
+    PickScanResult:
+      type: object
+      required: [scannedGtin, sku, level, addedEaches, pickedEaches, plannedEaches]
+      properties:
+        scannedGtin: { type: string, description: "Normalised 14-digit GTIN." }
+        sku: { type: string }
+        level: { type: string, enum: [EACH, INNER, CASE, PALLET] }
+        addedEaches: { type: integer, format: int32, minimum: 1 }
+        pickedEaches: { type: integer, format: int32, minimum: 1 }
+        plannedEaches: { type: integer, format: int32, minimum: 1 }
 
     CompleteTaskRequest:
       type: object

@@ -15,6 +15,8 @@ func validEnv(overrides map[string]string) func(string) string {
 		"KAFKA_BROKERS":                         "kafka-1:9092,kafka-2:9092",
 		"WORK_RELEASED_CONSUMER_GROUP":          "fulfillment-execution",
 		"PRODUCT_CLASSIFICATION_CONSUMER_GROUP": "fulfillment-execution-product-classification",
+		"PACK_VIEW_CONSUMER_GROUP":              "fulfillment-execution-pack-view",
+		"INVENTORY_STORAGE_BASE_URL":            "http://inventory-storage.invalid",
 		"TASK_INTERLEAVING_CONSUMER_GROUP":      "fulfillment-execution-interleaving",
 	}
 	for k, v := range overrides {
@@ -94,7 +96,7 @@ func TestLoadBootConfig_ReportsEveryProblemAtOnce(t *testing.T) {
 	if err == nil {
 		t.Fatal("an empty environment must be refused")
 	}
-	for _, name := range []string{"DATABASE_URL", "KAFKA_BROKERS", "WORK_RELEASED_CONSUMER_GROUP", "PRODUCT_CLASSIFICATION_CONSUMER_GROUP", "TASK_INTERLEAVING_CONSUMER_GROUP"} {
+	for _, name := range []string{"DATABASE_URL", "KAFKA_BROKERS", "WORK_RELEASED_CONSUMER_GROUP", "PRODUCT_CLASSIFICATION_CONSUMER_GROUP", "TASK_INTERLEAVING_CONSUMER_GROUP", "PACK_VIEW_CONSUMER_GROUP", "INVENTORY_STORAGE_BASE_URL"} {
 		if !strings.Contains(err.Error(), name) {
 			t.Errorf("error does not name %s: %v", name, err)
 		}
