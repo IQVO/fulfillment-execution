@@ -39,7 +39,7 @@ to design `claimNext`.
 
 ### Line 2 — Picking is classified Core outright
 
-`amazon-fulfillment-ddd.md`'s subdomain table classifies the pieces:
+`fulfillment-reference-ddd.md`'s subdomain table classifies the pieces:
 
 | Subdomain | Type | Why |
 | --- | --- | --- |

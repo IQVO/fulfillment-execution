@@ -17,7 +17,7 @@ never names a station in advance. Claims are at-most-once and time-boxed by a
 vanishing.
 
 See `CLAUDE.md` for the full architecture and ubiquitous language, and
-`/Users/claudioed/docs/amazon-fulfillment-ddd.md` for the source domain model.
+`/Users/claudioed/docs/fulfillment-reference-ddd.md` for the source domain model.
 
 ## Documentation
 
