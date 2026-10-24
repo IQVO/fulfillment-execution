@@ -100,6 +100,7 @@ func NewProductClassifiedConsumer(brokers []string, topic, groupID string, apply
 		Topic:       topic,
 		GroupID:     groupID,
 		StartOffset: kafkago.FirstOffset,
+		MaxWait:     readerMaxWait,
 	})
 	c := NewProductClassifiedConsumerFromReader(reader, topic, apply, logger)
 	c.closer = reader

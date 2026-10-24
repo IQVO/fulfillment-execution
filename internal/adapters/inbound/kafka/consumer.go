@@ -257,6 +257,7 @@ func newConsumer(brokers []string, topic, groupID string, startOffset int64, app
 		Topic:       topic,
 		GroupID:     groupID,
 		StartOffset: startOffset,
+		MaxWait:     readerMaxWait,
 	})
 	return &Consumer{Reader: reader, Apply: apply, Logger: logger}
 }

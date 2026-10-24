@@ -103,6 +103,7 @@ func NewPackLevelConsumer(brokers []string, topic, groupID string, apply *usecas
 		Topic:       topic,
 		GroupID:     groupID,
 		StartOffset: kafkago.FirstOffset,
+		MaxWait:     readerMaxWait,
 	})
 	c := NewPackLevelConsumerFromReader(reader, topic, apply, logger)
 	c.closer = reader
@@ -130,6 +131,14 @@ func (c *PackLevelConsumer) WithRetryIntervals(initial, maxInterval time.Duratio
 	c.retryInitial, c.retryMax = initial, maxInterval
 	return c
 }
+
+// readerMaxWait bounds how long a consumer group reader's fetch blocks on a
+// quiet partition. kafka-go's Reader.Close waits for that in-flight fetch, and
+// the default (10s) times the number of consumers closing one after another
+// (deferred, in run) exceeded the e2e graceful-stop budget once a fourth
+// consumer existed. Polling twice a second costs nothing on these low-volume
+// topics and makes Close prompt.
+const readerMaxWait = 500 * time.Millisecond
 
 // Close releases the underlying Kafka reader (a no-op for an injected one).
 func (c *PackLevelConsumer) Close() error {
