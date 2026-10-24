@@ -348,9 +348,18 @@ func (p *AnalyticsPublisher) marshalData(ctx context.Context, e shared.DomainEve
 			"task_type": p.taskType(ctx, ev.TaskId),
 		}), true
 	case shared.PackageSealed:
-		return entityPackage, "PackageSealed", string(ev.PackageId), mustMarshal(map[string]any{
-			"package_id": string(ev.PackageId),
-		}), true
+		data := map[string]any{"package_id": string(ev.PackageId)}
+		// Optional and additive (ADR 0056): present only when the package
+		// ships in its own container, so the ordinary payload is unchanged.
+		if c := ev.OwnContainer; c != nil {
+			data["ship_in_own_container"] = true
+			data["container_source"] = c.Source
+			data["container_gtin"] = c.GTIN
+			data["container_dims"] = map[string]any{
+				"length_mm": c.LengthMM, "width_mm": c.WidthMM, "height_mm": c.HeightMM, "weight_g": c.WeightG,
+			}
+		}
+		return entityPackage, "PackageSealed", string(ev.PackageId), mustMarshal(data), true
 	case shared.WeightDiscrepancyDetected:
 		return entityPackage, "WeightDiscrepancyDetected", string(ev.PackageId), mustMarshal(map[string]any{
 			"package_id": string(ev.PackageId),

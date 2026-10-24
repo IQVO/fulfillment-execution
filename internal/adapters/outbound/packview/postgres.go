@@ -19,6 +19,7 @@ import (
 type querier interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
 // PostgresStore is the production PackView, table pack_view (migration
@@ -28,8 +29,9 @@ type PostgresStore struct {
 }
 
 var (
-	_ ports.PackViewLookup = (*PostgresStore)(nil)
-	_ ports.PackViewCopy   = (*PostgresStore)(nil)
+	_ ports.PackViewLookup  = (*PostgresStore)(nil)
+	_ ports.PackViewCopy    = (*PostgresStore)(nil)
+	_ ports.CaseLevelLookup = (*PostgresStore)(nil)
 )
 
 // NewPostgresStore constructs a PostgresStore over pool.
@@ -45,8 +47,9 @@ func (s *PostgresStore) q(ctx context.Context) querier {
 // upsertSQL inserts the level or replaces it only for a strictly greater
 // version; a re-declaration clears effective_to.
 const upsertSQL = `
-INSERT INTO pack_view (gtin, sku, level, units_per_pack, child_gtin, version, effective_from, effective_to, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, now())
+INSERT INTO pack_view (gtin, sku, level, units_per_pack, child_gtin, version, effective_from, effective_to, updated_at,
+                       length_mm, width_mm, height_mm, weight_g)
+VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, now(), $8, $9, $10, $11)
 ON CONFLICT (gtin) DO UPDATE SET
     sku            = EXCLUDED.sku,
     level          = EXCLUDED.level,
@@ -55,7 +58,11 @@ ON CONFLICT (gtin) DO UPDATE SET
     version        = EXCLUDED.version,
     effective_from = EXCLUDED.effective_from,
     effective_to   = NULL,
-    updated_at     = now()
+    updated_at     = now(),
+    length_mm      = EXCLUDED.length_mm,
+    width_mm       = EXCLUDED.width_mm,
+    height_mm      = EXCLUDED.height_mm,
+    weight_g       = EXCLUDED.weight_g
 WHERE pack_view.version < EXCLUDED.version`
 
 // UpsertIfNewer implements ports.PackViewCopy.
@@ -64,7 +71,12 @@ func (s *PostgresStore) UpsertIfNewer(ctx context.Context, rec ports.PackRecord)
 	if rec.ChildGTIN != "" {
 		child = rec.ChildGTIN
 	}
-	tag, err := s.q(ctx).Exec(ctx, upsertSQL, rec.GTIN, rec.SKU, string(rec.Level), rec.UnitsPerPack, child, rec.Version, rec.EffectiveFrom)
+	var length, width, height, weight any
+	if d := rec.Dims; d != nil {
+		length, width, height, weight = d.LengthMM, d.WidthMM, d.HeightMM, d.WeightG
+	}
+	tag, err := s.q(ctx).Exec(ctx, upsertSQL, rec.GTIN, rec.SKU, string(rec.Level), rec.UnitsPerPack, child, rec.Version, rec.EffectiveFrom,
+		length, width, height, weight)
 	if err != nil {
 		return false, fmt.Errorf("packview: upsert %s: %w", rec.GTIN, err)
 	}
@@ -103,4 +115,42 @@ func (s *PostgresStore) FindByGTIN(ctx context.Context, gtin string) (ports.Pack
 		rec.ChildGTIN = *child
 	}
 	return rec, true, nil
+}
+
+// FindCaseLevels implements ports.CaseLevelLookup: every CASE row of sku
+// (served by pack_view_sku_level), ordered by GTIN for a stable result.
+func (s *PostgresStore) FindCaseLevels(ctx context.Context, sku string) ([]ports.PackRecord, error) {
+	rows, err := s.q(ctx).Query(ctx,
+		`SELECT gtin, sku, level, units_per_pack, child_gtin, version, effective_from, effective_to,
+		        length_mm, width_mm, height_mm, weight_g
+		   FROM pack_view WHERE sku = $1 AND level = 'CASE' ORDER BY gtin`, sku)
+	if err != nil {
+		return nil, fmt.Errorf("packview: find case levels of %s: %w", sku, err)
+	}
+	defer rows.Close()
+	out := make([]ports.PackRecord, 0)
+	for rows.Next() {
+		var (
+			rec                           ports.PackRecord
+			level                         string
+			child                         *string
+			length, width, height, weight *int
+		)
+		if err := rows.Scan(&rec.GTIN, &rec.SKU, &level, &rec.UnitsPerPack, &child, &rec.Version, &rec.EffectiveFrom, &rec.EffectiveTo,
+			&length, &width, &height, &weight); err != nil {
+			return nil, fmt.Errorf("packview: scan case level of %s: %w", sku, err)
+		}
+		rec.Level = task.PackLevel(level)
+		if child != nil {
+			rec.ChildGTIN = *child
+		}
+		if length != nil && width != nil && height != nil && weight != nil {
+			rec.Dims = &ports.PackDims{LengthMM: *length, WidthMM: *width, HeightMM: *height, WeightG: *weight}
+		}
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("packview: read case levels of %s: %w", sku, err)
+	}
+	return out, nil
 }
