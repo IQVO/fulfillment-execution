@@ -1,0 +1,1 @@
+{"schema":{"type":"string","description":"What a package ships in when it is not a cartonised carton. `CASE`: the SKU's own sealed case (ADR-0056).\n","enum":["CASE"],"example":"CASE","title":"ContainerSource"},"schemaType":"response"}
