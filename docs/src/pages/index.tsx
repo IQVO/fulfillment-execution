@@ -22,7 +22,7 @@ function StudyDisclaimer() {
       ⚠️ <strong>Study project</strong> — an educational DDD exercise
       following real industry-standard patterns (WMS/WES/WCS, pull-based
       dispatch, CloudEvents). Not a production system. Not affiliated with,
-      endorsed by, or representative of Amazon or any other company.
+      endorsed by, or representative of the reference operator or any other company.
     </div>
   );
 }
