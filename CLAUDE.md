@@ -16,7 +16,7 @@ pool rather than vanishing, and an expired lease frees the task. Never add a
 path that can hand one task to two stations, double-complete it, or bypass the
 capability check (ADR-0002, ADR-0003). Failing-path tests for this must exist.
 
-Ubiquitous language source of truth: `/Users/claudioed/docs/amazon-fulfillment-ddd.md`
+Ubiquitous language source of truth: `/Users/claudioed/docs/fulfillment-reference-ddd.md`
 and `/Users/claudioed/warehouse-systems-ddd.md`. Honor those exact names; the
 glossary, aggregates and invariants are in `.claude/rules/ubiquitous-language.md`.
 
