@@ -46,6 +46,18 @@ const sidebar: SidebarsConfig = {
         },
         {
           type: "doc",
+          id: "api-reference/rest/confirm-pick-scan",
+          label: "Confirm one scan of an each or case GTIN against a PICK task",
+          className: "api-method post",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/complete-case-break",
+          label: "Complete a BREAK_CASE task by breaking the sealed case in inventory-storage",
+          className: "api-method post",
+        },
+        {
+          type: "doc",
           id: "api-reference/rest/seal-package",
           label: "Scan contents and seal a Package for a Pack task's order",
           className: "api-method post",
@@ -256,6 +268,18 @@ const sidebar: SidebarsConfig = {
           type: "doc",
           id: "api-reference/rest/schemas/renewleaserequest",
           label: "RenewLeaseRequest",
+          className: "schema",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/schemas/pickscanrequest",
+          label: "PickScanRequest",
+          className: "schema",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/schemas/pickscanresult",
+          label: "PickScanResult",
           className: "schema",
         },
         {

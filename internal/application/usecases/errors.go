@@ -45,3 +45,16 @@ var ErrReplenishmentMoveMissing = errors.New("usecases: REPLENISH work released 
 // ErrReplenishmentMoveOnOtherPath is returned by ApplyWorkReleased when a
 // replenishment move arrives on a path other than REPLENISH (ADR 0050).
 var ErrReplenishmentMoveOnOtherPath = errors.New("usecases: replenishment move released on a non-REPLENISH path")
+
+// ErrPickPlanOnOtherPath is returned by ApplyWorkReleased when a pick plan
+// arrives on a path other than PICK (ADR 0054).
+var ErrPickPlanOnOtherPath = errors.New("usecases: pick plan released on a non-PICK path")
+
+// ErrCaseBreakMissing is returned by ApplyWorkReleased when work released on
+// the BREAK_CASE path carries no case break (ADR 0054): the task could never
+// be completed, so the release is rejected (and dead-lettered).
+var ErrCaseBreakMissing = errors.New("usecases: BREAK_CASE work released without a case break")
+
+// ErrCaseBreakOnOtherPath is returned by ApplyWorkReleased when a case break
+// arrives on a path other than BREAK_CASE (ADR 0054).
+var ErrCaseBreakOnOtherPath = errors.New("usecases: case break released on a non-BREAK_CASE path")

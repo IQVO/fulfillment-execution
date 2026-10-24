@@ -1,0 +1,10 @@
+ALTER TABLE tasks
+    DROP COLUMN break_pick_task_id,
+    DROP COLUMN break_loose_bin,
+    DROP COLUMN break_sku,
+    DROP COLUMN break_lpn,
+    DROP COLUMN picked_eaches,
+    DROP COLUMN pick_from_bin,
+    DROP COLUMN pick_unit,
+    DROP COLUMN pick_quantity,
+    DROP COLUMN pick_sku;

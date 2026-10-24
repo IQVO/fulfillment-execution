@@ -90,6 +90,14 @@ spec:
             - name: TASK_INTERLEAVING_CONSUMER_GROUP
               value: {{ required "config.taskInterleavingConsumerGroup is required" .Values.config.taskInterleavingConsumerGroup | quote }}
             {{- end }}
+            {{- if not (hasKey $extra "PACK_VIEW_CONSUMER_GROUP") }}
+            - name: PACK_VIEW_CONSUMER_GROUP
+              value: {{ required "config.packViewConsumerGroup is required" .Values.config.packViewConsumerGroup | quote }}
+            {{- end }}
+            {{- if not (hasKey $extra "INVENTORY_STORAGE_BASE_URL") }}
+            - name: INVENTORY_STORAGE_BASE_URL
+              value: {{ required "config.inventoryStorageBaseUrl is required" .Values.config.inventoryStorageBaseUrl | quote }}
+            {{- end }}
             {{- include "fulfillment-execution.requireDatabase" . }}
             - name: DATABASE_URL
               valueFrom:

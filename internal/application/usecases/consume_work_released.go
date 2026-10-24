@@ -36,6 +36,13 @@ type WorkReleasedRequest struct {
 	// on the REPLENISH path (WorkReleased.replenishment, ADR 0050); nil
 	// for every other release.
 	Replenishment *task.ReplenishmentMove
+	// Pick is the pick plan of work released on the PICK path
+	// (WorkReleased.pick, ADR 0054); nil for a PICK released without one and
+	// for every other release.
+	Pick *task.PickPlan
+	// CaseBreak is the sealed-case break of work released on the BREAK_CASE
+	// path (WorkReleased.case_break, ADR 0054); nil for every other release.
+	CaseBreak *task.CaseBreak
 }
 
 // ApplyWorkReleased applies one WorkReleased occurrence exactly once
@@ -150,7 +157,15 @@ func (uc *ApplyWorkReleased) createTask(ctx context.Context, req WorkReleasedReq
 	if err := checkReplenishment(taskType, req); err != nil {
 		return err
 	}
+	if err := checkPickAndBreak(taskType, req); err != nil {
+		return err
+	}
 	cpt := shared.NewCPT(req.CPT)
+	if req.CaseBreak != nil {
+		// A case break is neither order nor transfer work.
+		_, err := uc.CreateTask.ExecuteCaseBreak(ctx, cpt, orderRef, required, *req.CaseBreak)
+		return err
+	}
 	if req.Relocation != nil {
 		// Relocation work is not order work: no source order or line.
 		_, err := uc.CreateTask.ExecuteRelocation(ctx, cpt, orderRef, required, *req.Relocation)
@@ -171,7 +186,7 @@ func (uc *ApplyWorkReleased) createTask(ctx context.Context, req WorkReleasedReq
 		sourceOrderId = ""
 		sourceLineNo = 0
 	}
-	_, err := uc.CreateTask.ExecuteRelease(ctx, taskType, cpt, orderRef, required, req.Fragile, req.GiftWrap, sourceOrderId, sourceLineNo, req.Transfer)
+	_, err := uc.CreateTask.ExecuteReleaseWithPick(ctx, taskType, cpt, orderRef, required, req.Fragile, req.GiftWrap, sourceOrderId, sourceLineNo, req.Transfer, req.Pick)
 	return err
 }
 
@@ -201,6 +216,23 @@ func checkReplenishment(taskType task.Type, req WorkReleasedRequest) error {
 	}
 	if taskType != task.Replenish && req.Replenishment != nil {
 		return fmt.Errorf("%w: path %s (event %s)", ErrReplenishmentMoveOnOtherPath, taskType, req.EventId)
+	}
+	return nil
+}
+
+// checkPickAndBreak enforces ADR 0054's pairing: work on the BREAK_CASE path
+// must carry a case break and a case break is accepted only on that path; a
+// pick plan is accepted only on the PICK path (a PICK without one keeps
+// completing as before). Both violations are deterministic.
+func checkPickAndBreak(taskType task.Type, req WorkReleasedRequest) error {
+	if taskType == task.BreakCase && req.CaseBreak == nil {
+		return fmt.Errorf("%w (event %s)", ErrCaseBreakMissing, req.EventId)
+	}
+	if taskType != task.BreakCase && req.CaseBreak != nil {
+		return fmt.Errorf("%w: path %s (event %s)", ErrCaseBreakOnOtherPath, taskType, req.EventId)
+	}
+	if taskType != task.Pick && req.Pick != nil {
+		return fmt.Errorf("%w: path %s (event %s)", ErrPickPlanOnOtherPath, taskType, req.EventId)
 	}
 	return nil
 }

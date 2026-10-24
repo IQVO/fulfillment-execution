@@ -395,3 +395,47 @@ func (r arriveAtRebinRequest) validate() string {
 		return ""
 	}
 }
+
+// pickScanRequest is POST /tasks/{id}/scans (ADR 0054). Count is the number of
+// packs scanned (eaches for an EACH GTIN, cases for a CASE GTIN) and defaults
+// to 1.
+type pickScanRequest struct {
+	StationId string `json:"stationId"`
+	GTIN      string `json:"gtin"`
+	Count     *int   `json:"count,omitempty"`
+}
+
+func (r pickScanRequest) validate() string {
+	switch {
+	case r.StationId == "":
+		return "stationId is required"
+	case strings.TrimSpace(r.GTIN) == "":
+		return "gtin is required"
+	case r.Count != nil && *r.Count < 1:
+		return "count must be at least 1"
+	default:
+		return ""
+	}
+}
+
+func (r pickScanRequest) count() int {
+	if r.Count == nil {
+		return 1
+	}
+	return *r.Count
+}
+
+// pickScanResponse is what one accepted scan did, in eaches.
+type pickScanResponse struct {
+	ScannedGTIN   string `json:"scannedGtin"`
+	SKU           string `json:"sku"`
+	Level         string `json:"level"`
+	AddedEaches   int    `json:"addedEaches"`
+	PickedEaches  int    `json:"pickedEaches"`
+	PlannedEaches int    `json:"plannedEaches"`
+}
+
+// breakCaseRequest is POST /tasks/{id}/break-case.
+type breakCaseRequest struct {
+	StationId string `json:"stationId"`
+}

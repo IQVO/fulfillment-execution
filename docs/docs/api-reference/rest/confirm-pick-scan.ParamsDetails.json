@@ -1,0 +1,1 @@
+{"parameters":[{"name":"id","in":"path","required":true,"description":"The task id.","schema":{"type":"string","example":"20260101T120000.000000000"}}]}

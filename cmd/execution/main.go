@@ -47,6 +47,7 @@ import (
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/bootretry"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/facilitylayout"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/filecatalog"
+	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/inventorystorage"
 	outboundkafka "github.com/claudioed/fulfillment-execution/internal/adapters/outbound/kafka"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/kafkacatalog"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/postgres"
@@ -81,7 +82,6 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	httpAddr := getenv("HTTP_ADDR", ":8080")
 
 	// Telemetry comes up right after the config check and before any
 	// adapter, so everything built below is instrumented. An unreachable
@@ -133,15 +133,20 @@ func run(ctx context.Context) error {
 		return err
 	}
 	defer classification.close() // after its loop stopped (LIFO), before the pool
+	packView, err := buildPackView(cfg.packViewGroup, storage, cfg.kafkaBrokers, logger)
+	if err != nil {
+		return err
+	}
+	defer packView.close() // after its loop stopped (LIFO), before the pool
 	interleaving, err := buildInterleaving(cfg.interleaving, storage, cfg.kafkaBrokers, logger)
 	if err != nil {
 		return err
 	}
 	defer interleaving.close()
-	lookups := buildOutboundLookups(classification.lookup, logger)
+	lookups := buildOutboundLookups(classification.lookup, packView.lookup, cfg.inventoryStorageURL, logger)
 
 	createTask := &usecases.CreateTask{Tasks: storage.taskRepo, Publisher: publisher, Clock: clock, NewId: newTaskId, UnitOfWork: storage.uow}
-	srv := newHTTPServer(storage, publisher, clock, metrics, lookups, interleaving.lookup, createTask, readiness, logger, httpAddr)
+	srv := newHTTPServer(storage, publisher, clock, metrics, lookups, interleaving.lookup, createTask, readiness, logger, getenv("HTTP_ADDR", ":8080"))
 
 	// ApplyWorkReleased wraps the same CreateTask the HTTP surface uses,
 	// plus the processed-events claim, inside ONE UnitOfWork — the
@@ -165,8 +170,7 @@ func run(ctx context.Context) error {
 		return err
 	}
 	workReleasedDone := startWorkReleasedConsumer(consumer, consumerCtx, logger, cfg.kafkaBrokers)
-	classificationDone := startProductClassifiedConsumer(classification.consumer, consumerCtx, logger)
-	interleavingDone := startInterleavingHintConsumer(interleaving.consumer, consumerCtx, logger)
+	lc := startLookupConsumers(consumerCtx, logger, classification, interleaving, packView)
 
 	// The outbox relay (ADR 0020) runs alongside the HTTP server in the
 	// same process, draining outbox_events onto both Kafka topics. It is
@@ -175,11 +179,12 @@ func run(ctx context.Context) error {
 	defer stopRelay()
 
 	return serveUntilSignal(ctx, logger, srv, readiness, stopRelay, relayDone, cancelConsumer,
-		joinDone(workReleasedDone, classificationDone, interleavingDone),
+		joinDone(workReleasedDone, lc.classification, lc.interleaving, lc.packView),
 		namedDone{"outbox relay", relayDone},
 		namedDone{"WorkReleased consumer", workReleasedDone},
-		namedDone{"product classification consumer", classificationDone},
-		namedDone{"interleaving hint consumer", interleavingDone},
+		namedDone{"product classification consumer", lc.classification},
+		namedDone{"interleaving hint consumer", lc.interleaving},
+		namedDone{"pack level consumer", lc.packView},
 		namedDone{"process-path catalogue consumer", catalogue.done},
 	)
 }
@@ -258,6 +263,11 @@ func startRelay(relay *postgres.OutboxRelay, logger *slog.Logger) (context.Cance
 type outboundLookups struct {
 	classification ports.ProductClassificationLookup
 	locationRole   ports.LocationRoleLookup
+	// packs and caseBreaker back POST /tasks/{id}/scans and
+	// POST /tasks/{id}/break-case (ADR 0054). Nil in unit tests that build a
+	// server over test doubles.
+	packs       ports.PackViewLookup
+	caseBreaker ports.CaseBreaker
 }
 
 // buildOutboundLookups wires the location-role lookup plus its
@@ -272,13 +282,15 @@ type outboundLookups struct {
 //
 // LOCATION_ROLE_MODE is a REST sync edge to facility-layout, not a database
 // or a broker: it stays out of the real-wiring migration (ADR-0024).
-func buildOutboundLookups(classification ports.ProductClassificationLookup, logger *slog.Logger) outboundLookups {
+func buildOutboundLookups(classification ports.ProductClassificationLookup, packs ports.PackViewLookup, inventoryStorageURL string, logger *slog.Logger) outboundLookups {
 	circuitBreakerMetrics, cbmErr := observability.NewCircuitBreakerMetrics()
 	if cbmErr != nil {
 		logger.Warn("circuit breaker metrics unavailable; breakers will run without the circuit_breaker.state gauge", "error", cbmErr)
 	}
 	return outboundLookups{
 		classification: classification,
+		packs:          packs,
+		caseBreaker:    inventorystorage.NewBreakerClient(inventorystorage.NewClient(inventoryStorageURL, nil), circuitBreakerMetrics),
 		locationRole:   buildLocationRoleLookup(getenv("LOCATION_ROLE_MODE", "permissive"), os.Getenv("FACILITY_LAYOUT_BASE_URL"), circuitBreakerMetrics, logger),
 	}
 }
@@ -288,6 +300,12 @@ func buildOutboundLookups(classification ports.ProductClassificationLookup, logg
 // tests build a server over test doubles without it).
 func newHTTPServer(storage storageAdapters, publisher ports.EventPublisher, clock system.Clock, metrics *observability.Metrics, lookups outboundLookups, hintLookup ports.InterleavingHintLookup, createTask *usecases.CreateTask, readiness *inboundhttp.Readiness, logger *slog.Logger, httpAddr string) *http.Server {
 	handlers := buildHandlers(storage, publisher, clock, metrics, lookups.classification, lookups.locationRole, hintLookup, createTask, readiness, logger)
+	if lookups.packs != nil {
+		handlers.ConfirmPickScan = &usecases.ConfirmPickScan{Tasks: storage.taskRepo, Packs: lookups.packs, Clock: clock, UnitOfWork: storage.uow}
+	}
+	if lookups.caseBreaker != nil {
+		handlers.CompleteCaseBreak = &usecases.CompleteCaseBreak{Tasks: storage.taskRepo, Breaker: lookups.caseBreaker, Publisher: publisher, Clock: clock, Metrics: metricsPort(metrics), UnitOfWork: storage.uow}
+	}
 	router := inboundhttp.NewRouter(handlers, logger, inboundhttp.WithIdempotencyPool(storage.pool))
 	return &http.Server{Addr: httpAddr, Handler: router, ReadHeaderTimeout: 5 * time.Second}
 }

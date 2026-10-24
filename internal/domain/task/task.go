@@ -5,6 +5,7 @@ package task
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"time"
 
@@ -106,7 +107,7 @@ type TransferDetails struct {
 // exact (case-sensitive): every writer persists the canonical constant.
 func ParseType(value string) (Type, error) {
 	switch Type(value) {
-	case Pick, Pack, Slam, Rebin, Dispatch, Arrival, Relocate, Replenish:
+	case Pick, Pack, Slam, Rebin, Dispatch, Arrival, Relocate, Replenish, BreakCase:
 		return Type(value), nil
 	default:
 		return "", ErrUnknownType
@@ -193,6 +194,14 @@ type Task struct {
 	// CompleteReplenishment; nil until then.
 	replenishment       *ReplenishmentMove
 	replenishmentResult *ReplenishmentResult
+	// pickPlan is what a PICK task released with data.pick asks for (ADR
+	// 0054) and pickedEaches the eaches confirmed by scans so far; nil / 0
+	// for every other task and for PICK work released without a plan.
+	pickPlan     *PickPlan
+	pickedEaches int
+	// caseBreak is the break a BREAK_CASE task executes (ADR 0054); nil for
+	// every other task.
+	caseBreak *CaseBreak
 }
 
 // New creates a task in the Pending state, ready for the pool. fragile is a
@@ -513,6 +522,12 @@ func (t *Task) Complete(stationId shared.StationId, now time.Time) error {
 	}
 	if t.taskType == Replenish {
 		return ErrReplenishmentConfirmationRequired
+	}
+	if t.taskType == BreakCase {
+		return ErrCaseBreakCompletionRequired
+	}
+	if t.pickPlan != nil && t.pickedEaches != t.pickPlan.Quantity {
+		return fmt.Errorf("%w: %d scanned of %d planned", ErrPickIncomplete, t.pickedEaches, t.pickPlan.Quantity)
 	}
 	t.finish()
 	return nil

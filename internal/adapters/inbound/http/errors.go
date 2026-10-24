@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/claudioed/fulfillment-execution/internal/application/ports"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
 	"github.com/claudioed/fulfillment-execution/internal/domain/consolidation"
 	pack "github.com/claudioed/fulfillment-execution/internal/domain/package"
@@ -44,7 +45,31 @@ func statusFor(err error) int {
 		errors.Is(err, pack.ErrAlreadyProcessed),
 		errors.Is(err, pack.ErrNotSealed),
 		errors.Is(err, pack.ErrPackageSegregationViolation),
-		errors.Is(err, usecases.ErrNoClaimableTask):
+		errors.Is(err, usecases.ErrNoClaimableTask),
+		// The scan or break does not fit the task's current plan: a conflict
+		// with the task's state, not a malformed request.
+		// A scanned code that is not a valid GTIN, or that no pack level
+		// carries, matches nothing the task can be confirmed against. It is
+		// a 409, not a 404 (the task exists) and not a 400 (the body schema
+		// already bounds the code's shape, so it is a schema-valid request).
+		errors.Is(err, usecases.ErrInvalidScannedGTIN),
+		errors.Is(err, usecases.ErrUnknownGTIN),
+		errors.Is(err, task.ErrScanSkuMismatch),
+		errors.Is(err, task.ErrScanLevelMismatch),
+		errors.Is(err, task.ErrNoPickPlan),
+		errors.Is(err, task.ErrPickOverQuantity),
+		errors.Is(err, task.ErrPickIncomplete),
+		errors.Is(err, task.ErrNotCaseBreakTask),
+		errors.Is(err, task.ErrCaseBreakCompletionRequired):
+		return http.StatusConflict
+
+	case errors.Is(err, task.ErrInvalidScanCount):
+		return http.StatusBadRequest
+
+	case errors.Is(err, ports.ErrCaseBreakUnavailable):
+		return http.StatusServiceUnavailable
+
+	case errors.Is(err, ports.ErrCaseBreakRejected):
 		return http.StatusConflict
 
 	case errors.Is(err, task.ErrCapabilityMismatch),
@@ -103,6 +128,19 @@ var problemCatalog = []struct {
 	{task.ErrNotRelocationTask, "not-relocation-task", "quantity, fromBin and toBin apply only to RELOCATE and REPLENISH tasks"},
 	{task.ErrReplenishmentConfirmationRequired, "replenishment-confirmation-required", "A REPLENISH task completes only with the confirmed quantity"},
 	{task.ErrInvalidReplenishmentConfirmation, "invalid-replenishment-confirmation", "The replenishment confirmation does not match the planned move"},
+
+	{usecases.ErrInvalidScannedGTIN, "invalid-scanned-gtin", "The scanned text is not a valid GTIN"},
+	{task.ErrInvalidScanCount, "invalid-scan-count", "The scan count must be at least 1"},
+	{usecases.ErrUnknownGTIN, "unknown-gtin", "The scanned GTIN is not a known pack level"},
+	{task.ErrScanSkuMismatch, "scan-sku-mismatch", "The scanned GTIN is not the SKU of this pick"},
+	{task.ErrScanLevelMismatch, "scan-level-mismatch", "The scanned pack level does not match the pick unit"},
+	{task.ErrNoPickPlan, "no-pick-plan", "The task carries no pick plan to scan against"},
+	{task.ErrPickOverQuantity, "pick-over-quantity", "The scan would pick more than the planned quantity"},
+	{task.ErrPickIncomplete, "pick-incomplete", "The scanned eaches do not add up to the planned quantity"},
+	{task.ErrNotCaseBreakTask, "not-case-break-task", "The task is not a BREAK_CASE task"},
+	{task.ErrCaseBreakCompletionRequired, "case-break-completion-required", "A BREAK_CASE task completes only through POST /tasks/{id}/break-case"},
+	{ports.ErrCaseBreakUnavailable, "case-break-unavailable", "inventory-storage could not be reached for the case break"},
+	{ports.ErrCaseBreakRejected, "case-break-rejected", "inventory-storage rejected the case break"},
 }
 
 // problemTypeAndTitle maps a typed domain/application error to its RFC 7807

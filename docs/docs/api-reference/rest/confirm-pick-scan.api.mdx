@@ -1,0 +1,71 @@
+---
+id: confirm-pick-scan
+title: "Confirm one scan of an each or case GTIN against a PICK task"
+description: "The station holding the claim on a PICK task scans a GTIN (ADR 0054). The GTIN is resolved against the local copy of product-master's pack levels (no synchronous call): it must identify the task's SKU and, for a task planned in eaches, an EACH level; for a task planned in cases, a CASE level. `count` packs are added (default 1) and the answer reports the eaches confirmed so far. Quantities are always in eaches; `POST /tasks/{id}/complete` and `TaskCompleted` are unchanged. A rejected scan changes nothing."
+sidebar_label: "Confirm one scan of an each or case GTIN against a PICK task"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "post api-method"
+info_path: docs/api-reference/rest/fulfillment-execution-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Confirm one scan of an each or case GTIN against a PICK task"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"post"}
+  path={"/tasks/{id}/scans"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+The station holding the claim on a PICK task scans a GTIN (ADR 0054). The GTIN is resolved against the local copy of product-master's pack levels (no synchronous call): it must identify the task's SKU and, for a task planned in eaches, an EACH level; for a task planned in cases, a CASE level. `count` packs are added (default 1) and the answer reports the eaches confirmed so far. Quantities are always in eaches; `POST /tasks/{id}/complete` and `TaskCompleted` are unchanged. A rejected scan changes nothing.
+
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./confirm-pick-scan.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./confirm-pick-scan.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./confirm-pick-scan.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

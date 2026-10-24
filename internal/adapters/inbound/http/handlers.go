@@ -17,10 +17,14 @@ import (
 
 // Handlers wires REST endpoints to use cases.
 type Handlers struct {
-	CreateTask           *usecases.CreateTask
-	ClaimNext            *usecases.ClaimNext
-	RenewLease           *usecases.RenewLease
-	CompleteTask         *usecases.CompleteTask
+	CreateTask   *usecases.CreateTask
+	ClaimNext    *usecases.ClaimNext
+	RenewLease   *usecases.RenewLease
+	CompleteTask *usecases.CompleteTask
+	// ConfirmPickScan and CompleteCaseBreak back POST /tasks/{id}/scans and
+	// POST /tasks/{id}/break-case (ADR 0054).
+	ConfirmPickScan      *usecases.ConfirmPickScan
+	CompleteCaseBreak    *usecases.CompleteCaseBreak
 	SealPackage          *usecases.SealPackage
 	RunSlam              *usecases.RunSlam
 	GetQueueDepth        *usecases.GetQueueDepth
@@ -178,6 +182,50 @@ func (h *Handlers) PostCompleteTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.CompleteTask.ExecuteWith(r.Context(), shared.TaskId(taskId), shared.StationId(req.StationId), req.confirmation()); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// PostPickScan handles POST /tasks/{id}/scans: one scan of an EACH or CASE
+// GTIN against a PICK task (ADR 0054).
+func (h *Handlers) PostPickScan(w http.ResponseWriter, r *http.Request) {
+	taskId := chi.URLParam(r, "id")
+	var req pickScanRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeBadRequest(w, r, "invalid request body")
+		return
+	}
+	if msg := req.validate(); msg != "" {
+		writeBadRequest(w, r, msg)
+		return
+	}
+	res, err := h.ConfirmPickScan.Execute(r.Context(), shared.TaskId(taskId), shared.StationId(req.StationId), req.GTIN, req.count())
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pickScanResponse{
+		ScannedGTIN: res.ScannedGTIN, SKU: res.SKU, Level: string(res.Level),
+		AddedEaches: res.AddedEaches, PickedEaches: res.PickedEaches, PlannedEaches: res.Planned,
+	})
+}
+
+// PostBreakCase handles POST /tasks/{id}/break-case: it completes a
+// BREAK_CASE task by asking inventory-storage to break the sealed case.
+func (h *Handlers) PostBreakCase(w http.ResponseWriter, r *http.Request) {
+	taskId := chi.URLParam(r, "id")
+	var req breakCaseRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeBadRequest(w, r, "invalid request body")
+		return
+	}
+	if req.StationId == "" {
+		writeBadRequest(w, r, "stationId is required")
+		return
+	}
+	if err := h.CompleteCaseBreak.Execute(r.Context(), shared.TaskId(taskId), shared.StationId(req.StationId)); err != nil {
 		writeError(w, r, err)
 		return
 	}

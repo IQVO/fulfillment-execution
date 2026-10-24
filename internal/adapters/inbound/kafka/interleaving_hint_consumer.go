@@ -99,6 +99,7 @@ func NewInterleavingHintConsumer(brokers []string, topic, groupID string, apply 
 		Topic:       topic,
 		GroupID:     groupID,
 		StartOffset: kafkago.LastOffset,
+		MaxWait:     readerMaxWait,
 	})
 	c := NewInterleavingHintConsumerFromReader(reader, topic, apply, logger)
 	c.closer = reader
