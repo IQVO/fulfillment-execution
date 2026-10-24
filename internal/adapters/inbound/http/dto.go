@@ -32,11 +32,16 @@ func isValidTaskType(v string) bool {
 	}
 }
 
-// isClaimableTaskType is isValidTaskType plus RELOCATE and REPLENISH
-// (apis/openapi.yaml's AnyTaskType enum): every task type a station may
-// claim.
+// isClaimableTaskType is isValidTaskType plus RELOCATE, REPLENISH and
+// BREAK_CASE (apis/openapi.yaml's AnyTaskType enum): every task type a
+// station may claim. BREAK_CASE is claimable but not creatable through
+// POST /tasks (ADR 0055).
 func isClaimableTaskType(v string) bool {
-	return isValidTaskType(v) || task.Type(v) == task.Relocate || task.Type(v) == task.Replenish
+	switch task.Type(v) {
+	case task.Relocate, task.Replenish, task.BreakCase:
+		return true
+	}
+	return isValidTaskType(v)
 }
 
 // validate reports the first missing required field, or "" if the request
@@ -152,7 +157,7 @@ func (r claimNextRequest) validate() string {
 	case !isClaimableTaskType(r.TaskType):
 		// apis/openapi.yaml claimNextTask: taskType is the AnyTaskType enum,
 		// and a value outside it is a 400 (BadRequest), not an empty queue (409).
-		return "taskType must be one of PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL, RELOCATE, REPLENISH"
+		return "taskType must be one of PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL, RELOCATE, REPLENISH, BREAK_CASE"
 	default:
 		return ""
 	}

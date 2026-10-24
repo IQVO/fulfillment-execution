@@ -50,7 +50,7 @@ func (d Deps) now() time.Time {
 // --- get_queue_status ---------------------------------------------------------
 
 type queueStatusInput struct {
-	ProcessPath string `json:"processPath" jsonschema:"the process path queue to inspect: PICK, PACK, SLAM, RELOCATE or REPLENISH"`
+	ProcessPath string `json:"processPath" jsonschema:"the process path queue to inspect: PICK, PACK, SLAM, RELOCATE, REPLENISH or BREAK_CASE"`
 }
 
 type queueStatusOutput struct {
@@ -73,7 +73,7 @@ func (d Deps) getQueueStatus(ctx context.Context, in queueStatusInput) (queueSta
 // --- find_claimable_work ------------------------------------------------------
 
 type findClaimableInput struct {
-	ProcessPath string `json:"processPath" jsonschema:"the process path to search: PICK, PACK, SLAM, RELOCATE or REPLENISH"`
+	ProcessPath string `json:"processPath" jsonschema:"the process path to search: PICK, PACK, SLAM, RELOCATE, REPLENISH or BREAK_CASE"`
 }
 
 type findClaimableOutput struct {
@@ -195,7 +195,7 @@ func (d Deps) registerTools(server *mcp.Server) {
 
 	addTool(server, &mcp.Tool{
 		Name:        "get_queue_status",
-		Description: "Return the number of Pending tasks in a process-path queue (PICK, PACK, SLAM, RELOCATE, or REPLENISH).",
+		Description: "Return the number of Pending tasks in a process-path queue (PICK, PACK, SLAM, RELOCATE, REPLENISH, or BREAK_CASE).",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly},
 	}, d.getQueueStatus)
 
@@ -260,9 +260,9 @@ func addTool[In, Out any](
 // untrusted, so an unknown value is rejected rather than silently defaulted.
 func parseProcessPath(s string) (task.Type, error) {
 	switch task.Type(s) {
-	case task.Pick, task.Pack, task.Slam, task.Relocate, task.Replenish:
+	case task.Pick, task.Pack, task.Slam, task.Relocate, task.Replenish, task.BreakCase:
 		return task.Type(s), nil
 	default:
-		return "", fmt.Errorf("unknown process path %q: must be PICK, PACK, SLAM, RELOCATE or REPLENISH", s)
+		return "", fmt.Errorf("unknown process path %q: must be PICK, PACK, SLAM, RELOCATE, REPLENISH or BREAK_CASE", s)
 	}
 }

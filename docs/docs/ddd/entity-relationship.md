@@ -32,7 +32,7 @@ is held by id and not by a constraint.
 erDiagram
     tasks {
         text id PK
-        text task_type "PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL, RELOCATE, REPLENISH"
+        text task_type "PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL, RELOCATE, REPLENISH, BREAK_CASE"
         text status "PENDING, CLAIMED, COMPLETED"
         timestamptz cpt
         text order_ref "indexed"
