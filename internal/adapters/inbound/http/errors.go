@@ -45,11 +45,25 @@ func statusFor(err error) int {
 		errors.Is(err, pack.ErrAlreadyProcessed),
 		errors.Is(err, pack.ErrNotSealed),
 		errors.Is(err, pack.ErrPackageSegregationViolation),
-		errors.Is(err, usecases.ErrNoClaimableTask):
+		errors.Is(err, usecases.ErrNoClaimableTask),
+		// The scan or break does not fit the task's current plan: a conflict
+		// with the task's state, not a malformed request.
+		// A scanned code that is not a valid GTIN, or that no pack level
+		// carries, matches nothing the task can be confirmed against. It is
+		// a 409, not a 404 (the task exists) and not a 400 (the body schema
+		// already bounds the code's shape, so it is a schema-valid request).
+		errors.Is(err, usecases.ErrInvalidScannedGTIN),
+		errors.Is(err, usecases.ErrUnknownGTIN),
+		errors.Is(err, task.ErrScanSkuMismatch),
+		errors.Is(err, task.ErrScanLevelMismatch),
+		errors.Is(err, task.ErrNoPickPlan),
+		errors.Is(err, task.ErrPickOverQuantity),
+		errors.Is(err, task.ErrPickIncomplete),
+		errors.Is(err, task.ErrNotCaseBreakTask),
+		errors.Is(err, task.ErrCaseBreakCompletionRequired):
 		return http.StatusConflict
 
-	case errors.Is(err, usecases.ErrInvalidScannedGTIN),
-		errors.Is(err, task.ErrInvalidScanCount):
+	case errors.Is(err, task.ErrInvalidScanCount):
 		return http.StatusBadRequest
 
 	case errors.Is(err, ports.ErrCaseBreakUnavailable):
@@ -68,15 +82,7 @@ func statusFor(err error) int {
 		errors.Is(err, task.ErrInvalidRelocationConfirmation),
 		errors.Is(err, task.ErrReplenishmentConfirmationRequired),
 		errors.Is(err, task.ErrInvalidReplenishmentConfirmation),
-		errors.Is(err, task.ErrNotRelocationTask),
-		errors.Is(err, usecases.ErrUnknownGTIN),
-		errors.Is(err, task.ErrScanSkuMismatch),
-		errors.Is(err, task.ErrScanLevelMismatch),
-		errors.Is(err, task.ErrNoPickPlan),
-		errors.Is(err, task.ErrPickOverQuantity),
-		errors.Is(err, task.ErrPickIncomplete),
-		errors.Is(err, task.ErrNotCaseBreakTask),
-		errors.Is(err, task.ErrCaseBreakCompletionRequired):
+		errors.Is(err, task.ErrNotRelocationTask):
 		return http.StatusUnprocessableEntity
 
 	default:
