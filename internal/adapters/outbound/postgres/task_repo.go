@@ -46,7 +46,8 @@ func (r *TaskRepo) Save(ctx context.Context, t *task.Task) error {
 	_, err := querierFrom(ctx, r.pool).Exec(ctx, `
 		INSERT INTO tasks (`+taskColumns+`)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
-		        $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37)
+		        $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37,
+		        $38, $39, $40, $41, $42, $43, $44, $45, $46)
 		ON CONFLICT (id) DO UPDATE SET
 			task_type = EXCLUDED.task_type,
 			status = EXCLUDED.status,
@@ -83,24 +84,35 @@ func (r *TaskRepo) Save(ctx context.Context, t *task.Task) error {
 			replenishment_priority = EXCLUDED.replenishment_priority,
 			replenished_quantity = EXCLUDED.replenished_quantity,
 			replenished_from_bin = EXCLUDED.replenished_from_bin,
-			replenished_to_bin = EXCLUDED.replenished_to_bin
-	`, append(append([]any{string(t.Id()), string(t.Type()), string(t.Status()), t.CPT().Time(), string(t.OrderRef()),
+			replenished_to_bin = EXCLUDED.replenished_to_bin,
+			pick_sku = EXCLUDED.pick_sku,
+			pick_quantity = EXCLUDED.pick_quantity,
+			pick_unit = EXCLUDED.pick_unit,
+			pick_from_bin = EXCLUDED.pick_from_bin,
+			picked_eaches = EXCLUDED.picked_eaches,
+			break_lpn = EXCLUDED.break_lpn,
+			break_sku = EXCLUDED.break_sku,
+			break_loose_bin = EXCLUDED.break_loose_bin,
+			break_pick_task_id = EXCLUDED.break_pick_task_id
+	`, append(append(append([]any{string(t.Id()), string(t.Type()), string(t.Status()), t.CPT().Time(), string(t.OrderRef()),
 		capabilitiesToSlice(t.RequiredCapabilities()), leaseStationId, leaseExpiry, t.Fragile(), t.GiftWrap(), t.ClaimedAt(),
 		transferRef, demandId, workKind, siteId, sku, quantity, nullableString(t.SourceOrderId()), nullableLineNo(t.SourceLineNo())},
-		relocationColumnsOf(t).values()...), replenishmentColumnsOf(t).values()...)...)
+		relocationColumnsOf(t).values()...), replenishmentColumnsOf(t).values()...), pickColumnsOf(t).values()...)...)
 	return err
 }
 
 // taskColumns is the column list every INSERT and SELECT of a task uses, in
 // scanTask's order. The relocation_* / relocated_* columns (migration 0019,
 // ADR 0047) and the replenishment_* / replenished_* columns (migration
-// 0020, ADR 0050) come last.
+// 0020, ADR 0050) and the pick_* / break_* columns (migration 0023, ADR
+// 0054) come last.
 const taskColumns = `id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at, ` +
 	`transfer_ref, demand_id, work_kind, site_id, sku, quantity, source_order_id, source_line_no, ` +
 	`relocation_plan_id, relocation_move_seq, relocation_kind, relocation_sku, relocation_from_bin, relocation_to_bin, ` +
 	`relocated_quantity, relocated_from_bin, relocated_to_bin, ` +
 	`replenishment_request_id, replenishment_sku, replenishment_from_bin, replenishment_to_bin, replenishment_quantity, replenishment_priority, ` +
-	`replenished_quantity, replenished_from_bin, replenished_to_bin`
+	`replenished_quantity, replenished_from_bin, replenished_to_bin, ` +
+	`pick_sku, pick_quantity, pick_unit, pick_from_bin, picked_eaches, break_lpn, break_sku, break_loose_bin, break_pick_task_id`
 
 // relocationColumns is a task's nullable relocation block as stored
 // (migration 0019): the planned move and, once completed, the executed
@@ -313,8 +325,9 @@ func scanTask(row rowScanner) (*task.Task, error) {
 	)
 	var relocation relocationColumns
 	var replenishment replenishmentColumns
-	dest := append(append([]any{&id, &taskType, &status, &cpt, &orderRef, &requiredCapabilities, &leaseStationId, &leaseExpiry, &fragile, &giftWrap, &claimedAt, &transferRef, &demandId, &workKind, &siteId, &sku, &quantity, &sourceOrderId, &sourceLineNo},
-		relocation.dest()...), replenishment.dest()...)
+	var pick pickColumns
+	dest := append(append(append([]any{&id, &taskType, &status, &cpt, &orderRef, &requiredCapabilities, &leaseStationId, &leaseExpiry, &fragile, &giftWrap, &claimedAt, &transferRef, &demandId, &workKind, &siteId, &sku, &quantity, &sourceOrderId, &sourceLineNo},
+		relocation.dest()...), replenishment.dest()...), pick.dest()...)
 	if err := row.Scan(dest...); err != nil {
 		return nil, err
 	}
@@ -345,6 +358,10 @@ func scanTask(row rowScanner) (*task.Task, error) {
 	if err != nil {
 		return nil, err
 	}
+	pickPlan, pickedEaches, caseBreak, err := pick.rehydrate(id)
+	if err != nil {
+		return nil, err
+	}
 	t := task.RehydrateTransfer(
 		shared.TaskId(id),
 		taskTypeParsed,
@@ -364,7 +381,7 @@ func scanTask(row rowScanner) (*task.Task, error) {
 	if sourceLineNo != nil {
 		t.WithSourceLineNo(*sourceLineNo)
 	}
-	return t.WithRelocation(move, result).WithReplenishment(replMove, replResult), nil
+	return t.WithRelocation(move, result).WithReplenishment(replMove, replResult).WithPickPlan(pickPlan, pickedEaches).WithCaseBreak(caseBreak), nil
 }
 
 // scanTransferDetails rebuilds the nullable transfer-correlation block
