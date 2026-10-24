@@ -178,6 +178,7 @@ const sidebars: SidebarsConfig = {
         'adr/0053-promote-package-exception-facts-to-integration-topic',
         'adr/0054-case-and-each-pick-scans-and-break-case-task',
         'adr/0055-scan-idempotency-and-claimable-break-case',
+        'adr/0056-ship-in-own-container',
       ],
     },
   ],
