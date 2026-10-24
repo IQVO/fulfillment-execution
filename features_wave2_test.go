@@ -53,6 +53,7 @@ func wave2Catalogue() *pathcatalog.Catalogue {
 		{Id: "SLAM", MatchPrefix: "slam", Direct: true, RequiredCapabilities: []string{"slam"}},
 		{Id: "DISPATCH", MatchPrefix: "dispatch", Direct: true, RequiredCapabilities: []string{"dispatch"}},
 		{Id: "ARRIVAL", MatchPrefix: "arrival", Direct: true, RequiredCapabilities: []string{"arrival"}},
+		{Id: "BREAK_CASE", MatchPrefix: "break", Direct: true, RequiredCapabilities: []string{"break"}},
 	})
 }
 
@@ -462,6 +463,14 @@ func workReleasedData(now time.Time, table *godog.Table) (map[string]any, error)
 			data[key] = n
 		case "fragile", "gift_wrap":
 			data[key] = value == "true"
+		case "case_break.lpn", "case_break.sku", "case_break.loose_bin", "case_break.pick_task_id":
+			// The nested WorkReleased.data.case_break object (ADR 0054).
+			nested, _ := data["case_break"].(map[string]any)
+			if nested == nil {
+				nested = make(map[string]any)
+				data["case_break"] = nested
+			}
+			nested[strings.TrimPrefix(key, "case_break.")] = value
 		default:
 			data[key] = value
 		}

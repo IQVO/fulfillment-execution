@@ -103,7 +103,14 @@ func NewRouter(h *Handlers, logger *slog.Logger, opts ...RouterOption) *chi.Mux 
 	r.Post("/stations/{stationId}/check-out", h.PostCheckOutStation)
 	r.Post("/tasks/{id}/renew-lease", h.PostRenewLease)
 	r.Post("/tasks/{id}/complete", h.PostCompleteTask)
-	r.Post("/tasks/{id}/scans", h.PostPickScan)
+	// A scan adds eaches to the task's pick count, so a retry after a lost
+	// response (the floor client's outbox resends with the SAME key) must
+	// replay the stored answer instead of counting the scan twice (ADR 0055).
+	if cfg.idempotencyPool != nil {
+		r.With(RequireIdempotencyKey(cfg.idempotencyPool)).Post("/tasks/{id}/scans", h.PostPickScan)
+	} else {
+		r.Post("/tasks/{id}/scans", h.PostPickScan)
+	}
 	r.Post("/tasks/{id}/break-case", h.PostBreakCase)
 	r.Post("/tasks/{id}/seal-package", h.PostSealPackage)
 	r.Get("/packages", h.GetPackagesHandler)

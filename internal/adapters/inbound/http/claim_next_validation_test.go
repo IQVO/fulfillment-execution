@@ -32,7 +32,7 @@ func TestPostClaimNext_TaskTypeOutsideEnumReturns400(t *testing.T) {
 // The enum check must not over-reject: every published TaskType still reaches
 // the use case (an empty queue answers 409 no-claimable-task, as before).
 func TestPostClaimNext_EveryEnumTaskTypeReachesTheUseCase(t *testing.T) {
-	for _, taskType := range []string{"PICK", "PACK", "SLAM", "REBIN", "DISPATCH", "ARRIVAL"} {
+	for _, taskType := range []string{"PICK", "PACK", "SLAM", "REBIN", "DISPATCH", "ARRIVAL", "RELOCATE", "REPLENISH", "BREAK_CASE"} {
 		t.Run(taskType, func(t *testing.T) {
 			srv, _, stations, _, _ := newTestServer()
 			_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pick")))
