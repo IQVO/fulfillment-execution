@@ -6,10 +6,12 @@ package packview
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
+	"github.com/claudioed/fulfillment-execution/internal/domain/task"
 )
 
 // MemoryStore is a thread-safe in-memory PackView with the same version
@@ -20,8 +22,9 @@ type MemoryStore struct {
 }
 
 var (
-	_ ports.PackViewLookup = (*MemoryStore)(nil)
-	_ ports.PackViewCopy   = (*MemoryStore)(nil)
+	_ ports.PackViewLookup  = (*MemoryStore)(nil)
+	_ ports.PackViewCopy    = (*MemoryStore)(nil)
+	_ ports.CaseLevelLookup = (*MemoryStore)(nil)
 )
 
 // NewMemoryStore constructs an empty MemoryStore.
@@ -60,4 +63,18 @@ func (s *MemoryStore) FindByGTIN(_ context.Context, gtin string) (ports.PackReco
 	defer s.mu.RUnlock()
 	rec, ok := s.rows[gtin]
 	return rec, ok, nil
+}
+
+// FindCaseLevels implements ports.CaseLevelLookup, in GTIN order.
+func (s *MemoryStore) FindCaseLevels(_ context.Context, sku string) ([]ports.PackRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []ports.PackRecord
+	for _, rec := range s.rows {
+		if rec.SKU == sku && rec.Level == task.PackLevelCase {
+			out = append(out, rec)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].GTIN < out[j].GTIN })
+	return out, nil
 }

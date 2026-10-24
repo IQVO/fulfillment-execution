@@ -46,17 +46,40 @@ const (
 var ErrInvalidPackLevel = errors.New("kafka: invalid pack-level payload")
 
 // ProductPackLevelDeclaredData is the payload of ProductPackLevelDeclared
-// (the FULL level after the change). dims, is_orderable and is_despatch_unit
-// are not needed here and ignored.
+// (the FULL level after the change). dims (the optional DECLARED dimensions,
+// used by ship-in-own-container, ADR 0056) are kept; is_orderable and
+// is_despatch_unit are not needed here and ignored.
 type ProductPackLevelDeclaredData struct {
-	SKU           string    `json:"sku"`
-	Level         string    `json:"level"`
-	GTIN          string    `json:"gtin"`
-	ChildGTIN     string    `json:"child_gtin,omitempty"`
-	QtyOfChild    int       `json:"qty_of_child,omitempty"`
-	UnitsPerPack  int       `json:"units_per_pack"`
-	EffectiveFrom time.Time `json:"effective_from"`
-	Version       int64     `json:"version"`
+	SKU           string         `json:"sku"`
+	Level         string         `json:"level"`
+	GTIN          string         `json:"gtin"`
+	ChildGTIN     string         `json:"child_gtin,omitempty"`
+	QtyOfChild    int            `json:"qty_of_child,omitempty"`
+	UnitsPerPack  int            `json:"units_per_pack"`
+	Dims          *PackLevelDims `json:"dims,omitempty"`
+	EffectiveFrom time.Time      `json:"effective_from"`
+	Version       int64          `json:"version"`
+}
+
+// PackLevelDims is the optional `dims` of ProductPackLevelDeclared:
+// millimetres and grams. Absent fields decode as 0 and make the dims
+// unusable (see declaredDims).
+type PackLevelDims struct {
+	LengthMM int `json:"length_mm"`
+	WidthMM  int `json:"width_mm"`
+	HeightMM int `json:"height_mm"`
+	WeightG  int `json:"weight_g"`
+}
+
+// declaredDims keeps dims only when all four measures are positive. A
+// partial or non-positive dims is dropped (the level is still applied): the
+// quantity facts are what picking needs, and a level without usable dims
+// simply cannot ship in its own container (ErrCaseDimensionsUnknown).
+func declaredDims(d *PackLevelDims) *ports.PackDims {
+	if d == nil || d.LengthMM < 1 || d.WidthMM < 1 || d.HeightMM < 1 || d.WeightG < 1 {
+		return nil
+	}
+	return &ports.PackDims{LengthMM: d.LengthMM, WidthMM: d.WidthMM, HeightMM: d.HeightMM, WeightG: d.WeightG}
 }
 
 // ProductPackLevelRetiredData is the payload of ProductPackLevelRetired.
@@ -341,5 +364,6 @@ func declaredRecord(data ProductPackLevelDeclaredData) (ports.PackRecord, error)
 	return ports.PackRecord{
 		GTIN: g.String(), SKU: data.SKU, Level: level, UnitsPerPack: data.UnitsPerPack,
 		ChildGTIN: child, Version: data.Version, EffectiveFrom: data.EffectiveFrom,
+		Dims: declaredDims(data.Dims),
 	}, nil
 }

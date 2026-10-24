@@ -21,6 +21,19 @@ type PackRecord struct {
 	Version       int64
 	EffectiveFrom time.Time
 	EffectiveTo   *time.Time
+	// Dims are the DECLARED dimensions and weight of the level (the optional
+	// `dims` of ProductPackLevelDeclared); nil when product-master declared
+	// none. Ship-in-own-container reads them (ADR 0056).
+	Dims *PackDims
+}
+
+// PackDims are a pack level's dimensions (millimetres) and weight (grams), as
+// product-master declares them.
+type PackDims struct {
+	LengthMM int
+	WidthMM  int
+	HeightMM int
+	WeightG  int
 }
 
 // PackViewLookup is the read side of the PackView: resolve a scanned GTIN to
@@ -43,4 +56,12 @@ type PackViewCopy interface {
 	// than the stored one. A GTIN the view has no row for is not an error
 	// (applied=false): a retirement never creates a level.
 	RetireIfNewer(ctx context.Context, gtin string, effectiveTo time.Time, version int64) (applied bool, err error)
+}
+
+// CaseLevelLookup is the read side ship-in-own-container needs (ADR 0056):
+// every CASE level of a SKU the local PackView holds, active or retired, so
+// the domain can tell "no case" from "case retired". It is the same local
+// copy as PackViewLookup; it never calls product-master.
+type CaseLevelLookup interface {
+	FindCaseLevels(ctx context.Context, sku string) ([]PackRecord, error)
 }

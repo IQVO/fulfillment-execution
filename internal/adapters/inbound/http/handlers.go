@@ -74,6 +74,18 @@ func toTaskResponse(t *task.Task) taskResponse {
 }
 
 func toPackageResponse(p *pack.Package) packageResponse {
+	resp := ordinaryPackageResponse(p)
+	if oc := p.OwnContainer(); oc != nil {
+		resp.ShipInOwnContainer = true
+		resp.ContainerSource = string(oc.Source)
+		resp.Container = &containerResponse{
+			Gtin: oc.GTIN, LengthMm: oc.Dims.LengthMM, WidthMm: oc.Dims.WidthMM, HeightMm: oc.Dims.HeightMM, WeightG: oc.Dims.WeightG,
+		}
+	}
+	return resp
+}
+
+func ordinaryPackageResponse(p *pack.Package) packageResponse {
 	return packageResponse{
 		Id:                string(p.Id()),
 		OrderRef:          string(p.OrderRef()),
@@ -245,7 +257,15 @@ func (h *Handlers) PostSealPackage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p, err := h.SealPackage.Execute(r.Context(), shared.TaskId(taskId), shared.StationId(req.StationId), req.Contents)
+	var (
+		p   *pack.Package
+		err error
+	)
+	if req.ShipInOwnContainer {
+		p, err = h.SealPackage.ExecuteInOwnContainer(r.Context(), shared.TaskId(taskId), shared.StationId(req.StationId), req.Contents, *req.LineQuantity)
+	} else {
+		p, err = h.SealPackage.Execute(r.Context(), shared.TaskId(taskId), shared.StationId(req.StationId), req.Contents)
+	}
 	if err != nil {
 		writeError(w, r, err)
 		return

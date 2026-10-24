@@ -268,6 +268,10 @@ type outboundLookups struct {
 	// server over test doubles.
 	packs       ports.PackViewLookup
 	caseBreaker ports.CaseBreaker
+	// cases backs ship-in-own-container on POST /tasks/{id}/seal-package
+	// (ADR 0056): the same local PackView as packs, read for a SKU's CASE
+	// levels. Nil exactly when packs is nil.
+	cases ports.CaseLevelLookup
 }
 
 // buildOutboundLookups wires the location-role lookup plus its
@@ -290,9 +294,18 @@ func buildOutboundLookups(classification ports.ProductClassificationLookup, pack
 	return outboundLookups{
 		classification: classification,
 		packs:          packs,
+		cases:          caseLevelsOf(packs),
 		caseBreaker:    inventorystorage.NewBreakerClient(inventorystorage.NewClient(inventoryStorageURL, nil), circuitBreakerMetrics),
 		locationRole:   buildLocationRoleLookup(getenv("LOCATION_ROLE_MODE", "permissive"), os.Getenv("FACILITY_LAYOUT_BASE_URL"), circuitBreakerMetrics, logger),
 	}
+}
+
+// caseLevelsOf returns the CASE-level read side of the PackView behind packs
+// (the Postgres store implements both), or nil when packs is nil or does not
+// offer it.
+func caseLevelsOf(packs ports.PackViewLookup) ports.CaseLevelLookup {
+	cases, _ := packs.(ports.CaseLevelLookup)
+	return cases
 }
 
 // newHTTPServer builds the handler set and the HTTP server around it, with
@@ -300,6 +313,7 @@ func buildOutboundLookups(classification ports.ProductClassificationLookup, pack
 // tests build a server over test doubles without it).
 func newHTTPServer(storage storageAdapters, publisher ports.EventPublisher, clock system.Clock, metrics *observability.Metrics, lookups outboundLookups, hintLookup ports.InterleavingHintLookup, createTask *usecases.CreateTask, readiness *inboundhttp.Readiness, logger *slog.Logger, httpAddr string) *http.Server {
 	handlers := buildHandlers(storage, publisher, clock, metrics, lookups.classification, lookups.locationRole, hintLookup, createTask, readiness, logger)
+	handlers.SealPackage.CaseLevels = lookups.cases
 	if lookups.packs != nil {
 		handlers.ConfirmPickScan = &usecases.ConfirmPickScan{Tasks: storage.taskRepo, Packs: lookups.packs, Clock: clock, UnitOfWork: storage.uow}
 	}

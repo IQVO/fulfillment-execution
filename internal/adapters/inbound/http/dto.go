@@ -242,6 +242,13 @@ func (r completeTaskRequest) confirmation() task.RelocationConfirmation {
 type sealPackageRequest struct {
 	StationId string   `json:"stationId"`
 	Contents  []string `json:"contents"`
+
+	// ShipInOwnContainer opts into ship-in-own-container (ADR 0056): the
+	// order line may ship in the SKU's CASE. LineQuantity, then required, is
+	// the order line quantity in eaches. Both are absent from every request
+	// that predates the feature, which seals exactly as before.
+	ShipInOwnContainer bool `json:"shipInOwnContainer,omitempty"`
+	LineQuantity       *int `json:"lineQuantity,omitempty"`
 }
 
 // validate checks only that stationId (the claim owner) is present; an
@@ -250,6 +257,14 @@ type sealPackageRequest struct {
 func (r sealPackageRequest) validate() string {
 	if r.StationId == "" {
 		return "stationId is required"
+	}
+	if r.ShipInOwnContainer {
+		if r.LineQuantity == nil {
+			return "lineQuantity is required when shipInOwnContainer is true"
+		}
+		if *r.LineQuantity < 1 {
+			return "lineQuantity must be at least 1"
+		}
 	}
 	return ""
 }
@@ -262,6 +277,22 @@ type packageResponse struct {
 	FragileHandling   bool     `json:"fragileHandling"`
 	GiftWrapRequested bool     `json:"giftWrapRequested"`
 	SortLane          string   `json:"sortLane"`
+
+	// Present only on a package that ships in its own container (ADR 0056);
+	// omitted from every ordinary package, whose JSON is unchanged.
+	ShipInOwnContainer bool               `json:"shipInOwnContainer,omitempty"`
+	ContainerSource    string             `json:"containerSource,omitempty"`
+	Container          *containerResponse `json:"container,omitempty"`
+}
+
+// containerResponse is the own container's identity and measures: the case
+// GTIN, millimetres and grams.
+type containerResponse struct {
+	Gtin     string `json:"gtin"`
+	LengthMm int    `json:"lengthMm"`
+	WidthMm  int    `json:"widthMm"`
+	HeightMm int    `json:"heightMm"`
+	WeightG  int    `json:"weightG"`
 }
 
 type runSlamRequest struct {

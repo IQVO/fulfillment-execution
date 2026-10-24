@@ -1,0 +1,33 @@
+---
+id: owncontainer
+title: "OwnContainer"
+description: "The case a package ships in (ADR-0056): its GTIN and the declared dimensions and weight of the case level, copied at seal time (a later re-declaration does not change a sealed package)."
+sidebar_label: "OwnContainer"
+hide_title: true
+hide_table_of_contents: true
+schema: true
+sample: {"gtin":"24006381333935","lengthMm":400,"widthMm":300,"heightMm":200,"weightG":6500}
+custom_edit_url: null
+---
+
+import Schema from "@theme/Schema";
+import Heading from "@theme/Heading";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"OwnContainer"}
+>
+</Heading>
+
+
+
+The case a package ships in (ADR-0056): its GTIN and the declared dimensions and weight of the case level, copied at seal time (a later re-declaration does not change a sealed package).
+
+
+<Schema
+  {...require("./owncontainer.Schema.json")}
+>
+  
+</Schema>
+            

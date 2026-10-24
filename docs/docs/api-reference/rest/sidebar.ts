@@ -302,6 +302,18 @@ const sidebar: SidebarsConfig = {
         },
         {
           type: "doc",
+          id: "api-reference/rest/schemas/containersource",
+          label: "ContainerSource",
+          className: "schema",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/schemas/owncontainer",
+          label: "OwnContainer",
+          className: "schema",
+        },
+        {
+          type: "doc",
           id: "api-reference/rest/schemas/runslamrequest",
           label: "RunSlamRequest",
           className: "schema",

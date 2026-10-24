@@ -79,6 +79,8 @@ type Package struct {
 	fragileHandling      bool
 	giftWrapRequested    bool
 	scannedHazardClasses []int
+	// ownContainer is nil for an ordinary carton (ADR 0056).
+	ownContainer *OwnContainer
 }
 
 // New creates an empty, open package for the given order. taskId is the

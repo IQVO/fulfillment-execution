@@ -1015,6 +1015,25 @@ paths:
         item — an empty `contents` array is a domain invariant violation
         (`422`), not a malformed request (`400`), since the array is present
         and well-formed, just semantically insufficient to seal.
+
+
+        **Ship in own container (opt-in,
+        [ADR-0056](/docs/adr/0056-ship-in-own-container)).** With
+        `shipInOwnContainer: true` and the order line's `lineQuantity` (in
+        eaches), a line that is exactly one full active CASE of its SKU
+        (`lineQuantity` equal to the `unitsPerPack` of the SKU's active CASE
+        level in the local pack-level copy of product-master's events) is
+        sealed in the case itself: the package carries `containerSource: CASE`
+        and the case's GTIN, dimensions and weight in `container`, with no
+        cartonisation. `contents` must then name exactly one SKU. Anything
+        else is refused with `422` and nothing is sealed: not exactly one
+        line (`ship-in-own-container-not-single-line`), a quantity other
+        than one full case (`ship-in-own-container-quantity-mismatch`), no
+        CASE level for the SKU (`ship-in-own-container-no-case-level`), a
+        retired CASE level (`ship-in-own-container-case-retired`), or a case
+        declared without dimensions and weight
+        (`ship-in-own-container-case-dimensions-unknown`). Without the new
+        fields the request and the response are exactly as before.
       parameters:
         - name: id
           in: path
@@ -1029,9 +1048,19 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/SealPackageRequest"
-            example:
-              stationId: station-2
-              contents: [sku-1, sku-2]
+            examples:
+              ordinary:
+                summary: An ordinary carton (the existing request, unchanged)
+                value:
+                  stationId: station-2
+                  contents: [sku-1, sku-2]
+              shipInOwnContainer:
+                summary: An order line that is exactly one full case of 12 eaches
+                value:
+                  stationId: station-2
+                  contents: [sku-1]
+                  shipInOwnContainer: true
+                  lineQuantity: 12
       responses:
         "201":
           description: Package sealed.
@@ -1045,13 +1074,34 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PackageResponse"
-              example:
-                id: 20260101T120200.000000000
-                orderRef: order-42
-                status: SEALED
-                scannedContents: [sku-1, sku-2]
-                fragileHandling: false
-                sortLane: STANDARD
+              examples:
+                ordinary:
+                  summary: An ordinary carton
+                  value:
+                    id: 20260101T120200.000000000
+                    orderRef: order-42
+                    status: SEALED
+                    scannedContents: [sku-1, sku-2]
+                    fragileHandling: false
+                    sortLane: STANDARD
+                shipInOwnContainer:
+                  summary: Sealed in its own case
+                  value:
+                    id: 20260101T120200.000000000
+                    orderRef: order-42
+                    status: SEALED
+                    scannedContents: [sku-1]
+                    fragileHandling: false
+                    giftWrapRequested: false
+                    sortLane: STANDARD
+                    shipInOwnContainer: true
+                    containerSource: CASE
+                    container:
+                      gtin: "24006381333935"
+                      lengthMm: 400
+                      widthMm: 300
+                      heightMm: 200
+                      weightG: 6500
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
@@ -1096,18 +1146,66 @@ paths:
                 instance: /tasks/20260101T120100.000000000/seal-package
         "422":
           description: >
-            The task is not a Pack task, or `contents` was empty (nothing
-            was scanned, so there is nothing to seal).
+            The task is not a Pack task (`wrong-task-type`), or `contents`
+            was empty (nothing was scanned, so there is nothing to seal:
+            `package-no-scanned-contents`), or a
+            `shipInOwnContainer` request cannot ship in a case, in which case
+            nothing is sealed: `ship-in-own-container-not-single-line`
+            (`contents` is not exactly one SKU),
+            `ship-in-own-container-quantity-mismatch` (`lineQuantity` is not
+            the `unitsPerPack` of the SKU's active CASE level),
+            `ship-in-own-container-no-case-level` (the local pack-level copy
+            holds no CASE level in effect for the SKU),
+            `ship-in-own-container-case-retired` (the SKU's CASE level is
+            end-dated) or `ship-in-own-container-case-dimensions-unknown`
+            (the case was declared without dimensions and weight).
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
-              example:
-                type: https://errors.fulfillment-execution.warehouse-systems.dev/package-no-scanned-contents
-                title: Cannot seal a package without scanned contents
-                status: 422
-                detail: "package: cannot seal without scanned contents"
-                instance: /tasks/20260101T120100.000000000/seal-package
+              examples:
+                noScannedContents:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/package-no-scanned-contents
+                    title: Cannot seal a package without scanned contents
+                    status: 422
+                    detail: "package: cannot seal without scanned contents"
+                    instance: /tasks/20260101T120100.000000000/seal-package
+                notSingleLine:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/ship-in-own-container-not-single-line
+                    title: Ship-in-own-container needs exactly one order line in the package
+                    status: 422
+                    detail: "package: ship-in-own-container needs exactly one order line in the package"
+                    instance: /tasks/20260101T120100.000000000/seal-package
+                quantityMismatch:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/ship-in-own-container-quantity-mismatch
+                    title: The order line is not exactly one full case
+                    status: 422
+                    detail: "package: the order line quantity is not exactly one full case"
+                    instance: /tasks/20260101T120100.000000000/seal-package
+                noCaseLevel:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/ship-in-own-container-no-case-level
+                    title: The SKU has no active CASE level
+                    status: 422
+                    detail: "package: the SKU has no active CASE level"
+                    instance: /tasks/20260101T120100.000000000/seal-package
+                caseRetired:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/ship-in-own-container-case-retired
+                    title: The SKU's CASE level is retired
+                    status: 422
+                    detail: "package: the SKU's CASE level is retired"
+                    instance: /tasks/20260101T120100.000000000/seal-package
+                caseDimensionsUnknown:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/ship-in-own-container-case-dimensions-unknown
+                    title: The active CASE level has no dimensions and weight
+                    status: 422
+                    detail: "package: the active CASE level has no dimensions and weight"
+                    instance: /tasks/20260101T120100.000000000/seal-package
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -2027,6 +2125,25 @@ components:
               A null item is accepted and treated as an empty SKU string
               (Go's JSON decoding cannot distinguish them).
             example: sku-1
+        shipInOwnContainer:
+          type: boolean
+          description: >
+            Opt-in (ADR-0056). `true` asks to ship the order line in its own
+            CASE: it requires `lineQuantity` and exactly one SKU in
+            `contents`, and is refused with a `422`
+            `ship-in-own-container-*` problem unless `lineQuantity` equals the
+            `unitsPerPack` of the SKU's active CASE level. Absent or `false`
+            is the ordinary carton seal, unchanged.
+          example: true
+        lineQuantity:
+          type: integer
+          format: int32
+          minimum: 1
+          description: >
+            The order line's quantity in EACHES (never cases). Required when
+            `shipInOwnContainer` is `true` (a missing value is a `400`);
+            ignored otherwise.
+          example: 12
       example:
         stationId: station-2
         contents: [sku-1, sku-2]
@@ -2068,6 +2185,57 @@ components:
           example: false
         sortLane:
           $ref: "#/components/schemas/SortLane"
+        shipInOwnContainer:
+          type: boolean
+          description: >
+            Present (always `true`) only when the package ships in its own
+            container (ADR-0056); omitted from an ordinary carton.
+          example: true
+        containerSource:
+          $ref: "#/components/schemas/ContainerSource"
+        container:
+          $ref: "#/components/schemas/OwnContainer"
+
+    ContainerSource:
+      type: string
+      description: >
+        What a package ships in when it is not a cartonised carton. `CASE`:
+        the SKU's own sealed case (ADR-0056).
+      enum: [CASE]
+      example: CASE
+
+    OwnContainer:
+      type: object
+      description: >
+        The case a package ships in (ADR-0056): its GTIN and the declared
+        dimensions and weight of the case level, copied at seal time (a later
+        re-declaration does not change a sealed package).
+      required: [gtin, lengthMm, widthMm, heightMm, weightG]
+      properties:
+        gtin:
+          type: string
+          description: The case's GTIN, 14 digits.
+          example: "24006381333935"
+        lengthMm:
+          type: integer
+          format: int32
+          description: Case length in millimetres.
+          example: 400
+        widthMm:
+          type: integer
+          format: int32
+          description: Case width in millimetres.
+          example: 300
+        heightMm:
+          type: integer
+          format: int32
+          description: Case height in millimetres.
+          example: 200
+        weightG:
+          type: integer
+          format: int32
+          description: Case weight in grams.
+          example: 6500
 
     RunSlamRequest:
       type: object
