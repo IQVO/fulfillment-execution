@@ -133,6 +133,32 @@ type WorkReleasedData struct {
 	// Absent on every other release. A nested object next to relocation,
 	// so its presence is one unambiguous marker.
 	Replenishment *WorkReleasedReplenishment `json:"replenishment,omitempty"`
+	// Pick, when present, is the pick plan of work released on the PICK
+	// path (ADR 0054): the SKU, the planned quantity in EACHES and the unit
+	// (EACH | CASE) the operator scans. Absent on every other release and on
+	// a PICK released without scan confirmation.
+	Pick *WorkReleasedPick `json:"pick,omitempty"`
+	// CaseBreak, when present, is the sealed-case break of work released on
+	// the BREAK_CASE path (ADR 0054). Absent on every other release.
+	CaseBreak *WorkReleasedCaseBreak `json:"case_break,omitempty"`
+}
+
+// WorkReleasedPick is WorkReleased.data.pick (ADR 0054). quantity is in
+// eaches (the ledger unit) whatever the unit; from_bin is optional.
+type WorkReleasedPick struct {
+	SKU      string `json:"sku"`
+	Quantity *int   `json:"quantity"`
+	Unit     string `json:"unit"`
+	FromBin  string `json:"from_bin,omitempty"`
+}
+
+// WorkReleasedCaseBreak is WorkReleased.data.case_break (ADR 0054): break
+// the sealed case lpn of sku into loose_bin for the EACH pick pick_task_id.
+type WorkReleasedCaseBreak struct {
+	LPN        string `json:"lpn"`
+	SKU        string `json:"sku"`
+	LooseBin   string `json:"loose_bin"`
+	PickTaskId string `json:"pick_task_id"`
 }
 
 // WorkReleasedReplenishment is WorkReleased.data.replenishment (ADR 0050):
@@ -433,6 +459,14 @@ func requestOf(env workReleased) (usecases.WorkReleasedRequest, error) {
 	if err != nil {
 		return usecases.WorkReleasedRequest{}, err
 	}
+	pick, err := pickPlanOf(env.Data)
+	if err != nil {
+		return usecases.WorkReleasedRequest{}, err
+	}
+	caseBreak, err := caseBreakOf(env.Data)
+	if err != nil {
+		return usecases.WorkReleasedRequest{}, err
+	}
 	return usecases.WorkReleasedRequest{
 		EventId:       env.EventId,
 		PathId:        env.Data.PathId,
@@ -445,7 +479,42 @@ func requestOf(env workReleased) (usecases.WorkReleasedRequest, error) {
 		Transfer:      transfer,
 		Relocation:    relocation,
 		Replenishment: replenishment,
+		Pick:          pick,
+		CaseBreak:     caseBreak,
 	}, nil
+}
+
+// pickPlanOf maps the optional WorkReleased pick object onto a validated
+// task.PickPlan (ADR 0054): nil when absent. A present object that is not a
+// valid plan (blank sku, missing or non-positive quantity, a unit other than
+// EACH or CASE) is a hard error, never a silent default.
+func pickPlanOf(d WorkReleasedData) (*task.PickPlan, error) {
+	p := d.Pick
+	if p == nil {
+		return nil, nil
+	}
+	if p.Quantity == nil {
+		return nil, fmt.Errorf("kafka: pick of work unit %q: %w: quantity is required", d.WorkUnitId, task.ErrInvalidPickPlan)
+	}
+	plan, err := task.NewPickPlan(p.SKU, *p.Quantity, p.Unit, p.FromBin)
+	if err != nil {
+		return nil, fmt.Errorf("kafka: pick of work unit %q: %w", d.WorkUnitId, err)
+	}
+	return &plan, nil
+}
+
+// caseBreakOf maps the optional WorkReleased case_break object onto a
+// validated task.CaseBreak (ADR 0054): nil when absent.
+func caseBreakOf(d WorkReleasedData) (*task.CaseBreak, error) {
+	b := d.CaseBreak
+	if b == nil {
+		return nil, nil
+	}
+	brk, err := task.NewCaseBreak(b.LPN, b.SKU, b.LooseBin, b.PickTaskId)
+	if err != nil {
+		return nil, fmt.Errorf("kafka: case break of work unit %q: %w", d.WorkUnitId, err)
+	}
+	return &brk, nil
 }
 
 // replenishmentMoveOf maps the optional WorkReleased replenishment object
