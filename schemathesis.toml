@@ -40,3 +40,15 @@ checks.positive_data_acceptance.expected-statuses = ["2xx", "401", "403", "404",
 [[operations]]
 include-operation-id = "completeTask"
 checks.positive_data_acceptance.expected-statuses = ["2xx", "401", "403", "404", "409", "422", "429", "5xx"]
+
+# confirmPickScan (POST /tasks/{id}/scans): the Idempotency-Key (ADR 0055) is
+# a cross-request rule. A schema-valid request that reuses a key already seen
+# with a different body or on another task is correctly rejected with 422
+# idempotency-key-reused, which OpenAPI 3.0.3 cannot express (it depends on
+# the earlier requests). The 422 is documented on the operation. Tested by
+# TestScanIdempotency_* (internal/adapters/inbound/http/scan_idempotency_integration_test.go).
+# Default positive_data_acceptance statuses plus 422; every other check runs
+# unchanged.
+[[operations]]
+include-operation-id = "confirmPickScan"
+checks.positive_data_acceptance.expected-statuses = ["2xx", "401", "403", "404", "409", "422", "429", "5xx"]

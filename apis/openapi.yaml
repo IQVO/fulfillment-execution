@@ -177,7 +177,7 @@ paths:
                     type: https://errors.fulfillment-execution.warehouse-systems.dev/idempotency-key-required
                     title: Idempotency-Key header is required
                     status: 400
-                    detail: This endpoint creates a new resource on every call and requires a caller-supplied Idempotency-Key header so a retried request is never applied twice.
+                    detail: This endpoint requires a caller-supplied Idempotency-Key header so a retried request is never applied twice.
                     instance: /tasks
                 invalidRequest:
                   summary: Invalid body
@@ -731,6 +731,17 @@ paths:
         answer reports the eaches confirmed so far. Quantities are always in
         eaches; `POST /tasks/{id}/complete` and `TaskCompleted` are
         unchanged. A rejected scan changes nothing.
+
+
+        **Idempotent per `Idempotency-Key` (ADR-0055).** Send a fresh
+        `Idempotency-Key` for each physical scan and reuse it only when
+        retrying that scan after a lost response. A retry with the same key
+        and the same body on the same path replays the stored answer
+        verbatim (same status and body, including a cached 4xx) and does
+        not count the scan again; two scans with different keys both
+        count. Reusing a key with a different body or on another task is
+        `422 idempotency-key-reused`; omitting the header is
+        `400 idempotency-key-required`.
       parameters:
         - name: id
           in: path
@@ -739,6 +750,17 @@ paths:
           schema:
             type: string
             example: 20260101T120000.000000000
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: >
+            Caller-supplied unique key (e.g. a UUID) identifying this
+            physical scan. A missing key is rejected with
+            `400 idempotency-key-required`. A retry of the same scan reuses
+            it; a different scan uses a new one.
+          schema:
+            type: string
+            example: 6f1c2a3e-9b1d-4c1a-8f0e-2d5b7c9a1e44
       requestBody:
         required: true
         content:
@@ -751,7 +773,10 @@ paths:
               count: 1
       responses:
         "200":
-          description: The scan is accepted.
+          description: >
+            The scan is accepted (or, on a retry with a repeated
+            `Idempotency-Key` and identical body, the original answer
+            replayed without counting the scan again).
           content:
             application/json:
               schema:
@@ -764,7 +789,32 @@ paths:
                 pickedEaches: 1
                 plannedEaches: 12
         "400":
-          $ref: "#/components/responses/BadRequest"
+          description: >
+            The `Idempotency-Key` header is missing
+            (`idempotency-key-required`), or the request body is malformed
+            JSON, a required field is missing or empty, or a field value is
+            invalid (`invalid-request`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                keyRequired:
+                  summary: Missing Idempotency-Key header
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/idempotency-key-required
+                    title: Idempotency-Key header is required
+                    status: 400
+                    detail: This endpoint requires a caller-supplied Idempotency-Key header so a retried request is never applied twice.
+                    instance: /tasks/20260101T120000.000000000/scans
+                invalidRequest:
+                  summary: Invalid body
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/invalid-request
+                    title: The request is malformed or missing a required field
+                    status: 400
+                    detail: stationId is required
+                    instance: /tasks/20260101T120000.000000000/scans
         "404":
           description: >
             No task exists with this id.
@@ -837,6 +887,21 @@ paths:
                     status: 409
                     detail: "task: the scan would pick more than the planned quantity"
                     instance: /tasks/20260101T120000.000000000/scans
+        "422":
+          description: >
+            The `Idempotency-Key` was already used with a request that had a
+            different body, or on another task (`idempotency-key-reused`).
+            Use a new key for a genuinely different scan.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/idempotency-key-reused
+                title: Idempotency-Key was already used with a different request
+                status: 422
+                detail: The Idempotency-Key header on this request was already used with a request that had a different body. Use a new Idempotency-Key for a genuinely different request.
+                instance: /tasks/20260101T120000.000000000/scans
         "500":
           $ref: "#/components/responses/InternalError"
 
