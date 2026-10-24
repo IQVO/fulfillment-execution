@@ -193,6 +193,9 @@ func TestGolden_Analytics_EveryType(t *testing.T) {
 		{shared.NewTaskCompleted("t1", "s1", goldenAt), "TaskCompleted", "task", "t1", `{"task_id":"t1","task_type":"PICK","station_id":"s1","order_ref":"order-1"}`},
 		{shared.NewItemPicked("t1", goldenAt), "ItemPicked", "task", "t1", `{"task_id":"t1","task_type":"PICK"}`},
 		{shared.NewPackageSealed("p1", goldenAt), "PackageSealed", "package", "p1", `{"package_id":"p1"}`},
+		// ship-in-own-container (ADR 0056): additive optional fields, only on the own-container variant.
+		{shared.NewPackageSealedInOwnContainer("p1", shared.OwnContainerFact{Source: "CASE", GTIN: "24006381333935", LengthMM: 400, WidthMM: 300, HeightMM: 200, WeightG: 6500}, goldenAt), "PackageSealed", "package", "p1",
+			`{"container_dims":{"height_mm":200,"length_mm":400,"weight_g":6500,"width_mm":300},"container_gtin":"24006381333935","container_source":"CASE","package_id":"p1","ship_in_own_container":true}`},
 		{shared.NewWeightDiscrepancyDetected("p1", 1000, 1200, goldenAt), "WeightDiscrepancyDetected", "package", "p1", `{"package_id":"p1","expected_g":1000,"actual_g":1200}`},
 		{shared.NewLabelApplied("p1", goldenAt), "LabelApplied", "package", "p1", `{"package_id":"p1"}`},
 		{shared.NewPackageDiverted("p1", goldenAt), "PackageDiverted", "package", "p1", `{"package_id":"p1"}`},
