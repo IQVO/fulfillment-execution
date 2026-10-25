@@ -179,6 +179,7 @@ const sidebars: SidebarsConfig = {
         'adr/0054-case-and-each-pick-scans-and-break-case-task',
         'adr/0055-scan-idempotency-and-claimable-break-case',
         'adr/0056-ship-in-own-container',
+        'adr/0057-a-dead-background-loop-takes-the-process-down',
       ],
     },
   ],
