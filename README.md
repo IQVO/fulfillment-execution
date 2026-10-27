@@ -1,12 +1,5 @@
 # Fulfillment Execution
 
-> **⚠️ Study project.** This repository is an educational exercise in
-> Domain-Driven Design applied to warehouse management/execution systems. It
-> follows real industry-standard patterns and terminology (WMS/WES/WCS,
-> pull-based dispatch, CloudEvents, RFC 7807, hexagonal architecture) but is
-> **not a production system** and is **not affiliated with, endorsed by, or
-> representative of any real-world company**.
-
 The task-lifecycle core bounded context for Pick, Pack, Rebin, and SLAM.
 Downstream of Work Planning (which releases work); WCS/equipment is a
 strategic downstream behind a deliberately unimplemented port (ADR-0015).
@@ -18,6 +11,13 @@ vanishing.
 
 See `CLAUDE.md` for the full architecture and ubiquitous language, and
 `/Users/claudioed/docs/fulfillment-reference-ddd.md` for the source domain model.
+
+## Disclaimer
+
+This project is a domain-driven design study. It is not associated with,
+endorsed by or affiliated with any company, and it uses no company's code,
+data, logos or trademarks. All names, figures and examples are illustrative
+or synthetic.
 
 ## Documentation
 
@@ -736,6 +736,17 @@ is `"order-smoke-1"`.
   exercised through `SealPackage` in
   `internal/application/usecases/usecases_test.go`.
 
+## Helm chart
+
+`charts/fulfillment-execution` deploys the OLTP service with optional components behind
+values flags: the analytics projector and reports reader (`analytics.enabled`), the read-only MCP server (`mcp.enabled`), the operator micro-frontend (`frontend.enabled`) and the lease-sweep CronJob (`sweeps`). Mandatory values are the Postgres secret and the Kafka
+broker list; the deployed consumer-group ids and mode flags come from
+`warehouse-infra`'s helm-values.
+
+The chart is linted in CI (`helm-lint`, `chart-tests`) and its invariants are
+asserted by the tests in `charts/fulfillment-execution/tests/` — `render_test.sh`,
+`test_service_selectors.py` (every Service selects exactly one Deployment) and
+`test_kong_config.py`.
 ## Operator micro-frontend (`web/`)
 
 `web/` is `fulfillment_mfe`, this context's Module Federation remote. It talks only to
@@ -787,3 +798,13 @@ which proves every Service selects exactly one Deployment — the OLTP Service
 must never select the frontend, analytics or MCP pods — and that the sweep
 CronJobs render by default (every minute / every 5 minutes) and are dropped by
 `sweeps.enabled=false`.
+
+## Architecture Decision Records
+
+The ADR index lives at [docs/docs/adr/index.md](docs/docs/adr/index.md) — 57 decisions, from the
+hexagonal layout to the CloudEvents-only envelope and the transactional
+outbox.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
