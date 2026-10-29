@@ -44,6 +44,7 @@ import (
 
 	inboundhttp "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/http"
 	inboundkafka "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/kafka"
+	outbounda2a "github.com/claudioed/fulfillment-execution/internal/adapters/outbound/a2a"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/bootretry"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/facilitylayout"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/filecatalog"
@@ -146,7 +147,7 @@ func run(ctx context.Context) error {
 	lookups := buildOutboundLookups(classification.lookup, packView.lookup, cfg.inventoryStorageURL, logger)
 
 	createTask := &usecases.CreateTask{Tasks: storage.taskRepo, Publisher: publisher, Clock: clock, NewId: newTaskId, UnitOfWork: storage.uow}
-	srv := newHTTPServer(storage, publisher, clock, metrics, lookups, interleaving.lookup, createTask, readiness, logger, getenv("HTTP_ADDR", ":8080"))
+	srv := newHTTPServer(storage, publisher, clock, metrics, lookups, interleaving.lookup, createTask, readiness, logger, getenv("HTTP_ADDR", ":8080"), buildWorkPlanningClient(logger, os.Getenv("WORK_PLANNING_A2A_URL")))
 
 	// ApplyWorkReleased wraps the same CreateTask the HTTP surface uses,
 	// plus the processed-events claim, inside ONE UnitOfWork — the
@@ -311,8 +312,8 @@ func caseLevelsOf(packs ports.PackViewLookup) ports.CaseLevelLookup {
 // newHTTPServer builds the handler set and the HTTP server around it, with
 // the idempotency pool bound (the real runtime always has one; only the unit
 // tests build a server over test doubles without it).
-func newHTTPServer(storage storageAdapters, publisher ports.EventPublisher, clock system.Clock, metrics *observability.Metrics, lookups outboundLookups, hintLookup ports.InterleavingHintLookup, createTask *usecases.CreateTask, readiness *inboundhttp.Readiness, logger *slog.Logger, httpAddr string) *http.Server {
-	handlers := buildHandlers(storage, publisher, clock, metrics, lookups.classification, lookups.locationRole, hintLookup, createTask, readiness, logger)
+func newHTTPServer(storage storageAdapters, publisher ports.EventPublisher, clock system.Clock, metrics *observability.Metrics, lookups outboundLookups, hintLookup ports.InterleavingHintLookup, createTask *usecases.CreateTask, readiness *inboundhttp.Readiness, logger *slog.Logger, httpAddr string, planning ports.WorkPlanning) *http.Server {
+	handlers := buildHandlers(storage, publisher, clock, metrics, lookups.classification, lookups.locationRole, hintLookup, createTask, readiness, logger, planning)
 	handlers.SealPackage.CaseLevels = lookups.cases
 	if lookups.packs != nil {
 		handlers.ConfirmPickScan = &usecases.ConfirmPickScan{Tasks: storage.taskRepo, Packs: lookups.packs, Clock: clock, UnitOfWork: storage.uow}
@@ -539,7 +540,7 @@ func openStorage(rootCtx context.Context, logger *slog.Logger, databaseURL, migr
 // buildHandlers wires every use case into its inbound HTTP handler.
 // createTask is built by the caller (the WorkReleased consumer shares it)
 // and passed in; everything else is constructed here.
-func buildHandlers(storage storageAdapters, publisher ports.EventPublisher, clock system.Clock, metrics *observability.Metrics, classificationLookup ports.ProductClassificationLookup, locationRoleLookup ports.LocationRoleLookup, hintLookup ports.InterleavingHintLookup, createTask *usecases.CreateTask, readiness *inboundhttp.Readiness, logger *slog.Logger) *inboundhttp.Handlers {
+func buildHandlers(storage storageAdapters, publisher ports.EventPublisher, clock system.Clock, metrics *observability.Metrics, classificationLookup ports.ProductClassificationLookup, locationRoleLookup ports.LocationRoleLookup, hintLookup ports.InterleavingHintLookup, createTask *usecases.CreateTask, readiness *inboundhttp.Readiness, logger *slog.Logger, planning ports.WorkPlanning) *inboundhttp.Handlers {
 	return &inboundhttp.Handlers{
 		CreateTask:         createTask,
 		ClaimNext:          &usecases.ClaimNext{Tasks: storage.taskRepo, Stations: storage.stationRepo, Publisher: publisher, Clock: clock, Metrics: metricsPort(metrics), UnitOfWork: storage.uow, Hints: hintLookup, Logger: logger},
@@ -566,6 +567,10 @@ func buildHandlers(storage storageAdapters, publisher ports.EventPublisher, cloc
 		// GET /packages?orderRef=.
 		GetPackage:            &usecases.GetPackage{Packages: storage.packageRepo},
 		GetPackagesByOrderRef: &usecases.GetPackagesByOrderRef{Packages: storage.packageRepo},
+		// A2A delegation to Work Planning (ADR-0058): nil Planning keeps the
+		// endpoint answering 503 not-configured — a deployment without
+		// WORK_PLANNING_A2A_URL has the surface explicitly off.
+		RequestNextWork: &usecases.RequestNextWork{Planning: planning},
 		// readiness backs GET /readyz (ADR-0029 §graceful shutdown):
 		// flipped to not-ready as the FIRST step of shutdown, below,
 		// before anything else stops.
@@ -796,6 +801,21 @@ func newLogger(level string) *slog.Logger {
 	return slog.New(observability.NewSlogHandler(
 		slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl}),
 	))
+}
+
+// buildWorkPlanningClient resolves the Work Planning delegation port from
+// WORK_PLANNING_A2A_URL (ADR-0058). Unset means the surface is explicitly
+// OFF: nil makes POST /paths/{pathId}/work-requests answer 503
+// not-configured instead of dialing anything — a half-configured deployment
+// must fail closed, and boot must never depend on the planning agent being
+// up (the A2A client resolves the agent's card lazily, on first use).
+func buildWorkPlanningClient(logger *slog.Logger, rawURL string) ports.WorkPlanning {
+	if strings.TrimSpace(rawURL) == "" {
+		logger.Info("work-planning delegation disabled", "reason", "WORK_PLANNING_A2A_URL unset (ADR-0058)")
+		return nil
+	}
+	logger.Info("work-planning delegation configured", "agent", rawURL)
+	return outbounda2a.NewClient(rawURL, nil)
 }
 
 func getenv(key, fallback string) string {

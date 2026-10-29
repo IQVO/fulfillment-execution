@@ -45,6 +45,10 @@ type Handlers struct {
 	// a documented "always ready" no-op — see Readiness.Ready — so every
 	// pre-existing test/caller that does not wire one is unaffected.
 	Readiness *Readiness
+	// RequestNextWork backs POST /paths/{pathId}/work-requests: the A2A
+	// delegation to the Work Planning agent (ADR-0058). Nil — or a nil
+	// Planning port inside it — answers 503 not-configured, never a panic.
+	RequestNextWork *usecases.RequestNextWork
 }
 
 func toTaskResponse(t *task.Task) taskResponse {
@@ -501,4 +505,25 @@ func (h *Handlers) PostArriveAtRebin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// PostWorkRequest handles POST /paths/{pathId}/work-requests (ADR-0058): the
+// PULL side of the execution/planning seam. Execution asks the Work Planning
+// agent, over A2A, to admit the next unit for the path; the authoritative
+// fact still arrives as the WorkReleased CloudEvent through the existing
+// consumer — this answer is the delegation acknowledgement. The handler is
+// intentionally NOT behind the idempotency middleware: each call asks for
+// exactly one more unit, and repeating the ask is a legitimate second pull.
+func (h *Handlers) PostWorkRequest(w http.ResponseWriter, r *http.Request) {
+	pathId := chi.URLParam(r, "pathId")
+	released, err := h.RequestNextWork.Execute(r.Context(), usecases.RequestNextWorkRequest{PathId: pathId})
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, workRequestResponse{
+		WorkUnitId: released.WorkUnitId,
+		CPT:        released.CPT,
+		Reference:  released.Reference,
+	})
 }
