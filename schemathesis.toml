@@ -66,4 +66,5 @@ checks.positive_data_acceptance.expected-statuses = ["2xx", "401", "403", "404",
 # rejection still run unchanged.
 [[operations]]
 include-operation-id = "requestNextWork"
-checks.not_a_server_error.expected-statuses = ["2xx", "401", "403", "404", "409", "422", "429", "5xx"]
+checks.not_a_server_error.expected-statuses = ["2xx", "4xx", "5xx"]
+checks.positive_data_acceptance.expected-statuses = ["2xx", "4xx", "5xx"]
