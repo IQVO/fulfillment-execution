@@ -52,3 +52,18 @@ checks.positive_data_acceptance.expected-statuses = ["2xx", "401", "403", "404",
 [[operations]]
 include-operation-id = "confirmPickScan"
 checks.positive_data_acceptance.expected-statuses = ["2xx", "401", "403", "404", "409", "422", "429", "5xx"]
+
+# requestNextWork (POST /paths/{pathId}/work-requests): answers 503
+# work-planning-not-configured whenever this deployment has no
+# WORK_PLANNING_A2A_URL (ADR-0058) — an environment condition the contract
+# runner cannot see and OpenAPI cannot express; the 503 is documented on the
+# operation. The status mapping (including 503 not-configured, 502
+# unreachable, 409 business rule) is tested by
+# TestPostWorkRequest_ProblemStatuses
+# (internal/adapters/inbound/http/work_request_test.go); the delegation wire
+# itself by internal/adapters/outbound/a2a/client_test.go against a real
+# stub agent. status-code / response-schema conformance and negative data
+# rejection still run unchanged.
+[[operations]]
+include-operation-id = "requestNextWork"
+checks.not_a_server_error.expected-statuses = ["2xx", "401", "403", "404", "409", "422", "429", "5xx"]
