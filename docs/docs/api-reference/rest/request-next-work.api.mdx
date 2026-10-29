@@ -1,0 +1,71 @@
+---
+id: request-next-work
+title: "Ask the Work Planning agent (over A2A) to admit the next unit for a path"
+description: "The PULL side of the execution/planning seam (ADR-0058): execution, whose claimable queue for a process path is draining, delegates 'admit the next priority-ordered unit' to the wes-work-planning A2A agent. Planning keeps every release decision (release policy, WIP invariant); execution keeps the judgement of when to ask. The authoritative fact still arrives as the `WorkReleased` CloudEvent on Kafka through the existing consumer — the 200 body is only the delegation acknowledgement. Each call asks for exactly one unit, so the endpoint is deliberately NOT idempotent and NOT behind the idempotency middleware: repeating the request is a legitimate second pull. Answers 503 when this deployment has no `WORK_PLANNING_A2A_URL` configured, and 502 when the planning agent is unreachable or answers off-contract."
+sidebar_label: "Ask the Work Planning agent (over A2A) to admit the next unit for a path"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "post api-method"
+info_path: docs/api-reference/rest/fulfillment-execution-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Ask the Work Planning agent (over A2A) to admit the next unit for a path"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"post"}
+  path={"/paths/{pathId}/work-requests"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+The PULL side of the execution/planning seam (ADR-0058): execution, whose claimable queue for a process path is draining, delegates "admit the next priority-ordered unit" to the wes-work-planning A2A agent. Planning keeps every release decision (release policy, WIP invariant); execution keeps the judgement of when to ask. The authoritative fact still arrives as the `WorkReleased` CloudEvent on Kafka through the existing consumer — the 200 body is only the delegation acknowledgement. Each call asks for exactly one unit, so the endpoint is deliberately NOT idempotent and NOT behind the idempotency middleware: repeating the request is a legitimate second pull. Answers 503 when this deployment has no `WORK_PLANNING_A2A_URL` configured, and 502 when the planning agent is unreachable or answers off-contract.
+
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./request-next-work.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./request-next-work.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./request-next-work.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

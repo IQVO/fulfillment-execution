@@ -85,6 +85,7 @@ internal/
     outbound/analyticsstore/ analytical DB writer + read-only reader
     outbound/memory/         in-memory repos for tests/local
     outbound/kafka/          integration publisher + analytics publisher
+    outbound/a2a/            Work Planning delegation client (A2A, ADR-0058)
     outbound/events/         log/buffered/multi publisher
     outbound/filecatalog/    process-path catalogue YAML loader
     outbound/kafkacatalog/   process-path catalogue Kafka replay (PATH_CATALOGUE_SOURCE=kafka)
@@ -221,6 +222,7 @@ Terraform, and warehouse-ops-agent's `FULFILLMENT_MCP_ENDPOINT` points at
 | `TASK_INTERLEAVING_CONSUMER_GROUP` | (unset) | Consumer group of the `InterleavingHintIssued` consumer on `warehouse.task-interleaving.events`; required (boot error when unset) with `TASK_INTERLEAVING_MODE=kafka` |
 | `LOCATION_ROLE_MODE` | `permissive` | `permissive` (default, no-op, a supplied `locationCode` is recorded unchecked) or `http` — live registration-time lookup of a station's `locationCode` role from facility-layout, rejecting a KNOWN non-WorkCenter role (ADR-0024) |
 | `FACILITY_LAYOUT_BASE_URL` | (unset) | Base URL for facility-layout's REST API; required when `LOCATION_ROLE_MODE=http` |
+| `WORK_PLANNING_A2A_URL` | (unset) | Base URL of the wes-work-planning A2A agent (ADR-0058); enables `POST /paths/{pathId}/work-requests` (unset answers 503). The card is fetched from `/.well-known/agent-card.json` under this URL on first use. |
 | `LOG_LEVEL`    | `info`  | `debug` \| `info` \| `warn` \| `error`, case-insensitive |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | OTel Collector's OTLP/gRPC address (see [Observability](#observability)) |
 | `OTEL_SERVICE_NAME` | `fulfillment-execution` | `service.name` resource attribute |
