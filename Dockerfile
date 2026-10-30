@@ -20,6 +20,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/fulfillment-projector ./cmd/fulfillment-projector && \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/fulfillment-reports ./cmd/fulfillment-reports && \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/mcp ./cmd/mcp && \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/a2a ./cmd/a2a && \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/sweep ./cmd/sweep
 
 # --- runtime stage ---
@@ -35,6 +36,7 @@ COPY --from=build --chown=app:app /out/execution ./execution
 COPY --from=build --chown=app:app /out/fulfillment-projector ./fulfillment-projector
 COPY --from=build --chown=app:app /out/fulfillment-reports ./fulfillment-reports
 COPY --from=build --chown=app:app /out/mcp ./mcp
+COPY --from=build --chown=app:app /out/a2a ./a2a
 COPY --from=build --chown=app:app /out/sweep ./sweep
 COPY --from=build --chown=app:app /src/migrations ./migrations
 USER 1000

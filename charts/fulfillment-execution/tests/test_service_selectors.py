@@ -3,7 +3,7 @@
 
 Why this exists: before the frontend workload was added, every Service in this
 chart selected on the base selector labels alone (name + instance). Those labels
-are identical on the OLTP, analytics projector, analytics reports and MCP pods,
+are identical on the OLTP, analytics projector, analytics reports, MCP and A2A pods,
 so the OLTP Service's EndpointSlice genuinely contained all of them -- verified
 live in the kind cluster, where a Kong request for an OLTP /healthz was
 answered by the analytics reports pod.
@@ -31,6 +31,7 @@ ENABLE_EVERYTHING = [
     "--set", "frontend.enabled=true",
     "--set", "analytics.enabled=true",
     "--set", "mcp.enabled=true",
+    "--set", "a2a.enabled=true",
 ]
 
 
