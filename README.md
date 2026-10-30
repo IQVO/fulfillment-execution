@@ -1,12 +1,5 @@
 # Fulfillment Execution
 
-> **⚠️ Study project.** This repository is an educational exercise in
-> Domain-Driven Design applied to warehouse management/execution systems. It
-> follows real industry-standard patterns and terminology (WMS/WES/WCS,
-> pull-based dispatch, CloudEvents, RFC 7807, hexagonal architecture) but is
-> **not a production system** and is **not affiliated with, endorsed by, or
-> representative of any real-world company**.
-
 The task-lifecycle core bounded context for Pick, Pack, Rebin, and SLAM.
 Downstream of Work Planning (which releases work); WCS/equipment is a
 strategic downstream behind a deliberately unimplemented port (ADR-0015).
@@ -18,6 +11,13 @@ vanishing.
 
 See `CLAUDE.md` for the full architecture and ubiquitous language, and
 `/Users/claudioed/docs/fulfillment-reference-ddd.md` for the source domain model.
+
+## Disclaimer
+
+This project is a domain-driven design study. It is not associated with,
+endorsed by or affiliated with any company, and it uses no company's code,
+data, logos or trademarks. All names, figures and examples are illustrative
+or synthetic.
 
 ## Documentation
 
@@ -46,6 +46,7 @@ Start here:
 | [Troubleshooting](https://iqvo.github.io/fulfillment-execution/docs/operations/troubleshooting) | symptom, cause, check, fix |
 | [Testing](https://iqvo.github.io/fulfillment-execution/docs/development/testing) | the test pyramid and every CI job |
 | [MCP tools](https://iqvo.github.io/fulfillment-execution/docs/mcp/tools) | every MCP tool, resource and prompt |
+| [A2A inbound adapter](https://iqvo.github.io/fulfillment-execution/docs/adr/0059-a2a-inbound-adapter) | the two A2A skills this context serves (ADR-0059) |
 | [Integration contracts](https://iqvo.github.io/fulfillment-execution/docs/ecosystem/integration-contracts) | every upstream and downstream edge |
 | [Use cases & ports](https://iqvo.github.io/fulfillment-execution/docs/ddd/use-cases) | the application use cases |
 | [Subdomain classification](https://iqvo.github.io/fulfillment-execution/docs/ddd/subdomain-classification) | Core / Supporting / Generic and why |
@@ -62,6 +63,7 @@ cmd/execution/               main.go — OLTP composition root
 cmd/fulfillment-projector/   analytics WRITER: analytics topic -> analytical DB
 cmd/fulfillment-reports/     analytics READ-ONLY READER: serves GET /reports/...
 cmd/mcp/                     MCP server (Streamable HTTP; adds the two report tools)
+cmd/a2a/                     A2A agent (JSON-RPC over HTTP, Agent Card at /.well-known/agent-card.json)
 internal/
   domain/
     task/                    Task aggregate (Pick|Pack|SLAM|Rebin lifecycle, lease, CPT-missed)
@@ -81,11 +83,12 @@ internal/
     inbound/http/            chi handlers, DTOs, error mapping (OLTP + reports)
     inbound/kafka/           WorkReleased consumer + analytics projector consumer
     inbound/mcp/             MCP tools (incl. get_fulfillment_throughput_report, get_on_time_to_cpt)
+    inbound/a2a/             A2A skills: backlog_status (read), complete_task (write); server half, ADR-0059
     outbound/postgres/       pgxpool repos + migrations + transactional outbox + relay
     outbound/analyticsstore/ analytical DB writer + read-only reader
     outbound/memory/         in-memory repos for tests/local
     outbound/kafka/          integration publisher + analytics publisher
-    outbound/a2a/            Work Planning delegation client (A2A, ADR-0058)
+    outbound/a2a/            Work Planning delegation client (A2A client half, ADR-0058)
     outbound/events/         log/buffered/multi publisher
     outbound/filecatalog/    process-path catalogue YAML loader
     outbound/kafkacatalog/   process-path catalogue Kafka replay (PATH_CATALOGUE_SOURCE=kafka)
@@ -196,6 +199,46 @@ In the `warehouse-infra` kind cluster the chart is enabled and keyed from
 Terraform, and warehouse-ops-agent's `FULFILLMENT_MCP_ENDPOINT` points at
 `http://fulfillment-execution-mcp.warehouse-systems.svc.cluster.local:8090/mcp`.
 
+### Running the A2A agent in Kubernetes
+
+The A2A agent ([ADR-0059](docs/docs/adr/0059-a2a-inbound-adapter.md)) is the
+**server** half of A2A in this context (the outbound client of
+[ADR-0058](docs/docs/adr/0058-a2a-work-planning-delegation.md) is a separate
+adapter inside the OLTP process and is not part of this binary). `cmd/a2a` is
+built into the same image as `/app/a2a` and deployed by the Helm chart as a
+separate Deployment + ClusterIP Service `<release>-a2a` on port **8093** when
+`a2a.enabled=true` (default `false`). It runs the same use cases over the same
+`DATABASE_URL` secret as the main deployment, reads `A2A_ADDR` (default
+`:8093`) and the mandatory `A2A_AGENT_URL`, the absolute http(s) URL advertised
+on the Agent Card (the chart defaults it to the in-cluster Service DNS;
+override with `a2a.agentUrl`). `GET /healthz` serves the probes, the Agent Card
+is at `/.well-known/agent-card.json` and the JSON-RPC endpoint is mounted at
+both `/` and `/a2a`. Kong exposes it at `/api/a2a/fulfillment-execution`
+(rewritten to `/`) when `a2a.route.enabled=true`. Unauthenticated, like REST
+and MCP ([ADR-0022](docs/docs/adr/0022-remove-rest-mcp-auth.md)).
+
+Two skills, called as a `SendMessage` data part
+`{"skill": "<id>", "arguments": {...}}`:
+
+- `backlog_status` (read): `{processPath[, withinSeconds]}` returns the Pending
+  depth of that path, how many tasks are claimable now with the earliest-CPT one,
+  and the path's claimed tasks whose lease has expired (or expires within
+  `withinSeconds`).
+- `complete_task` (write): `{taskId, stationId[, quantity, fromBin, toBin]}`
+  completes a claimed task for the station holding the claim and publishes
+  `TaskCompleted` through the transactional outbox (the relay runs only in the
+  main deployment). The RELOCATE/REPLENISH confirmation values are the
+  operator's: never invent them. Not idempotent: a repeat is a `409`.
+
+Domain rejections come back as an in-band RFC 7807 `problem` with the same
+status classification as REST. A2A carries delegation only; the facts still
+leave as CloudEvents on Kafka. Locally:
+
+```sh
+go run ./cmd/a2a   # needs DATABASE_URL, KAFKA_BROKERS and A2A_AGENT_URL (e.g. http://localhost:8093/)
+curl localhost:8093/.well-known/agent-card.json
+```
+
 ### Configuration
 
 | Env var        | Default | Purpose                          |
@@ -214,6 +257,8 @@ Terraform, and warehouse-ops-agent's `FULFILLMENT_MCP_ENDPOINT` points at
 | `ANALYTICS_MIGRATIONS_PATH` | `migrations/analytics` | Analytical golang-migrate migrations the projector runs on start |
 | `ADMIN_ADDR` | `:8091` | `cmd/fulfillment-projector` admin/health listen address |
 | `MCP_ADDR` | `:8090` | `cmd/mcp` listen address — MCP Streamable HTTP at `/` and `/mcp`, unauthenticated `GET /healthz` |
+| `A2A_ADDR` | `:8093` | `cmd/a2a` listen address - A2A JSON-RPC at `/` and `/a2a`, Agent Card at `/.well-known/agent-card.json`, unauthenticated `GET /healthz` |
+| `A2A_AGENT_URL` | (required) | `cmd/a2a` only: absolute http(s) URL advertised on the Agent Card; unset or malformed is a boot error |
 | `REPORTS_BASE_URL` | (unset) | `cmd/mcp` only: base URL of `cmd/fulfillment-reports`; when set, registers the `get_fulfillment_throughput_report` and `get_on_time_to_cpt` tools |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:5173,http://localhost:5184` | Comma-separated browser origins allowed by the CORS middleware on the OLTP API ([ADR-0013](docs/docs/adr/0013-fulfillment-mfe-console-adoption.md)) |
 | `PRODUCT_CLASSIFICATION_MODE` | `permissive` | `permissive` (default, no-op, every scanned SKU treated as unclassified) or `kafka` — SealPackage's per-scanned-SKU DOT hazard lookup reads a local copy of product-master's `ProductClassified` events (ADR-0039). `http` was removed and fails the boot |
@@ -738,6 +783,17 @@ is `"order-smoke-1"`.
   exercised through `SealPackage` in
   `internal/application/usecases/usecases_test.go`.
 
+## Helm chart
+
+`charts/fulfillment-execution` deploys the OLTP service with optional components behind
+values flags: the analytics projector and reports reader (`analytics.enabled`), the read-only MCP server (`mcp.enabled`), the operator micro-frontend (`frontend.enabled`) and the lease-sweep CronJob (`sweeps`). Mandatory values are the Postgres secret and the Kafka
+broker list; the deployed consumer-group ids and mode flags come from
+`warehouse-infra`'s helm-values.
+
+The chart is linted in CI (`helm-lint`, `chart-tests`) and its invariants are
+asserted by the tests in `charts/fulfillment-execution/tests/` — `render_test.sh`,
+`test_service_selectors.py` (every Service selects exactly one Deployment) and
+`test_kong_config.py`.
 ## Operator micro-frontend (`web/`)
 
 `web/` is `fulfillment_mfe`, this context's Module Federation remote. It talks only to
@@ -789,3 +845,13 @@ which proves every Service selects exactly one Deployment — the OLTP Service
 must never select the frontend, analytics or MCP pods — and that the sweep
 CronJobs render by default (every minute / every 5 minutes) and are dropped by
 `sweeps.enabled=false`.
+
+## Architecture Decision Records
+
+The ADR index lives at [docs/docs/adr/index.md](docs/docs/adr/index.md) — 57 decisions, from the
+hexagonal layout to the CloudEvents-only envelope and the transactional
+outbox.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

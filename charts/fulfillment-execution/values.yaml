@@ -510,6 +510,52 @@ mcp:
       cpu: 50m
       memory: 64Mi
 
+# ---------------------------------------------------------------------------
+# A2A (Agent2Agent) agent (cmd/a2a, ADR-0059): the third driving adapter over
+# the SAME use cases as the REST and MCP surfaces. Skills: backlog_status
+# (read) and complete_task (write, the one write MCP also offers). Off by
+# default; warehouse-infra turns it on. A2A carries delegation only; facts
+# between contexts still travel as CloudEvents through the transactional
+# outbox that the api Deployment's relay drains. This is the INBOUND half:
+# the outbound work-planning client (ADR-0058) is configured on the api
+# Deployment and is unrelated to this block.
+# ---------------------------------------------------------------------------
+a2a:
+  enabled: false
+  replicaCount: 1
+  # A2A_ADDR the binary listens on; keep in sync with service.targetPort.
+  # (8080 api, 8090 mcp, 8091 projector admin, 8092 reports: so 8093.)
+  httpAddr: ":8093"
+  logLevel: "info"
+  # Absolute URL advertised on the Agent Card. Empty defaults to this
+  # release's in-cluster Service DNS (http://<release>-a2a.<ns>.svc.cluster.local:8093/);
+  # warehouse-infra can override it with the Kong path when the agent must be
+  # reachable off-cluster.
+  agentUrl: ""
+  service:
+    type: ClusterIP
+    port: 8093
+    targetPort: 8093
+  # Kong exposure of the A2A agent (a2a-route.yaml): host path
+  # /api/a2a/<context> rewritten to / (JSON-RPC root; the well-known agent
+  # card stays reachable under the same prefix). Off by default;
+  # warehouse-infra turns it on with the real parentRefs and path.
+  route:
+    enabled: false
+    path: "/api/a2a/fulfillment-execution"
+    parentRefs:
+      - name: ""
+        namespace: ""
+        sectionName: "http"
+  extraEnv: []
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
 # --- frontend (REMOTE Module Federation remote) ---
 # The operator SPA remote, built from web/ and served by its own
 # nginx-unprivileged pod. In the kind cluster it is reached through
