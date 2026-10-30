@@ -1,0 +1,127 @@
+{{- if .Values.a2a.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "fulfillment-execution.a2aFullname" . }}
+  labels:
+    {{- include "fulfillment-execution.labels" . | nindent 4 }}
+    app.kubernetes.io/component: a2a
+spec:
+  replicas: {{ .Values.a2a.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "fulfillment-execution.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: a2a
+  template:
+    metadata:
+      labels:
+        {{- include "fulfillment-execution.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: a2a
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "fulfillment-execution.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: a2a
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/app/a2a"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.a2a.service.targetPort }}
+              protocol: TCP
+          env:
+            - name: A2A_ADDR
+              value: {{ .Values.a2a.httpAddr | quote }}
+            # The Agent Card must advertise a URL clients can dial (ADR-0059):
+            # it defaults to this release's in-cluster Service DNS and is
+            # overridable with a2a.agentUrl (e.g. the Kong path).
+            - name: A2A_AGENT_URL
+              value: {{ .Values.a2a.agentUrl | default (printf "http://%s.%s.svc.cluster.local:%v/" (include "fulfillment-execution.a2aFullname" .) .Release.Namespace .Values.a2a.service.port) | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.a2a.logLevel | quote }}
+            # complete_task over A2A must emit TaskCompleted exactly like the
+            # REST and MCP paths (ADR-0059/0020): the A2A process writes the
+            # SAME outbox_events rows (integration + analytics topics) inside
+            # the use case's transaction; the relay that drains them to Kafka
+            # runs only in the main deployment. EVENT_PUBLISHER (kafka, the
+            # only accepted value) and KAFKA_BROKERS (required) mirror the main
+            # deployment.
+            - name: EVENT_PUBLISHER
+              value: {{ .Values.config.eventPublisher | quote }}
+            - name: KAFKA_BROKERS
+              value: {{ required "kafka.brokers is required: every binary of this chart runs on a real Kafka" .Values.kafka.brokers | quote }}
+            # The A2A binary runs the SAME use cases as the OLTP service over
+            # the SAME database, so it reads the OLTP DATABASE_URL secret.
+            {{- include "fulfillment-execution.requireDatabase" . }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "fulfillment-execution.databaseSecretName" . }}
+                  key: {{ .Values.database.existingSecretKey }}
+            {{- if .Values.database.migrationsExistingSecretKey }}
+            # See values.yaml's database.migrationsExistingSecretKey comment
+            # and ADR-0031: cmd/a2a also runs migrations on start (see the
+            # comment above), so it needs the same direct-connection split.
+            - name: MIGRATIONS_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "fulfillment-execution.databaseSecretName" . }}
+                  key: {{ .Values.database.migrationsExistingSecretKey }}
+                  optional: true
+            {{- end }}
+            {{- if .Values.otel.enabled }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.otel.endpoint | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: "fulfillment-execution-a2a"
+            - name: SERVICE_VERSION
+              value: {{ .Values.image.tag | default .Chart.AppVersion | quote }}
+            - name: ENVIRONMENT
+              value: {{ .Values.environment | quote }}
+            {{- end }}
+            {{- with .Values.a2a.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          # startupProbe covers this fleet's known ~10s post-start
+          # first-outbound-dial reset (Istio native sidecars); see
+          # values.yaml's startupProbe comment for the full rationale.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.a2a.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
