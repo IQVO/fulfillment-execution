@@ -69,6 +69,21 @@ func statusFor(err error) int {
 	case errors.Is(err, ports.ErrCaseBreakUnavailable):
 		return http.StatusServiceUnavailable
 
+	// Work-planning delegation (ADR-0058): the peer's business rejections are
+	// conflicts, its unknown path is a 404, an unreachable/off-contract peer
+	// is a bad gateway, an unset delegation URL is explicitly off (503), and
+	// an empty path id is a client error.
+	case errors.Is(err, ports.ErrNoPendingWork):
+		return http.StatusConflict
+	case errors.Is(err, ports.ErrUnknownWorkPlanningPath):
+		return http.StatusNotFound
+	case errors.Is(err, ports.ErrWorkPlanningUnreachable):
+		return http.StatusBadGateway
+	case errors.Is(err, usecases.ErrWorkPlanningNotConfigured):
+		return http.StatusServiceUnavailable
+	case errors.Is(err, usecases.ErrPathIdRequired):
+		return http.StatusBadRequest
+
 	case errors.Is(err, ports.ErrCaseBreakRejected):
 		return http.StatusConflict
 
@@ -109,6 +124,15 @@ var problemCatalog = []struct {
 	{usecases.ErrTaskNotFound, "task-not-found", "Task not found"},
 	{usecases.ErrStationNotFound, "station-not-found", "Station not found"},
 	{usecases.ErrPackageNotFound, "package-not-found", "Package not found"},
+
+	// Work-planning delegation outcomes (ADR-0058): typed errors raised by
+	// the outbound A2A port mapping, plus the two local request-shape /
+	// configuration states.
+	{ports.ErrNoPendingWork, "work-planning-no-pending-work", "Work planning has no pending work for this path"},
+	{ports.ErrUnknownWorkPlanningPath, "work-planning-unknown-path", "Work planning does not know this process path"},
+	{ports.ErrWorkPlanningUnreachable, "work-planning-unreachable", "Work planning agent unreachable or answered off-contract"},
+	{usecases.ErrWorkPlanningNotConfigured, "work-planning-not-configured", "Work-planning delegation not configured"},
+	{usecases.ErrPathIdRequired, "path-id-required", "A process path id is required"},
 
 	{task.ErrAlreadyClaimed, "task-already-claimed", "Task already claimed by another station"},
 	{task.ErrAlreadyCompleted, "task-already-completed", "Task already completed"},

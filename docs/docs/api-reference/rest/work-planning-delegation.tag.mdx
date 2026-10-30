@@ -1,0 +1,21 @@
+---
+id: work-planning-delegation
+title: "Work Planning Delegation"
+description: "Work Planning Delegation"
+custom_edit_url: null
+---
+
+
+
+The A2A seam to the Work Planning & Release context (see [ADR-0058](/docs/adr/0058-a2a-work-planning-delegation)): execution PULLS the next unit for a process path by delegating to the wes-work-planning agent over the Agent2Agent protocol. Planning keeps every release decision; the authoritative fact returns as the WorkReleased CloudEvent on Kafka.
+
+
+
+
+```mdx-code-block
+import DocCardList from '@theme/DocCardList';
+import {useCurrentSidebarCategory} from '@docusaurus/theme-common';
+
+<DocCardList items={useCurrentSidebarCategory().items}/>
+```
+      

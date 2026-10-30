@@ -121,6 +121,9 @@ func NewRouter(h *Handlers, logger *slog.Logger, opts ...RouterOption) *chi.Mux 
 	r.Post("/tasks/expire-leases", h.PostExpireLeases)
 	r.Post("/tasks/sweep-cpt-misses", h.PostSweepCPTMisses)
 	r.Post("/rebin/arrivals", h.PostArriveAtRebin)
+	// A2A delegation to Work Planning (ADR-0058): execution PULLS the next
+	// unit for a path; the fact returns as WorkReleased on Kafka.
+	r.Post("/paths/{pathId}/work-requests", h.PostWorkRequest)
 
 	return r
 }
