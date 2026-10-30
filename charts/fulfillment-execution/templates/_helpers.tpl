@@ -79,6 +79,13 @@ without DATABASE_URL, so the chart refuses to render without a source for it.
 {{- printf "%s-mcp" (include "fulfillment-execution.fullname" .) | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
+{{/*
+Fully qualified name of the A2A agent Deployment/Service (<release>-a2a, ADR-0059).
+*/}}
+{{- define "fulfillment-execution.a2aFullname" -}}
+{{- printf "%s-a2a" (include "fulfillment-execution.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
 
 {{/*
 Fully qualified name of the frontend Module Federation remote deployment/service.

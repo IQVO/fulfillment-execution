@@ -43,7 +43,7 @@ func warmUpServer(t *testing.T, readiness *inboundhttp.Readiness) *http.Server {
 	publisher := events.NewLogPublisher(logger)
 	clock := system.Clock{}
 	createTask := &usecases.CreateTask{Tasks: storage.taskRepo, Publisher: publisher, Clock: clock, NewId: newTaskId}
-	srv := newHTTPServer(storage, publisher, clock, nil, outboundLookups{}, nil, createTask, readiness, logger, freeAddr(t))
+	srv := newHTTPServer(storage, publisher, clock, nil, outboundLookups{}, nil, createTask, readiness, logger, freeAddr(t), nil)
 	t.Cleanup(func() { _ = srv.Close() })
 	return srv
 }

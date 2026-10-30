@@ -2270,6 +2270,133 @@ components:
           dataschema: urn:warehouse:process-path-management:events:ProcessPathDeactivated:v1
           data:
             path_id: PICK
+    ProductPackLevelDeclared:
+      name: ProductPackLevelDeclared
+      title: ProductPackLevelDeclared
+      summary: product-master declared or revised a pack level of a SKU (consumed).
+      description: Published by product-master on `warehouse.product-master.events` (its AsyncAPI is the
+        source of truth); consumed here into the local PackView read per scanned GTIN at scan time (ADR 0054),
+        by the always-on consumer under the required `PACK_VIEW_CONSUMER_GROUP`.
+      contentType: application/cloudevents+json
+      tags:
+      - name: consumed
+      headers:
+        $ref: '#/components/schemas/KafkaHeaders'
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          required:
+          - type
+          - source
+          - dataschema
+          - data
+          properties:
+            type:
+              type: string
+              const: com.warehouse.wms.product-master.product.ProductPackLevelDeclared
+            source:
+              type: string
+              const: /warehouse/product-master
+            dataschema:
+              type: string
+              const: urn:warehouse:product-master:events:ProductPackLevelDeclared:v1
+            data:
+              type: object
+              required:
+              - sku
+              - level
+              - gtin
+              - units_per_pack
+              - is_orderable
+              - is_despatch_unit
+              - effective_from
+              - version
+              properties:
+                sku:
+                  type: string
+                  description: The SKU (also the Kafka key and the CloudEvents `subject`).
+                level:
+                  type: string
+                gtin:
+                  type: string
+                child_gtin:
+                  type: string
+                qty_of_child:
+                  type: integer
+                  minimum: 2
+                  description: Absent for EACH.
+                units_per_pack:
+                  type: integer
+                  minimum: 1
+                  description: Direct factor to eaches; 1 for EACH.
+                is_orderable:
+                  type: boolean
+                is_despatch_unit:
+                  type: boolean
+                effective_from:
+                  type: string
+                  format: date-time
+                version:
+                  type: integer
+                  minimum: 1
+
+    ProductPackLevelRetired:
+      name: ProductPackLevelRetired
+      title: ProductPackLevelRetired
+      summary: product-master retired a pack level of a SKU (consumed).
+      description: Published by product-master on `warehouse.product-master.events` (its AsyncAPI is the
+        source of truth); consumed here into the local PackView read per scanned GTIN at scan time (ADR 0054),
+        by the always-on consumer under the required `PACK_VIEW_CONSUMER_GROUP`.
+      contentType: application/cloudevents+json
+      tags:
+      - name: consumed
+      headers:
+        $ref: '#/components/schemas/KafkaHeaders'
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          required:
+          - type
+          - source
+          - dataschema
+          - data
+          properties:
+            type:
+              type: string
+              const: com.warehouse.wms.product-master.product.ProductPackLevelRetired
+            source:
+              type: string
+              const: /warehouse/product-master
+            dataschema:
+              type: string
+              const: urn:warehouse:product-master:events:ProductPackLevelRetired:v1
+            data:
+              type: object
+              required:
+              - sku
+              - level
+              - gtin
+              - effective_to
+              - reason
+              - version
+              properties:
+                sku:
+                  type: string
+                level:
+                  type: string
+                gtin:
+                  type: string
+                effective_to:
+                  type: string
+                  format: date-time
+                reason:
+                  type: string
+                version:
+                  type: integer
+                  minimum: 1
+
     ProductClassified:
       name: ProductClassified
       title: ProductClassified

@@ -46,6 +46,14 @@ servers:
     description: Local development (in-memory adapters unless DATABASE_URL is set)
 
 tags:
+  - name: Work Planning Delegation
+    description: >
+      The A2A seam to the Work Planning & Release context (see
+      [ADR-0058](/docs/adr/0058-a2a-work-planning-delegation)): execution
+      PULLS the next unit for a process path by delegating to the
+      wes-work-planning agent over the Agent2Agent protocol. Planning keeps
+      every release decision; the authoritative fact returns as the
+      WorkReleased CloudEvent on Kafka.
   - name: Tasks
     description: >
       The Task aggregate: units of Pick, Pack, or SLAM work. Covers the pool
@@ -1469,6 +1477,73 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /paths/{pathId}/work-requests:
+    post:
+      operationId: requestNextWork
+      tags: [Work Planning Delegation]
+      summary: Ask the Work Planning agent (over A2A) to admit the next unit for a path
+      description: >
+        The PULL side of the execution/planning seam (ADR-0058): execution,
+        whose claimable queue for a process path is draining, delegates
+        "admit the next priority-ordered unit" to the wes-work-planning A2A
+        agent. Planning keeps every release decision (release policy, WIP
+        invariant); execution keeps the judgement of when to ask. The
+        authoritative fact still arrives as the `WorkReleased` CloudEvent on
+        Kafka through the existing consumer — the 200 body is only the
+        delegation acknowledgement. Each call asks for exactly one unit, so
+        the endpoint is deliberately NOT idempotent and NOT behind the
+        idempotency middleware: repeating the request is a legitimate second
+        pull. Answers 503 when this deployment has no
+        `WORK_PLANNING_A2A_URL` configured, and 502 when the planning agent
+        is unreachable or answers off-contract.
+      parameters:
+        - name: pathId
+          in: path
+          required: true
+          description: >
+            The process path more work is requested for (e.g. pick-zone-a).
+            Must be a path Work Planning knows; an unknown path answers 404.
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        "200":
+          description: Work Planning admitted the next unit; the body is the acknowledgement.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkRequestResponse"
+              example:
+                workUnitId: wu-482910
+                cpt: "2026-08-21T12:00:00Z"
+                reference: order-77213-line-1
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: Work Planning does not know this process path.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: Work Planning rejected the pull with a business rule (empty pool or WIP limit reached); nothing was released.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "502":
+          description: The planning agent was unreachable or answered off-contract.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "503":
+          description: Work-planning delegation is not configured on this deployment.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
   /tasks/expire-leases:
     post:
       operationId: expireLeases
@@ -2287,6 +2362,28 @@ components:
           format: int32
           description: Count of currently-registered stations holding this capability, regardless of occupancy.
           example: 4
+
+    WorkRequestResponse:
+      type: object
+      description: >
+        Acknowledgement of an accepted work delegation (ADR-0058): the work
+        unit Work Planning admitted for the path. The WorkReleased event on
+        Kafka remains the authoritative fact.
+      required: [workUnitId, cpt, reference]
+      properties:
+        workUnitId:
+          type: string
+          description: The work unit Work Planning admitted.
+          example: wu-482910
+        cpt:
+          type: string
+          format: date-time
+          description: The admitted unit's common pick time.
+          example: "2026-08-21T12:00:00Z"
+        reference:
+          type: string
+          description: The admitted unit's external reference.
+          example: order-77213-line-1
 
     ExpireLeasesResponse:
       type: object

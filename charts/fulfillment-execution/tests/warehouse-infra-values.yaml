@@ -123,6 +123,15 @@ mcp:
       - name: warehouse-gateway
         namespace: kong
         sectionName: http
+a2a:
+  enabled: true
+  route:
+    enabled: true
+    path: /api/a2a/fulfillment-execution
+    parentRefs:
+      - name: warehouse-gateway
+        namespace: kong
+        sectionName: http
 pathCatalogue:
   content: ''
   enabled: false

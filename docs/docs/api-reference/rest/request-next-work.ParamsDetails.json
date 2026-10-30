@@ -1,0 +1,1 @@
+{"parameters":[{"name":"pathId","in":"path","required":true,"description":"The process path more work is requested for (e.g. pick-zone-a). Must be a path Work Planning knows; an unknown path answers 404.\n","schema":{"type":"string","minLength":1}}]}
