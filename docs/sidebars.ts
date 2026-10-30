@@ -180,6 +180,8 @@ const sidebars: SidebarsConfig = {
         'adr/0055-scan-idempotency-and-claimable-break-case',
         'adr/0056-ship-in-own-container',
         'adr/0057-a-dead-background-loop-takes-the-process-down',
+        'adr/0058-a2a-work-planning-delegation',
+        'adr/0059-a2a-inbound-adapter',
       ],
     },
   ],

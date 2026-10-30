@@ -475,3 +475,12 @@ type pickScanResponse struct {
 type breakCaseRequest struct {
 	StationId string `json:"stationId"`
 }
+
+// workRequestResponse is the acknowledgement of an accepted work delegation
+// (ADR-0058): the unit Work Planning admitted. The WorkReleased event on
+// Kafka remains the authoritative fact.
+type workRequestResponse struct {
+	WorkUnitId string `json:"workUnitId"`
+	CPT        string `json:"cpt"`
+	Reference  string `json:"reference"`
+}

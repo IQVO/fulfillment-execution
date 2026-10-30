@@ -8,6 +8,22 @@ const sidebar: SidebarsConfig = {
     },
     {
       type: "category",
+      label: "Work Planning Delegation",
+      link: {
+        type: "doc",
+        id: "api-reference/rest/work-planning-delegation",
+      },
+      items: [
+        {
+          type: "doc",
+          id: "api-reference/rest/request-next-work",
+          label: "Ask the Work Planning agent (over A2A) to admit the next unit for a path",
+          className: "api-method post",
+        },
+      ],
+    },
+    {
+      type: "category",
       label: "Tasks",
       link: {
         type: "doc",
@@ -328,6 +344,12 @@ const sidebar: SidebarsConfig = {
           type: "doc",
           id: "api-reference/rest/schemas/installedcapacityresponse",
           label: "InstalledCapacityResponse",
+          className: "schema",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/schemas/workrequestresponse",
+          label: "WorkRequestResponse",
           className: "schema",
         },
         {
