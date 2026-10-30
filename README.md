@@ -1,5 +1,7 @@
 # Fulfillment Execution
 
+[![CI](https://github.com/IQVO/fulfillment-execution/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/IQVO/fulfillment-execution/actions/workflows/ci.yml?query=branch%3Adevelop) [![coverage gate](https://img.shields.io/badge/coverage%20gate-90%25-brightgreen)](https://github.com/IQVO/fulfillment-execution/blob/develop/Makefile) [![Go](https://img.shields.io/badge/go-1.26.10-00ADD8?logo=go&logoColor=white)](https://github.com/IQVO/fulfillment-execution/blob/develop/go.mod) [![release](https://img.shields.io/github/v/release/IQVO/fulfillment-execution?sort=semver)](https://github.com/IQVO/fulfillment-execution/releases) [![docs](https://img.shields.io/badge/docs-iqvo.github.io-blue)](https://iqvo.github.io/fulfillment-execution/) [![license](https://img.shields.io/badge/license-MIT-blue)](https://github.com/IQVO/fulfillment-execution/blob/develop/LICENSE)
+
 The task-lifecycle core bounded context for Pick, Pack, Rebin, and SLAM.
 Downstream of Work Planning (which releases work); WCS/equipment is a
 strategic downstream behind a deliberately unimplemented port (ADR-0015).
