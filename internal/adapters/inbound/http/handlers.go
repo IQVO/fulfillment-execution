@@ -17,10 +17,14 @@ import (
 
 // Handlers wires REST endpoints to use cases.
 type Handlers struct {
-	CreateTask           *usecases.CreateTask
-	ClaimNext            *usecases.ClaimNext
-	RenewLease           *usecases.RenewLease
-	CompleteTask         *usecases.CompleteTask
+	CreateTask   *usecases.CreateTask
+	ClaimNext    *usecases.ClaimNext
+	RenewLease   *usecases.RenewLease
+	CompleteTask *usecases.CompleteTask
+	// ConfirmPickScan and CompleteCaseBreak back POST /tasks/{id}/scans and
+	// POST /tasks/{id}/break-case (ADR 0054).
+	ConfirmPickScan      *usecases.ConfirmPickScan
+	CompleteCaseBreak    *usecases.CompleteCaseBreak
 	SealPackage          *usecases.SealPackage
 	RunSlam              *usecases.RunSlam
 	GetQueueDepth        *usecases.GetQueueDepth
@@ -41,6 +45,10 @@ type Handlers struct {
 	// a documented "always ready" no-op — see Readiness.Ready — so every
 	// pre-existing test/caller that does not wire one is unaffected.
 	Readiness *Readiness
+	// RequestNextWork backs POST /paths/{pathId}/work-requests: the A2A
+	// delegation to the Work Planning agent (ADR-0058). Nil — or a nil
+	// Planning port inside it — answers 503 not-configured, never a panic.
+	RequestNextWork *usecases.RequestNextWork
 }
 
 func toTaskResponse(t *task.Task) taskResponse {
@@ -70,6 +78,18 @@ func toTaskResponse(t *task.Task) taskResponse {
 }
 
 func toPackageResponse(p *pack.Package) packageResponse {
+	resp := ordinaryPackageResponse(p)
+	if oc := p.OwnContainer(); oc != nil {
+		resp.ShipInOwnContainer = true
+		resp.ContainerSource = string(oc.Source)
+		resp.Container = &containerResponse{
+			Gtin: oc.GTIN, LengthMm: oc.Dims.LengthMM, WidthMm: oc.Dims.WidthMM, HeightMm: oc.Dims.HeightMM, WeightG: oc.Dims.WeightG,
+		}
+	}
+	return resp
+}
+
+func ordinaryPackageResponse(p *pack.Package) packageResponse {
 	return packageResponse{
 		Id:                string(p.Id()),
 		OrderRef:          string(p.OrderRef()),
@@ -184,6 +204,50 @@ func (h *Handlers) PostCompleteTask(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// PostPickScan handles POST /tasks/{id}/scans: one scan of an EACH or CASE
+// GTIN against a PICK task (ADR 0054).
+func (h *Handlers) PostPickScan(w http.ResponseWriter, r *http.Request) {
+	taskId := chi.URLParam(r, "id")
+	var req pickScanRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeBadRequest(w, r, "invalid request body")
+		return
+	}
+	if msg := req.validate(); msg != "" {
+		writeBadRequest(w, r, msg)
+		return
+	}
+	res, err := h.ConfirmPickScan.Execute(r.Context(), shared.TaskId(taskId), shared.StationId(req.StationId), req.GTIN, req.count())
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pickScanResponse{
+		ScannedGTIN: res.ScannedGTIN, SKU: res.SKU, Level: string(res.Level),
+		AddedEaches: res.AddedEaches, PickedEaches: res.PickedEaches, PlannedEaches: res.Planned,
+	})
+}
+
+// PostBreakCase handles POST /tasks/{id}/break-case: it completes a
+// BREAK_CASE task by asking inventory-storage to break the sealed case.
+func (h *Handlers) PostBreakCase(w http.ResponseWriter, r *http.Request) {
+	taskId := chi.URLParam(r, "id")
+	var req breakCaseRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeBadRequest(w, r, "invalid request body")
+		return
+	}
+	if req.StationId == "" {
+		writeBadRequest(w, r, "stationId is required")
+		return
+	}
+	if err := h.CompleteCaseBreak.Execute(r.Context(), shared.TaskId(taskId), shared.StationId(req.StationId)); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // PostSealPackage handles POST /tasks/{id}/seal-package.
 func (h *Handlers) PostSealPackage(w http.ResponseWriter, r *http.Request) {
 	taskId := chi.URLParam(r, "id")
@@ -197,7 +261,15 @@ func (h *Handlers) PostSealPackage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p, err := h.SealPackage.Execute(r.Context(), shared.TaskId(taskId), shared.StationId(req.StationId), req.Contents)
+	var (
+		p   *pack.Package
+		err error
+	)
+	if req.ShipInOwnContainer {
+		p, err = h.SealPackage.ExecuteInOwnContainer(r.Context(), shared.TaskId(taskId), shared.StationId(req.StationId), req.Contents, *req.LineQuantity)
+	} else {
+		p, err = h.SealPackage.Execute(r.Context(), shared.TaskId(taskId), shared.StationId(req.StationId), req.Contents)
+	}
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -433,4 +505,25 @@ func (h *Handlers) PostArriveAtRebin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// PostWorkRequest handles POST /paths/{pathId}/work-requests (ADR-0058): the
+// PULL side of the execution/planning seam. Execution asks the Work Planning
+// agent, over A2A, to admit the next unit for the path; the authoritative
+// fact still arrives as the WorkReleased CloudEvent through the existing
+// consumer — this answer is the delegation acknowledgement. The handler is
+// intentionally NOT behind the idempotency middleware: each call asks for
+// exactly one more unit, and repeating the ask is a legitimate second pull.
+func (h *Handlers) PostWorkRequest(w http.ResponseWriter, r *http.Request) {
+	pathId := chi.URLParam(r, "pathId")
+	released, err := h.RequestNextWork.Execute(r.Context(), usecases.RequestNextWorkRequest{PathId: pathId})
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, workRequestResponse{
+		WorkUnitId: released.WorkUnitId,
+		CPT:        released.CPT,
+		Reference:  released.Reference,
+	})
 }

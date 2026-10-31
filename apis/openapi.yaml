@@ -46,6 +46,14 @@ servers:
     description: Local development (in-memory adapters unless DATABASE_URL is set)
 
 tags:
+  - name: Work Planning Delegation
+    description: >
+      The A2A seam to the Work Planning & Release context (see
+      [ADR-0058](/docs/adr/0058-a2a-work-planning-delegation)): execution
+      PULLS the next unit for a process path by delegating to the
+      wes-work-planning agent over the Agent2Agent protocol. Planning keeps
+      every release decision; the authoritative fact returns as the
+      WorkReleased CloudEvent on Kafka.
   - name: Tasks
     description: >
       The Task aggregate: units of Pick, Pack, or SLAM work. Covers the pool
@@ -177,7 +185,7 @@ paths:
                     type: https://errors.fulfillment-execution.warehouse-systems.dev/idempotency-key-required
                     title: Idempotency-Key header is required
                     status: 400
-                    detail: This endpoint creates a new resource on every call and requires a caller-supplied Idempotency-Key header so a retried request is never applied twice.
+                    detail: This endpoint requires a caller-supplied Idempotency-Key header so a retried request is never applied twice.
                     instance: /tasks
                 invalidRequest:
                   summary: Invalid body
@@ -717,6 +725,289 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /tasks/{id}/scans:
+    post:
+      operationId: confirmPickScan
+      tags: [Tasks]
+      summary: Confirm one scan of an each or case GTIN against a PICK task
+      description: >
+        The station holding the claim on a PICK task scans a GTIN (ADR 0054).
+        The GTIN is resolved against the local copy of product-master's pack
+        levels (no synchronous call): it must identify the task's SKU and,
+        for a task planned in eaches, an EACH level; for a task planned in
+        cases, a CASE level. `count` packs are added (default 1) and the
+        answer reports the eaches confirmed so far. Quantities are always in
+        eaches; `POST /tasks/{id}/complete` and `TaskCompleted` are
+        unchanged. A rejected scan changes nothing.
+
+
+        **Idempotent per `Idempotency-Key` (ADR-0055).** Send a fresh
+        `Idempotency-Key` for each physical scan and reuse it only when
+        retrying that scan after a lost response. A retry with the same key
+        and the same body on the same path replays the stored answer
+        verbatim (same status and body, including a cached 4xx) and does
+        not count the scan again; two scans with different keys both
+        count. Reusing a key with a different body or on another task is
+        `422 idempotency-key-reused`; omitting the header is
+        `400 idempotency-key-required`.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The task id.
+          schema:
+            type: string
+            example: 20260101T120000.000000000
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: >
+            Caller-supplied unique key (e.g. a UUID) identifying this
+            physical scan. A missing key is rejected with
+            `400 idempotency-key-required`. A retry of the same scan reuses
+            it; a different scan uses a new one.
+          schema:
+            type: string
+            example: 6f1c2a3e-9b1d-4c1a-8f0e-2d5b7c9a1e44
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PickScanRequest"
+            example:
+              stationId: station-1
+              gtin: "00012345678905"
+              count: 1
+      responses:
+        "200":
+          description: >
+            The scan is accepted (or, on a retry with a repeated
+            `Idempotency-Key` and identical body, the original answer
+            replayed without counting the scan again).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PickScanResult"
+              example:
+                scannedGtin: "00012345678905"
+                sku: SKU-1
+                level: EACH
+                addedEaches: 1
+                pickedEaches: 1
+                plannedEaches: 12
+        "400":
+          description: >
+            The `Idempotency-Key` header is missing
+            (`idempotency-key-required`), or the request body is malformed
+            JSON, a required field is missing or empty, or a field value is
+            invalid (`invalid-request`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                keyRequired:
+                  summary: Missing Idempotency-Key header
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/idempotency-key-required
+                    title: Idempotency-Key header is required
+                    status: 400
+                    detail: This endpoint requires a caller-supplied Idempotency-Key header so a retried request is never applied twice.
+                    instance: /tasks/20260101T120000.000000000/scans
+                invalidRequest:
+                  summary: Invalid body
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/invalid-request
+                    title: The request is malformed or missing a required field
+                    status: 400
+                    detail: stationId is required
+                    instance: /tasks/20260101T120000.000000000/scans
+        "404":
+          description: >
+            No task exists with this id.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                taskNotFound:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/task-not-found
+                    title: Task not found
+                    status: 404
+                    detail: "usecases: task not found"
+                    instance: /tasks/20260101T120000.000000000/scans
+        "409":
+          description: >
+            The scan does not fit the task or its claim: the task has no active claim or another station owns it, `unknown-gtin` (no pack level carries the code), `invalid-scanned-gtin` (a bad check digit or a variable-measure indicator), `scan-sku-mismatch` (the GTIN of another SKU, for example the each barcode printed on a case of something else), `scan-level-mismatch` (a case scan on an each pick or the reverse), `no-pick-plan` or `pick-over-quantity`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                taskNotOwner:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/task-not-owner
+                    title: Station does not own the active claim on this task
+                    status: 409
+                    detail: "task: station does not own the claim"
+                    instance: /tasks/20260101T120000.000000000/scans
+                unknownGtin:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/unknown-gtin
+                    title: The scanned GTIN is not a known pack level
+                    status: 409
+                    detail: "usecases: scanned GTIN is not a known pack level: 00012345678905"
+                    instance: /tasks/20260101T120000.000000000/scans
+                invalidScannedGtin:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/invalid-scanned-gtin
+                    title: The scanned text is not a valid GTIN
+                    status: 409
+                    detail: "usecases: scanned GTIN is invalid: gs1: invalid GTIN: check digit does not match"
+                    instance: /tasks/20260101T120000.000000000/scans
+                scanSkuMismatch:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/scan-sku-mismatch
+                    title: The scanned GTIN is not the SKU of this pick
+                    status: 409
+                    detail: "task: the scanned GTIN is not the SKU of this pick"
+                    instance: /tasks/20260101T120000.000000000/scans
+                scanLevelMismatch:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/scan-level-mismatch
+                    title: The scanned pack level does not match the pick unit
+                    status: 409
+                    detail: "task: the scanned pack level does not match the pick unit"
+                    instance: /tasks/20260101T120000.000000000/scans
+                noPickPlan:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/no-pick-plan
+                    title: The task carries no pick plan to scan against
+                    status: 409
+                    detail: "task: the task carries no pick plan to scan against"
+                    instance: /tasks/20260101T120000.000000000/scans
+                pickOverQuantity:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/pick-over-quantity
+                    title: The scan would pick more than the planned quantity
+                    status: 409
+                    detail: "task: the scan would pick more than the planned quantity"
+                    instance: /tasks/20260101T120000.000000000/scans
+        "422":
+          description: >
+            The `Idempotency-Key` was already used with a request that had a
+            different body, or on another task (`idempotency-key-reused`).
+            Use a new key for a genuinely different scan.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/idempotency-key-reused
+                title: Idempotency-Key was already used with a different request
+                status: 422
+                detail: The Idempotency-Key header on this request was already used with a request that had a different body. Use a new Idempotency-Key for a genuinely different request.
+                instance: /tasks/20260101T120000.000000000/scans
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /tasks/{id}/break-case:
+    post:
+      operationId: completeCaseBreak
+      tags: [Tasks]
+      summary: Complete a BREAK_CASE task by breaking the sealed case in inventory-storage
+      description: >
+        A BREAK_CASE task (ADR 0054) is created when an each pick finds only a
+        sealed case at its source. Completing it asks inventory-storage to
+        break the container (`POST /containers/{lpn}:break`) into the loose
+        bin, with an Idempotency-Key stable per task, and only then completes
+        the task and publishes `TaskCompleted`. If inventory-storage cannot be
+        reached the task stays claimed (503); a retry does not break twice.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The task id.
+          schema:
+            type: string
+            example: 20260101T120000.000000000
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompleteTaskRequest"
+            example:
+              stationId: station-1
+      responses:
+        "204":
+          description: The case was broken and the task completed. No response body.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: >
+            No task exists with this id.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                taskNotFound:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/task-not-found
+                    title: Task not found
+                    status: 404
+                    detail: "usecases: task not found"
+                    instance: /tasks/20260101T120000.000000000/break-case
+        "409":
+          description: >
+            The task has no active claim, another station owns it, it is already completed, it is not a BREAK_CASE task (`not-case-break-task`), or inventory-storage rejected the break (`case-break-rejected`). `POST /tasks/{id}/complete` on a BREAK_CASE task answers `case-break-completion-required`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                caseBreakRejected:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/case-break-rejected
+                    title: inventory-storage rejected the case break
+                    status: 409
+                    detail: "ports: inventory-storage rejected the case break"
+                    instance: /tasks/20260101T120000.000000000/break-case
+                notCaseBreakTask:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/not-case-break-task
+                    title: The task is not a BREAK_CASE task
+                    status: 409
+                    detail: "task: not a BREAK_CASE task"
+                    instance: /tasks/20260101T120000.000000000/break-case
+                caseBreakCompletionRequired:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/case-break-completion-required
+                    title: A BREAK_CASE task completes only through POST /tasks/{id}/break-case
+                    status: 409
+                    detail: "task: a BREAK_CASE task completes only through the case break"
+                    instance: /tasks/20260101T120000.000000000/break-case
+        "503":
+          description: >
+            inventory-storage could not be reached; the task stays claimed and the call can be retried.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                caseBreakUnavailable:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/case-break-unavailable
+                    title: inventory-storage could not be reached for the case break
+                    status: 503
+                    detail: "ports: inventory-storage is unavailable for the case break"
+                    instance: /tasks/20260101T120000.000000000/break-case
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /tasks/{id}/seal-package:
     post:
       operationId: sealPackage
@@ -732,6 +1023,25 @@ paths:
         item — an empty `contents` array is a domain invariant violation
         (`422`), not a malformed request (`400`), since the array is present
         and well-formed, just semantically insufficient to seal.
+
+
+        **Ship in own container (opt-in,
+        [ADR-0056](/docs/adr/0056-ship-in-own-container)).** With
+        `shipInOwnContainer: true` and the order line's `lineQuantity` (in
+        eaches), a line that is exactly one full active CASE of its SKU
+        (`lineQuantity` equal to the `unitsPerPack` of the SKU's active CASE
+        level in the local pack-level copy of product-master's events) is
+        sealed in the case itself: the package carries `containerSource: CASE`
+        and the case's GTIN, dimensions and weight in `container`, with no
+        cartonisation. `contents` must then name exactly one SKU. Anything
+        else is refused with `422` and nothing is sealed: not exactly one
+        line (`ship-in-own-container-not-single-line`), a quantity other
+        than one full case (`ship-in-own-container-quantity-mismatch`), no
+        CASE level for the SKU (`ship-in-own-container-no-case-level`), a
+        retired CASE level (`ship-in-own-container-case-retired`), or a case
+        declared without dimensions and weight
+        (`ship-in-own-container-case-dimensions-unknown`). Without the new
+        fields the request and the response are exactly as before.
       parameters:
         - name: id
           in: path
@@ -746,9 +1056,19 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/SealPackageRequest"
-            example:
-              stationId: station-2
-              contents: [sku-1, sku-2]
+            examples:
+              ordinary:
+                summary: An ordinary carton (the existing request, unchanged)
+                value:
+                  stationId: station-2
+                  contents: [sku-1, sku-2]
+              shipInOwnContainer:
+                summary: An order line that is exactly one full case of 12 eaches
+                value:
+                  stationId: station-2
+                  contents: [sku-1]
+                  shipInOwnContainer: true
+                  lineQuantity: 12
       responses:
         "201":
           description: Package sealed.
@@ -762,13 +1082,34 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PackageResponse"
-              example:
-                id: 20260101T120200.000000000
-                orderRef: order-42
-                status: SEALED
-                scannedContents: [sku-1, sku-2]
-                fragileHandling: false
-                sortLane: STANDARD
+              examples:
+                ordinary:
+                  summary: An ordinary carton
+                  value:
+                    id: 20260101T120200.000000000
+                    orderRef: order-42
+                    status: SEALED
+                    scannedContents: [sku-1, sku-2]
+                    fragileHandling: false
+                    sortLane: STANDARD
+                shipInOwnContainer:
+                  summary: Sealed in its own case
+                  value:
+                    id: 20260101T120200.000000000
+                    orderRef: order-42
+                    status: SEALED
+                    scannedContents: [sku-1]
+                    fragileHandling: false
+                    giftWrapRequested: false
+                    sortLane: STANDARD
+                    shipInOwnContainer: true
+                    containerSource: CASE
+                    container:
+                      gtin: "24006381333935"
+                      lengthMm: 400
+                      widthMm: 300
+                      heightMm: 200
+                      weightG: 6500
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
@@ -813,18 +1154,66 @@ paths:
                 instance: /tasks/20260101T120100.000000000/seal-package
         "422":
           description: >
-            The task is not a Pack task, or `contents` was empty (nothing
-            was scanned, so there is nothing to seal).
+            The task is not a Pack task (`wrong-task-type`), or `contents`
+            was empty (nothing was scanned, so there is nothing to seal:
+            `package-no-scanned-contents`), or a
+            `shipInOwnContainer` request cannot ship in a case, in which case
+            nothing is sealed: `ship-in-own-container-not-single-line`
+            (`contents` is not exactly one SKU),
+            `ship-in-own-container-quantity-mismatch` (`lineQuantity` is not
+            the `unitsPerPack` of the SKU's active CASE level),
+            `ship-in-own-container-no-case-level` (the local pack-level copy
+            holds no CASE level in effect for the SKU),
+            `ship-in-own-container-case-retired` (the SKU's CASE level is
+            end-dated) or `ship-in-own-container-case-dimensions-unknown`
+            (the case was declared without dimensions and weight).
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
-              example:
-                type: https://errors.fulfillment-execution.warehouse-systems.dev/package-no-scanned-contents
-                title: Cannot seal a package without scanned contents
-                status: 422
-                detail: "package: cannot seal without scanned contents"
-                instance: /tasks/20260101T120100.000000000/seal-package
+              examples:
+                noScannedContents:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/package-no-scanned-contents
+                    title: Cannot seal a package without scanned contents
+                    status: 422
+                    detail: "package: cannot seal without scanned contents"
+                    instance: /tasks/20260101T120100.000000000/seal-package
+                notSingleLine:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/ship-in-own-container-not-single-line
+                    title: Ship-in-own-container needs exactly one order line in the package
+                    status: 422
+                    detail: "package: ship-in-own-container needs exactly one order line in the package"
+                    instance: /tasks/20260101T120100.000000000/seal-package
+                quantityMismatch:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/ship-in-own-container-quantity-mismatch
+                    title: The order line is not exactly one full case
+                    status: 422
+                    detail: "package: the order line quantity is not exactly one full case"
+                    instance: /tasks/20260101T120100.000000000/seal-package
+                noCaseLevel:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/ship-in-own-container-no-case-level
+                    title: The SKU has no active CASE level
+                    status: 422
+                    detail: "package: the SKU has no active CASE level"
+                    instance: /tasks/20260101T120100.000000000/seal-package
+                caseRetired:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/ship-in-own-container-case-retired
+                    title: The SKU's CASE level is retired
+                    status: 422
+                    detail: "package: the SKU's CASE level is retired"
+                    instance: /tasks/20260101T120100.000000000/seal-package
+                caseDimensionsUnknown:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/ship-in-own-container-case-dimensions-unknown
+                    title: The active CASE level has no dimensions and weight
+                    status: 422
+                    detail: "package: the active CASE level has no dimensions and weight"
+                    instance: /tasks/20260101T120100.000000000/seal-package
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1034,7 +1423,7 @@ paths:
         - name: taskType
           in: path
           required: true
-          description: The process path to count (conventionally PICK, PACK, SLAM, RELOCATE or REPLENISH).
+          description: The process path to count (conventionally PICK, PACK, SLAM, RELOCATE, REPLENISH or BREAK_CASE).
           schema:
             type: string
             example: PICK
@@ -1087,6 +1476,73 @@ paths:
                 installed: 4
         "500":
           $ref: "#/components/responses/InternalError"
+
+  /paths/{pathId}/work-requests:
+    post:
+      operationId: requestNextWork
+      tags: [Work Planning Delegation]
+      summary: Ask the Work Planning agent (over A2A) to admit the next unit for a path
+      description: >
+        The PULL side of the execution/planning seam (ADR-0058): execution,
+        whose claimable queue for a process path is draining, delegates
+        "admit the next priority-ordered unit" to the wes-work-planning A2A
+        agent. Planning keeps every release decision (release policy, WIP
+        invariant); execution keeps the judgement of when to ask. The
+        authoritative fact still arrives as the `WorkReleased` CloudEvent on
+        Kafka through the existing consumer — the 200 body is only the
+        delegation acknowledgement. Each call asks for exactly one unit, so
+        the endpoint is deliberately NOT idempotent and NOT behind the
+        idempotency middleware: repeating the request is a legitimate second
+        pull. Answers 503 when this deployment has no
+        `WORK_PLANNING_A2A_URL` configured, and 502 when the planning agent
+        is unreachable or answers off-contract.
+      parameters:
+        - name: pathId
+          in: path
+          required: true
+          description: >
+            The process path more work is requested for (e.g. pick-zone-a).
+            Must be a path Work Planning knows; an unknown path answers 404.
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        "200":
+          description: Work Planning admitted the next unit; the body is the acknowledgement.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkRequestResponse"
+              example:
+                workUnitId: wu-482910
+                cpt: "2026-08-21T12:00:00Z"
+                reference: order-77213-line-1
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: Work Planning does not know this process path.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: Work Planning rejected the pull with a business rule (empty pool or WIP limit reached); nothing was released.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "502":
+          description: The planning agent was unreachable or answered off-contract.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "503":
+          description: Work-planning delegation is not configured on this deployment.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
 
   /tasks/expire-leases:
     post:
@@ -1360,11 +1816,14 @@ components:
       description: >
         Every task type a task can have and a station can claim: the
         creatable TaskType values plus `RELOCATE` (a slot-plan move,
-        ADR-0047) and `REPLENISH` (a pick-face replenishment, ADR-0050).
-        RELOCATE and REPLENISH tasks are created only from WorkReleased on
-        their process paths, never through `POST /tasks`, because they
-        need the planned move.
-      enum: [PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL, RELOCATE, REPLENISH]
+        ADR-0047), `REPLENISH` (a pick-face replenishment, ADR-0050) and
+        `BREAK_CASE` (open a sealed case into loose eaches, ADR-0054,
+        claimable since ADR-0055). RELOCATE, REPLENISH and BREAK_CASE tasks
+        are created only from WorkReleased on their process paths, never
+        through `POST /tasks`, because they need the planned move or break.
+        A claimed BREAK_CASE task completes only through
+        `POST /tasks/{id}/break-case`.
+      enum: [PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL, RELOCATE, REPLENISH, BREAK_CASE]
       example: PICK
 
     TaskRelocation:
@@ -1637,6 +2096,35 @@ components:
       example:
         stationId: station-1
 
+    PickScanRequest:
+      type: object
+      required: [stationId, gtin]
+      additionalProperties: false
+      properties:
+        stationId:
+          type: string
+          minLength: 1
+        gtin:
+          type: string
+          pattern: '^([0-9]{8}|[0-9]{12,14})$'
+          description: The scanned GTIN (8, 12, 13 or 14 digits). A bad check digit or a variable-measure indicator is a 404 `invalid-scanned-gtin`.
+        count:
+          type: integer
+          format: int32
+          minimum: 1
+          default: 1
+          description: Packs scanned - eaches for an EACH GTIN, cases for a CASE GTIN.
+    PickScanResult:
+      type: object
+      required: [scannedGtin, sku, level, addedEaches, pickedEaches, plannedEaches]
+      properties:
+        scannedGtin: { type: string, description: "Normalised 14-digit GTIN." }
+        sku: { type: string }
+        level: { type: string, enum: [EACH, INNER, CASE, PALLET] }
+        addedEaches: { type: integer, format: int32, minimum: 1 }
+        pickedEaches: { type: integer, format: int32, minimum: 1 }
+        plannedEaches: { type: integer, format: int32, minimum: 1 }
+
     CompleteTaskRequest:
       type: object
       required: [stationId]
@@ -1712,6 +2200,25 @@ components:
               A null item is accepted and treated as an empty SKU string
               (Go's JSON decoding cannot distinguish them).
             example: sku-1
+        shipInOwnContainer:
+          type: boolean
+          description: >
+            Opt-in (ADR-0056). `true` asks to ship the order line in its own
+            CASE: it requires `lineQuantity` and exactly one SKU in
+            `contents`, and is refused with a `422`
+            `ship-in-own-container-*` problem unless `lineQuantity` equals the
+            `unitsPerPack` of the SKU's active CASE level. Absent or `false`
+            is the ordinary carton seal, unchanged.
+          example: true
+        lineQuantity:
+          type: integer
+          format: int32
+          minimum: 1
+          description: >
+            The order line's quantity in EACHES (never cases). Required when
+            `shipInOwnContainer` is `true` (a missing value is a `400`);
+            ignored otherwise.
+          example: 12
       example:
         stationId: station-2
         contents: [sku-1, sku-2]
@@ -1753,6 +2260,57 @@ components:
           example: false
         sortLane:
           $ref: "#/components/schemas/SortLane"
+        shipInOwnContainer:
+          type: boolean
+          description: >
+            Present (always `true`) only when the package ships in its own
+            container (ADR-0056); omitted from an ordinary carton.
+          example: true
+        containerSource:
+          $ref: "#/components/schemas/ContainerSource"
+        container:
+          $ref: "#/components/schemas/OwnContainer"
+
+    ContainerSource:
+      type: string
+      description: >
+        What a package ships in when it is not a cartonised carton. `CASE`:
+        the SKU's own sealed case (ADR-0056).
+      enum: [CASE]
+      example: CASE
+
+    OwnContainer:
+      type: object
+      description: >
+        The case a package ships in (ADR-0056): its GTIN and the declared
+        dimensions and weight of the case level, copied at seal time (a later
+        re-declaration does not change a sealed package).
+      required: [gtin, lengthMm, widthMm, heightMm, weightG]
+      properties:
+        gtin:
+          type: string
+          description: The case's GTIN, 14 digits.
+          example: "24006381333935"
+        lengthMm:
+          type: integer
+          format: int32
+          description: Case length in millimetres.
+          example: 400
+        widthMm:
+          type: integer
+          format: int32
+          description: Case width in millimetres.
+          example: 300
+        heightMm:
+          type: integer
+          format: int32
+          description: Case height in millimetres.
+          example: 200
+        weightG:
+          type: integer
+          format: int32
+          description: Case weight in grams.
+          example: 6500
 
     RunSlamRequest:
       type: object
@@ -1804,6 +2362,28 @@ components:
           format: int32
           description: Count of currently-registered stations holding this capability, regardless of occupancy.
           example: 4
+
+    WorkRequestResponse:
+      type: object
+      description: >
+        Acknowledgement of an accepted work delegation (ADR-0058): the work
+        unit Work Planning admitted for the path. The WorkReleased event on
+        Kafka remains the authoritative fact.
+      required: [workUnitId, cpt, reference]
+      properties:
+        workUnitId:
+          type: string
+          description: The work unit Work Planning admitted.
+          example: wu-482910
+        cpt:
+          type: string
+          format: date-time
+          description: The admitted unit's common pick time.
+          example: "2026-08-21T12:00:00Z"
+        reference:
+          type: string
+          description: The admitted unit's external reference.
+          example: order-77213-line-1
 
     ExpireLeasesResponse:
       type: object

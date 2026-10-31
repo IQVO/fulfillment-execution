@@ -21,8 +21,8 @@ import (
 const IdempotencyKeyHeader = "Idempotency-Key"
 
 // RequireIdempotencyKey is route-scoped (chi's r.With(...)) transactional
-// idempotency-key middleware for a true resource-CREATION endpoint —
-// today, POST /tasks (see router.go's router wiring; it is deliberately
+// idempotency-key middleware for a non-repeatable write —
+// POST /tasks and POST /tasks/{id}/scans (see router.go; it is deliberately
 // NOT applied to the whole router). See docs/docs/adr for this
 // middleware's ADR (header contract, the transactional design, the
 // concurrency argument, and the deliberate v1 scope). This mirrors
@@ -79,7 +79,7 @@ func RequireIdempotencyKey(pool *pgxpool.Pool) func(http.Handler) http.Handler {
 			if key == "" {
 				writeProblem(w, http.StatusBadRequest,
 					"idempotency-key-required", "Idempotency-Key header is required",
-					"This endpoint creates a new resource on every call and requires a caller-supplied "+IdempotencyKeyHeader+" header so a retried request is never applied twice.",
+					"This endpoint requires a caller-supplied "+IdempotencyKeyHeader+" header so a retried request is never applied twice.",
 					r.URL.Path)
 				return
 			}
@@ -149,20 +149,23 @@ type storedResponseHeaders = http.Header
 func replayCachedResponse(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, key, requestHash string) {
 	ctx := r.Context()
 
-	var storedHash string
+	var storedHash, storedPath string
 	var statusCode *int
 	var responseBody []byte
 	var responseHeadersRaw []byte
 	err := pool.QueryRow(ctx, `
-		SELECT request_hash, status_code, response_body, response_headers
+		SELECT request_hash, path, status_code, response_body, response_headers
 		FROM idempotency_keys WHERE key = $1
-	`, key).Scan(&storedHash, &statusCode, &responseBody, &responseHeadersRaw)
+	`, key).Scan(&storedHash, &storedPath, &statusCode, &responseBody, &responseHeadersRaw)
 	if err != nil {
 		writeProblem(w, http.StatusInternalServerError, "internal-error", "Internal server error", err.Error(), r.URL.Path)
 		return
 	}
 
-	if storedHash != requestHash {
+	// The key is the table's primary key across every wrapped route, and
+	// the scan body carries no task id: the same key and body on another
+	// path (another task's scans) is a different request, not a retry.
+	if storedHash != requestHash || storedPath != r.URL.Path {
 		writeProblem(w, http.StatusUnprocessableEntity,
 			"idempotency-key-reused", "Idempotency-Key was already used with a different request",
 			"The Idempotency-Key header on this request was already used with a request that had a different body. "+

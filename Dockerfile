@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 # --- build stage ---
-FROM golang:1.26-alpine@sha256:c95332c2af86b6d89b91bd0500f4b9529ccbd090a0d1855c6d1ceaa142ae8615 AS build
+FROM golang:1.26-alpine@sha256:9ce231b28998b32e116927c61aa5c406183061d4f3f2d61b292c88e7f6bdf7ca AS build
 WORKDIR /src
 
 # Cache go.mod/go.sum download separately from source so editing source
@@ -20,6 +20,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/fulfillment-projector ./cmd/fulfillment-projector && \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/fulfillment-reports ./cmd/fulfillment-reports && \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/mcp ./cmd/mcp && \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/a2a ./cmd/a2a && \
     CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/sweep ./cmd/sweep
 
 # --- runtime stage ---
@@ -28,13 +29,14 @@ FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec4
 # base image was last rebuilt (e.g. openssl point releases); ca-certificates
 # is still pinned explicitly for a reproducible, auditable base layer.
 RUN apk upgrade --no-cache && \
-    apk add --no-cache ca-certificates=20260909-r0 && \
+    apk add --no-cache ca-certificates=20261020-r0 && \
     addgroup -g 1000 -S app && adduser -u 1000 -S app -G app
 WORKDIR /app
 COPY --from=build --chown=app:app /out/execution ./execution
 COPY --from=build --chown=app:app /out/fulfillment-projector ./fulfillment-projector
 COPY --from=build --chown=app:app /out/fulfillment-reports ./fulfillment-reports
 COPY --from=build --chown=app:app /out/mcp ./mcp
+COPY --from=build --chown=app:app /out/a2a ./a2a
 COPY --from=build --chown=app:app /out/sweep ./sweep
 COPY --from=build --chown=app:app /src/migrations ./migrations
 USER 1000

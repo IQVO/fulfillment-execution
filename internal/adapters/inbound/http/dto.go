@@ -32,11 +32,16 @@ func isValidTaskType(v string) bool {
 	}
 }
 
-// isClaimableTaskType is isValidTaskType plus RELOCATE and REPLENISH
-// (apis/openapi.yaml's AnyTaskType enum): every task type a station may
-// claim.
+// isClaimableTaskType is isValidTaskType plus RELOCATE, REPLENISH and
+// BREAK_CASE (apis/openapi.yaml's AnyTaskType enum): every task type a
+// station may claim. BREAK_CASE is claimable but not creatable through
+// POST /tasks (ADR 0055).
 func isClaimableTaskType(v string) bool {
-	return isValidTaskType(v) || task.Type(v) == task.Relocate || task.Type(v) == task.Replenish
+	switch task.Type(v) {
+	case task.Relocate, task.Replenish, task.BreakCase:
+		return true
+	}
+	return isValidTaskType(v)
 }
 
 // validate reports the first missing required field, or "" if the request
@@ -152,7 +157,7 @@ func (r claimNextRequest) validate() string {
 	case !isClaimableTaskType(r.TaskType):
 		// apis/openapi.yaml claimNextTask: taskType is the AnyTaskType enum,
 		// and a value outside it is a 400 (BadRequest), not an empty queue (409).
-		return "taskType must be one of PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL, RELOCATE, REPLENISH"
+		return "taskType must be one of PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL, RELOCATE, REPLENISH, BREAK_CASE"
 	default:
 		return ""
 	}
@@ -237,6 +242,13 @@ func (r completeTaskRequest) confirmation() task.RelocationConfirmation {
 type sealPackageRequest struct {
 	StationId string   `json:"stationId"`
 	Contents  []string `json:"contents"`
+
+	// ShipInOwnContainer opts into ship-in-own-container (ADR 0056): the
+	// order line may ship in the SKU's CASE. LineQuantity, then required, is
+	// the order line quantity in eaches. Both are absent from every request
+	// that predates the feature, which seals exactly as before.
+	ShipInOwnContainer bool `json:"shipInOwnContainer,omitempty"`
+	LineQuantity       *int `json:"lineQuantity,omitempty"`
 }
 
 // validate checks only that stationId (the claim owner) is present; an
@@ -245,6 +257,14 @@ type sealPackageRequest struct {
 func (r sealPackageRequest) validate() string {
 	if r.StationId == "" {
 		return "stationId is required"
+	}
+	if r.ShipInOwnContainer {
+		if r.LineQuantity == nil {
+			return "lineQuantity is required when shipInOwnContainer is true"
+		}
+		if *r.LineQuantity < 1 {
+			return "lineQuantity must be at least 1"
+		}
 	}
 	return ""
 }
@@ -257,6 +277,22 @@ type packageResponse struct {
 	FragileHandling   bool     `json:"fragileHandling"`
 	GiftWrapRequested bool     `json:"giftWrapRequested"`
 	SortLane          string   `json:"sortLane"`
+
+	// Present only on a package that ships in its own container (ADR 0056);
+	// omitted from every ordinary package, whose JSON is unchanged.
+	ShipInOwnContainer bool               `json:"shipInOwnContainer,omitempty"`
+	ContainerSource    string             `json:"containerSource,omitempty"`
+	Container          *containerResponse `json:"container,omitempty"`
+}
+
+// containerResponse is the own container's identity and measures: the case
+// GTIN, millimetres and grams.
+type containerResponse struct {
+	Gtin     string `json:"gtin"`
+	LengthMm int    `json:"lengthMm"`
+	WidthMm  int    `json:"widthMm"`
+	HeightMm int    `json:"heightMm"`
+	WeightG  int    `json:"weightG"`
 }
 
 type runSlamRequest struct {
@@ -394,4 +430,57 @@ func (r arriveAtRebinRequest) validate() string {
 	default:
 		return ""
 	}
+}
+
+// pickScanRequest is POST /tasks/{id}/scans (ADR 0054). Count is the number of
+// packs scanned (eaches for an EACH GTIN, cases for a CASE GTIN) and defaults
+// to 1.
+type pickScanRequest struct {
+	StationId string `json:"stationId"`
+	GTIN      string `json:"gtin"`
+	Count     *int   `json:"count,omitempty"`
+}
+
+func (r pickScanRequest) validate() string {
+	switch {
+	case r.StationId == "":
+		return "stationId is required"
+	case strings.TrimSpace(r.GTIN) == "":
+		return "gtin is required"
+	case r.Count != nil && *r.Count < 1:
+		return "count must be at least 1"
+	default:
+		return ""
+	}
+}
+
+func (r pickScanRequest) count() int {
+	if r.Count == nil {
+		return 1
+	}
+	return *r.Count
+}
+
+// pickScanResponse is what one accepted scan did, in eaches.
+type pickScanResponse struct {
+	ScannedGTIN   string `json:"scannedGtin"`
+	SKU           string `json:"sku"`
+	Level         string `json:"level"`
+	AddedEaches   int    `json:"addedEaches"`
+	PickedEaches  int    `json:"pickedEaches"`
+	PlannedEaches int    `json:"plannedEaches"`
+}
+
+// breakCaseRequest is POST /tasks/{id}/break-case.
+type breakCaseRequest struct {
+	StationId string `json:"stationId"`
+}
+
+// workRequestResponse is the acknowledgement of an accepted work delegation
+// (ADR-0058): the unit Work Planning admitted. The WorkReleased event on
+// Kafka remains the authoritative fact.
+type workRequestResponse struct {
+	WorkUnitId string `json:"workUnitId"`
+	CPT        string `json:"cpt"`
+	Reference  string `json:"reference"`
 }

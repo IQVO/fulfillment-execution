@@ -110,6 +110,8 @@ EOF
 WORK_RELEASED_CONSUMER_GROUP="${WORK_RELEASED_CONSUMER_GROUP:-fulfillment-execution-contract}" \
   PRODUCT_CLASSIFICATION_CONSUMER_GROUP="${PRODUCT_CLASSIFICATION_CONSUMER_GROUP:-fulfillment-execution-contract-product-classification}" \
   TASK_INTERLEAVING_CONSUMER_GROUP="${TASK_INTERLEAVING_CONSUMER_GROUP:-fulfillment-execution-contract-interleaving}" \
+  PACK_VIEW_CONSUMER_GROUP="${PACK_VIEW_CONSUMER_GROUP:-fulfillment-execution-contract-pack-view}" \
+  INVENTORY_STORAGE_BASE_URL="${INVENTORY_STORAGE_BASE_URL:-http://127.0.0.1:1}" \
   LOG_LEVEL="${LOG_LEVEL:-warn}" HTTP_ADDR="127.0.0.1:${PORT}" \
   PATH_CATALOGUE_FILE="${TMP}/process-paths.yaml" "$BIN" &
 SERVER_PID=$!

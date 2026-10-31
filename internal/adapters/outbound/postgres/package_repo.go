@@ -23,11 +23,25 @@ func NewPackageRepo(pool *pgxpool.Pool) *PackageRepo {
 }
 
 func (r *PackageRepo) Save(ctx context.Context, p *pack.Package) error {
+	// The own container (ADR 0056) is NULL in all six columns for an ordinary
+	// package; pgx writes a nil pointer as SQL NULL.
+	var (
+		source, gtin                  *string
+		length, width, height, weight *int
+	)
+	if oc := p.OwnContainer(); oc != nil {
+		src, g := string(oc.Source), oc.GTIN
+		source, gtin = &src, &g
+		length, width, height, weight = &oc.Dims.LengthMM, &oc.Dims.WidthMM, &oc.Dims.HeightMM, &oc.Dims.WeightG
+	}
 	_, err := querierFrom(ctx, r.pool).Exec(ctx, `
-		INSERT INTO packages (id, order_ref, task_id, status, scanned_contents, fragile_handling, scanned_hazard_classes, gift_wrap_requested)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		ON CONFLICT (id) DO UPDATE SET order_ref = EXCLUDED.order_ref, task_id = EXCLUDED.task_id, status = EXCLUDED.status, scanned_contents = EXCLUDED.scanned_contents, fragile_handling = EXCLUDED.fragile_handling, scanned_hazard_classes = EXCLUDED.scanned_hazard_classes, gift_wrap_requested = EXCLUDED.gift_wrap_requested
-	`, string(p.Id()), string(p.OrderRef()), nullableTaskId(p.TaskId()), string(p.Status()), p.ScannedContents(), p.FragileHandling(), nonNilInts(p.ScannedHazardClasses()), p.GiftWrapRequested())
+		INSERT INTO packages (id, order_ref, task_id, status, scanned_contents, fragile_handling, scanned_hazard_classes, gift_wrap_requested,
+		                      container_source, container_gtin, container_length_mm, container_width_mm, container_height_mm, container_weight_g)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		ON CONFLICT (id) DO UPDATE SET order_ref = EXCLUDED.order_ref, task_id = EXCLUDED.task_id, status = EXCLUDED.status, scanned_contents = EXCLUDED.scanned_contents, fragile_handling = EXCLUDED.fragile_handling, scanned_hazard_classes = EXCLUDED.scanned_hazard_classes, gift_wrap_requested = EXCLUDED.gift_wrap_requested,
+		    container_source = EXCLUDED.container_source, container_gtin = EXCLUDED.container_gtin, container_length_mm = EXCLUDED.container_length_mm, container_width_mm = EXCLUDED.container_width_mm, container_height_mm = EXCLUDED.container_height_mm, container_weight_g = EXCLUDED.container_weight_g
+	`, string(p.Id()), string(p.OrderRef()), nullableTaskId(p.TaskId()), string(p.Status()), p.ScannedContents(), p.FragileHandling(), nonNilInts(p.ScannedHazardClasses()), p.GiftWrapRequested(),
+		source, gtin, length, width, height, weight)
 	return err
 }
 
@@ -45,7 +59,8 @@ func nonNilInts(s []int) []int {
 
 // packageColumns is the column list every package read selects, in the
 // order scanPackage expects.
-const packageColumns = `id, order_ref, task_id, status, scanned_contents, fragile_handling, scanned_hazard_classes, gift_wrap_requested`
+const packageColumns = `id, order_ref, task_id, status, scanned_contents, fragile_handling, scanned_hazard_classes, gift_wrap_requested,
+	container_source, container_gtin, container_length_mm, container_width_mm, container_height_mm, container_weight_g`
 
 // scanPackage rehydrates one packages row selected with packageColumns.
 func scanPackage(row rowScanner) (*pack.Package, error) {
@@ -56,15 +71,26 @@ func scanPackage(row rowScanner) (*pack.Package, error) {
 		fragileHandling             bool
 		scannedHazardClasses        []int
 		giftWrapRequested           bool
+
+		source, gtin                  *string
+		length, width, height, weight *int
 	)
-	if err := row.Scan(&packageId, &orderRef, &taskId, &status, &scannedContents, &fragileHandling, &scannedHazardClasses, &giftWrapRequested); err != nil {
+	if err := row.Scan(&packageId, &orderRef, &taskId, &status, &scannedContents, &fragileHandling, &scannedHazardClasses, &giftWrapRequested,
+		&source, &gtin, &length, &width, &height, &weight); err != nil {
 		return nil, err
 	}
 	parsedStatus, err := pack.ParseStatus(status)
 	if err != nil {
 		return nil, fmt.Errorf("rehydrate package %q: %w", packageId, err)
 	}
-	return pack.Rehydrate(shared.PackageId(packageId), shared.OrderRef(orderRef), shared.TaskId(deref(taskId)), parsedStatus, scannedContents, fragileHandling, scannedHazardClasses, giftWrapRequested), nil
+	p := pack.Rehydrate(shared.PackageId(packageId), shared.OrderRef(orderRef), shared.TaskId(deref(taskId)), parsedStatus, scannedContents, fragileHandling, scannedHazardClasses, giftWrapRequested)
+	if source != nil && gtin != nil && length != nil && width != nil && height != nil && weight != nil {
+		p.RestoreOwnContainer(&pack.OwnContainer{
+			Source: pack.ContainerSource(*source), GTIN: *gtin,
+			Dims: pack.Dimensions{LengthMM: *length, WidthMM: *width, HeightMM: *height, WeightG: *weight},
+		})
+	}
+	return p, nil
 }
 
 // Package read queries, built only from constants.

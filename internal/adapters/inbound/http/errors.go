@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/claudioed/fulfillment-execution/internal/application/ports"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
 	"github.com/claudioed/fulfillment-execution/internal/domain/consolidation"
 	pack "github.com/claudioed/fulfillment-execution/internal/domain/package"
@@ -44,12 +45,56 @@ func statusFor(err error) int {
 		errors.Is(err, pack.ErrAlreadyProcessed),
 		errors.Is(err, pack.ErrNotSealed),
 		errors.Is(err, pack.ErrPackageSegregationViolation),
-		errors.Is(err, usecases.ErrNoClaimableTask):
+		errors.Is(err, usecases.ErrNoClaimableTask),
+		// The scan or break does not fit the task's current plan: a conflict
+		// with the task's state, not a malformed request.
+		// A scanned code that is not a valid GTIN, or that no pack level
+		// carries, matches nothing the task can be confirmed against. It is
+		// a 409, not a 404 (the task exists) and not a 400 (the body schema
+		// already bounds the code's shape, so it is a schema-valid request).
+		errors.Is(err, usecases.ErrInvalidScannedGTIN),
+		errors.Is(err, usecases.ErrUnknownGTIN),
+		errors.Is(err, task.ErrScanSkuMismatch),
+		errors.Is(err, task.ErrScanLevelMismatch),
+		errors.Is(err, task.ErrNoPickPlan),
+		errors.Is(err, task.ErrPickOverQuantity),
+		errors.Is(err, task.ErrPickIncomplete),
+		errors.Is(err, task.ErrNotCaseBreakTask),
+		errors.Is(err, task.ErrCaseBreakCompletionRequired):
+		return http.StatusConflict
+
+	case errors.Is(err, task.ErrInvalidScanCount):
+		return http.StatusBadRequest
+
+	case errors.Is(err, ports.ErrCaseBreakUnavailable):
+		return http.StatusServiceUnavailable
+
+	// Work-planning delegation (ADR-0058): the peer's business rejections are
+	// conflicts, its unknown path is a 404, an unreachable/off-contract peer
+	// is a bad gateway, an unset delegation URL is explicitly off (503), and
+	// an empty path id is a client error.
+	case errors.Is(err, ports.ErrNoPendingWork):
+		return http.StatusConflict
+	case errors.Is(err, ports.ErrUnknownWorkPlanningPath):
+		return http.StatusNotFound
+	case errors.Is(err, ports.ErrWorkPlanningUnreachable):
+		return http.StatusBadGateway
+	case errors.Is(err, usecases.ErrWorkPlanningNotConfigured):
+		return http.StatusServiceUnavailable
+	case errors.Is(err, usecases.ErrPathIdRequired):
+		return http.StatusBadRequest
+
+	case errors.Is(err, ports.ErrCaseBreakRejected):
 		return http.StatusConflict
 
 	case errors.Is(err, task.ErrCapabilityMismatch),
 		errors.Is(err, station.ErrCapabilityMismatch),
 		errors.Is(err, pack.ErrNoScannedContents),
+		errors.Is(err, pack.ErrNotSingleLine),
+		errors.Is(err, pack.ErrOwnContainerQuantityMismatch),
+		errors.Is(err, pack.ErrNoCaseLevel),
+		errors.Is(err, pack.ErrCaseLevelRetired),
+		errors.Is(err, pack.ErrCaseDimensionsUnknown),
 		errors.Is(err, consolidation.ErrUnknownLine),
 		errors.Is(err, usecases.ErrWrongTaskType),
 		errors.Is(err, usecases.ErrStationLocationNotWorkCenter),
@@ -80,6 +125,15 @@ var problemCatalog = []struct {
 	{usecases.ErrStationNotFound, "station-not-found", "Station not found"},
 	{usecases.ErrPackageNotFound, "package-not-found", "Package not found"},
 
+	// Work-planning delegation outcomes (ADR-0058): typed errors raised by
+	// the outbound A2A port mapping, plus the two local request-shape /
+	// configuration states.
+	{ports.ErrNoPendingWork, "work-planning-no-pending-work", "Work planning has no pending work for this path"},
+	{ports.ErrUnknownWorkPlanningPath, "work-planning-unknown-path", "Work planning does not know this process path"},
+	{ports.ErrWorkPlanningUnreachable, "work-planning-unreachable", "Work planning agent unreachable or answered off-contract"},
+	{usecases.ErrWorkPlanningNotConfigured, "work-planning-not-configured", "Work-planning delegation not configured"},
+	{usecases.ErrPathIdRequired, "path-id-required", "A process path id is required"},
+
 	{task.ErrAlreadyClaimed, "task-already-claimed", "Task already claimed by another station"},
 	{task.ErrAlreadyCompleted, "task-already-completed", "Task already completed"},
 	{task.ErrNotClaimed, "task-not-claimed", "Task is not currently claimed"},
@@ -95,6 +149,11 @@ var problemCatalog = []struct {
 	{task.ErrCapabilityMismatch, "task-capability-mismatch", "Station capabilities do not match task requirements"},
 	{station.ErrCapabilityMismatch, "station-capability-mismatch", "Capabilities do not match"},
 	{pack.ErrNoScannedContents, "package-no-scanned-contents", "Cannot seal a package without scanned contents"},
+	{pack.ErrNotSingleLine, "ship-in-own-container-not-single-line", "Ship-in-own-container needs exactly one order line in the package"},
+	{pack.ErrOwnContainerQuantityMismatch, "ship-in-own-container-quantity-mismatch", "The order line is not exactly one full case"},
+	{pack.ErrNoCaseLevel, "ship-in-own-container-no-case-level", "The SKU has no active CASE level"},
+	{pack.ErrCaseLevelRetired, "ship-in-own-container-case-retired", "The SKU's CASE level is retired"},
+	{pack.ErrCaseDimensionsUnknown, "ship-in-own-container-case-dimensions-unknown", "The active CASE level has no dimensions and weight"},
 	{consolidation.ErrUnknownLine, "rebin-unknown-line", "Line is not part of this order's required consolidation set"},
 	{usecases.ErrWrongTaskType, "wrong-task-type", "Wrong task type for this operation"},
 	{usecases.ErrStationLocationNotWorkCenter, "station-location-not-workcenter", "Station's locationCode does not resolve to a facility-layout WorkCenter"},
@@ -103,6 +162,19 @@ var problemCatalog = []struct {
 	{task.ErrNotRelocationTask, "not-relocation-task", "quantity, fromBin and toBin apply only to RELOCATE and REPLENISH tasks"},
 	{task.ErrReplenishmentConfirmationRequired, "replenishment-confirmation-required", "A REPLENISH task completes only with the confirmed quantity"},
 	{task.ErrInvalidReplenishmentConfirmation, "invalid-replenishment-confirmation", "The replenishment confirmation does not match the planned move"},
+
+	{usecases.ErrInvalidScannedGTIN, "invalid-scanned-gtin", "The scanned text is not a valid GTIN"},
+	{task.ErrInvalidScanCount, "invalid-scan-count", "The scan count must be at least 1"},
+	{usecases.ErrUnknownGTIN, "unknown-gtin", "The scanned GTIN is not a known pack level"},
+	{task.ErrScanSkuMismatch, "scan-sku-mismatch", "The scanned GTIN is not the SKU of this pick"},
+	{task.ErrScanLevelMismatch, "scan-level-mismatch", "The scanned pack level does not match the pick unit"},
+	{task.ErrNoPickPlan, "no-pick-plan", "The task carries no pick plan to scan against"},
+	{task.ErrPickOverQuantity, "pick-over-quantity", "The scan would pick more than the planned quantity"},
+	{task.ErrPickIncomplete, "pick-incomplete", "The scanned eaches do not add up to the planned quantity"},
+	{task.ErrNotCaseBreakTask, "not-case-break-task", "The task is not a BREAK_CASE task"},
+	{task.ErrCaseBreakCompletionRequired, "case-break-completion-required", "A BREAK_CASE task completes only through POST /tasks/{id}/break-case"},
+	{ports.ErrCaseBreakUnavailable, "case-break-unavailable", "inventory-storage could not be reached for the case break"},
+	{ports.ErrCaseBreakRejected, "case-break-rejected", "inventory-storage rejected the case break"},
 }
 
 // problemTypeAndTitle maps a typed domain/application error to its RFC 7807

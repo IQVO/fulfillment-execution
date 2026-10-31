@@ -172,7 +172,7 @@ func TestClaimNext_UnknownTaskTypeNamesReplenish(t *testing.T) {
 		Detail string `json:"detail"`
 	}
 	_ = json.Unmarshal(rec.Body.Bytes(), &p)
-	if !strings.HasSuffix(p.Detail, "REPLENISH") {
-		t.Fatalf("detail = %q, want it to end with REPLENISH", p.Detail)
+	if !strings.HasSuffix(p.Detail, "REPLENISH, BREAK_CASE") {
+		t.Fatalf("detail = %q, want it to end with REPLENISH, BREAK_CASE", p.Detail)
 	}
 }

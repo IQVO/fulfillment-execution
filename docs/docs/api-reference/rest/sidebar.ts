@@ -8,6 +8,22 @@ const sidebar: SidebarsConfig = {
     },
     {
       type: "category",
+      label: "Work Planning Delegation",
+      link: {
+        type: "doc",
+        id: "api-reference/rest/work-planning-delegation",
+      },
+      items: [
+        {
+          type: "doc",
+          id: "api-reference/rest/request-next-work",
+          label: "Ask the Work Planning agent (over A2A) to admit the next unit for a path",
+          className: "api-method post",
+        },
+      ],
+    },
+    {
+      type: "category",
       label: "Tasks",
       link: {
         type: "doc",
@@ -42,6 +58,18 @@ const sidebar: SidebarsConfig = {
           type: "doc",
           id: "api-reference/rest/complete-task",
           label: "Complete a task on behalf of the station that claimed it",
+          className: "api-method post",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/confirm-pick-scan",
+          label: "Confirm one scan of an each or case GTIN against a PICK task",
+          className: "api-method post",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/complete-case-break",
+          label: "Complete a BREAK_CASE task by breaking the sealed case in inventory-storage",
           className: "api-method post",
         },
         {
@@ -260,6 +288,18 @@ const sidebar: SidebarsConfig = {
         },
         {
           type: "doc",
+          id: "api-reference/rest/schemas/pickscanrequest",
+          label: "PickScanRequest",
+          className: "schema",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/schemas/pickscanresult",
+          label: "PickScanResult",
+          className: "schema",
+        },
+        {
+          type: "doc",
           id: "api-reference/rest/schemas/completetaskrequest",
           label: "CompleteTaskRequest",
           className: "schema",
@@ -278,6 +318,18 @@ const sidebar: SidebarsConfig = {
         },
         {
           type: "doc",
+          id: "api-reference/rest/schemas/containersource",
+          label: "ContainerSource",
+          className: "schema",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/schemas/owncontainer",
+          label: "OwnContainer",
+          className: "schema",
+        },
+        {
+          type: "doc",
           id: "api-reference/rest/schemas/runslamrequest",
           label: "RunSlamRequest",
           className: "schema",
@@ -292,6 +344,12 @@ const sidebar: SidebarsConfig = {
           type: "doc",
           id: "api-reference/rest/schemas/installedcapacityresponse",
           label: "InstalledCapacityResponse",
+          className: "schema",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/schemas/workrequestresponse",
+          label: "WorkRequestResponse",
           className: "schema",
         },
         {

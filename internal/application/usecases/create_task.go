@@ -51,13 +51,27 @@ func (uc *CreateTask) ExecuteTransfer(ctx context.Context, taskType task.Type, c
 // work), published as TaskCompleted.line_no (decision 18, ADR 0041). A nil
 // transfer block makes this a plain task.
 func (uc *CreateTask) ExecuteRelease(ctx context.Context, taskType task.Type, cpt shared.CPT, orderRef shared.OrderRef, required shared.CapabilitySet, fragile bool, giftWrap bool, sourceOrderId string, sourceLineNo int, transfer *task.TransferDetails) (*task.Task, error) {
+	return uc.ExecuteReleaseWithPick(ctx, taskType, cpt, orderRef, required, fragile, giftWrap, sourceOrderId, sourceLineNo, transfer, nil)
+}
+
+// ExecuteReleaseWithPick is ExecuteRelease for a PICK release that carries a
+// pick plan (WorkReleased.data.pick, ADR 0054): the task is created with the
+// plan, so its completion requires the scans to add up to the planned
+// quantity. A nil plan makes this identical to ExecuteRelease.
+func (uc *CreateTask) ExecuteReleaseWithPick(ctx context.Context, taskType task.Type, cpt shared.CPT, orderRef shared.OrderRef, required shared.CapabilitySet, fragile bool, giftWrap bool, sourceOrderId string, sourceLineNo int, transfer *task.TransferDetails, pick *task.PickPlan) (*task.Task, error) {
 	id := uc.NewId()
 	if transfer == nil {
-		t := task.New(id, taskType, cpt, orderRef, required, fragile, giftWrap).WithSourceOrderId(sourceOrderId).WithSourceLineNo(sourceLineNo)
+		t := task.New(id, taskType, cpt, orderRef, required, fragile, giftWrap).WithSourceOrderId(sourceOrderId).WithSourceLineNo(sourceLineNo).WithPickPlan(pick, 0)
 		return uc.save(ctx, t)
 	}
-	t := task.NewTransferTask(id, taskType, cpt, orderRef, required, fragile, giftWrap, *transfer).WithSourceOrderId(sourceOrderId).WithSourceLineNo(sourceLineNo)
+	t := task.NewTransferTask(id, taskType, cpt, orderRef, required, fragile, giftWrap, *transfer).WithSourceOrderId(sourceOrderId).WithSourceLineNo(sourceLineNo).WithPickPlan(pick, 0)
 	return uc.save(ctx, t)
+}
+
+// ExecuteCaseBreak creates a BREAK_CASE task carrying the sealed-case break
+// (ADR 0054), released by the WorkReleased consumer on the BREAK_CASE path.
+func (uc *CreateTask) ExecuteCaseBreak(ctx context.Context, cpt shared.CPT, orderRef shared.OrderRef, required shared.CapabilitySet, brk task.CaseBreak) (*task.Task, error) {
+	return uc.save(ctx, task.NewCaseBreakTask(uc.NewId(), cpt, orderRef, required, brk))
 }
 
 // ExecuteRelocation creates a RELOCATE task carrying the slot-plan move

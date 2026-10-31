@@ -133,13 +133,40 @@ func NewItemPicked(id TaskId, at time.Time) ItemPicked {
 }
 
 // PackageSealed is raised when a package's contents are scanned and it is sealed.
+//
+// OwnContainer is nil for an ordinary (cartonised) package. When the package
+// ships in its own container (ADR 0056) it carries where the container comes
+// from and its measures, so the analytics fact says the case was the
+// shipping container; it is nil-checked by the encoder so the ordinary
+// payload stays byte-identical.
 type PackageSealed struct {
 	base
-	PackageId PackageId
+	PackageId    PackageId
+	OwnContainer *OwnContainerFact
+}
+
+// OwnContainerFact is the ship-in-own-container part of PackageSealed:
+// Source is the container source ("CASE"), GTIN the case GTIN, and the
+// measures are millimetres and grams copied from the case level at seal time.
+type OwnContainerFact struct {
+	Source   string
+	GTIN     string
+	LengthMM int
+	WidthMM  int
+	HeightMM int
+	WeightG  int
 }
 
 func NewPackageSealed(id PackageId, at time.Time) PackageSealed {
 	return PackageSealed{base: base{Name: "PackageSealed", At: at}, PackageId: id}
+}
+
+// NewPackageSealedInOwnContainer is PackageSealed for a package that ships in
+// its own container (ADR 0056).
+func NewPackageSealedInOwnContainer(id PackageId, c OwnContainerFact, at time.Time) PackageSealed {
+	e := NewPackageSealed(id, at)
+	e.OwnContainer = &c
+	return e
 }
 
 // WeightDiscrepancyDetected is raised when SLAM finds actual weight outside tolerance.

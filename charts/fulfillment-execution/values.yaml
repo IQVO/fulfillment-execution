@@ -185,6 +185,13 @@ config:
   # entry breaks ArgoCD's diff), so extraEnv wins and nothing is duplicated.
   productClassificationConsumerGroup: "fulfillment-execution-product-classification"
   taskInterleavingConsumerGroup: "fulfillment-execution-interleaving"
+  # PACK_VIEW_CONSUMER_GROUP (ADR 0054): the pack-level consumer of
+  # warehouse.product-master.events, a SECOND consumer of that topic, so its
+  # group must differ from productClassificationConsumerGroup.
+  packViewConsumerGroup: "fulfillment-execution-pack-view"
+  # INVENTORY_STORAGE_BASE_URL (ADR 0054): completing a BREAK_CASE task calls
+  # inventory-storage POST /containers/{lpn}:break.
+  inventoryStorageBaseUrl: "http://inventory-storage.warehouse-systems.svc.cluster.local:80"
   # Outbox relay attempt cap (gap fix D12, ADR-0042); OUTBOX_MAX_ATTEMPTS. A row
   # that has failed this many sends is excluded from the relay's claims (it
   # stays in outbox_events with attempts/last_error, logged at ERROR) so one
@@ -236,7 +243,8 @@ otel:
 # and task-interleaving hints (ADR 0051) run only in kafka mode:
 # PRODUCT_CLASSIFICATION_MODE / TASK_INTERLEAVING_MODE default to kafka,
 # "permissive", "off" and PRODUCT_CLASSIFICATION_MODE=http fail the boot, and
-# INVENTORY_STORAGE_BASE_URL is no longer read. The consumer groups come from
+# INVENTORY_STORAGE_BASE_URL is read again (ADR 0054: BREAK_CASE) and comes from
+# config.inventoryStorageBaseUrl above. The consumer groups come from
 # config.* above unless an entry here names them first.
 extraEnv: []
 
@@ -493,6 +501,52 @@ mcp:
   # chart's own reports Service when analytics.enabled is true, otherwise
   # leave the tool unregistered.
   reportsBaseUrl: ""
+  extraEnv: []
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
+# ---------------------------------------------------------------------------
+# A2A (Agent2Agent) agent (cmd/a2a, ADR-0059): the third driving adapter over
+# the SAME use cases as the REST and MCP surfaces. Skills: backlog_status
+# (read) and complete_task (write, the one write MCP also offers). Off by
+# default; warehouse-infra turns it on. A2A carries delegation only; facts
+# between contexts still travel as CloudEvents through the transactional
+# outbox that the api Deployment's relay drains. This is the INBOUND half:
+# the outbound work-planning client (ADR-0058) is configured on the api
+# Deployment and is unrelated to this block.
+# ---------------------------------------------------------------------------
+a2a:
+  enabled: false
+  replicaCount: 1
+  # A2A_ADDR the binary listens on; keep in sync with service.targetPort.
+  # (8080 api, 8090 mcp, 8091 projector admin, 8092 reports: so 8093.)
+  httpAddr: ":8093"
+  logLevel: "info"
+  # Absolute URL advertised on the Agent Card. Empty defaults to this
+  # release's in-cluster Service DNS (http://<release>-a2a.<ns>.svc.cluster.local:8093/);
+  # warehouse-infra can override it with the Kong path when the agent must be
+  # reachable off-cluster.
+  agentUrl: ""
+  service:
+    type: ClusterIP
+    port: 8093
+    targetPort: 8093
+  # Kong exposure of the A2A agent (a2a-route.yaml): host path
+  # /api/a2a/<context> rewritten to / (JSON-RPC root; the well-known agent
+  # card stays reachable under the same prefix). Off by default;
+  # warehouse-infra turns it on with the real parentRefs and path.
+  route:
+    enabled: false
+    path: "/api/a2a/fulfillment-execution"
+    parentRefs:
+      - name: ""
+        namespace: ""
+        sectionName: "http"
   extraEnv: []
   resources:
     limits:

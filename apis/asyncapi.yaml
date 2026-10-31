@@ -54,8 +54,8 @@ channels:
     subscribe:
       operationId: consumeFulfillmentIntegrationEvents
       summary: Consume Fulfillment Execution integration events.
-      description: Receive the TaskAvailable, TaskClaimed, TaskCompleted, TaskCPTMissed and PackageManifested
-        CloudEvents this bounded context publishes.
+      description: Receive the TaskAvailable, TaskClaimed, TaskCompleted, TaskCPTMissed, PackageManifested,
+        PackageDiverted and WeightDiscrepancyDetected CloudEvents this bounded context publishes.
       tags:
       - name: fulfillment-execution
       message:
@@ -65,6 +65,8 @@ channels:
         - $ref: '#/components/messages/TaskCompleted'
         - $ref: '#/components/messages/TaskCPTMissed'
         - $ref: '#/components/messages/PackageManifested'
+        - $ref: '#/components/messages/PackageDiverted'
+        - $ref: '#/components/messages/WeightDiscrepancyDetected'
         - $ref: '#/components/messages/TransferPicked'
         - $ref: '#/components/messages/TransferDispatched'
         - $ref: '#/components/messages/TransferArrived'
@@ -745,6 +747,133 @@ components:
           data:
             package_id: pkg-1029
             order_ref: wu-8a1f
+    PackageDiverted:
+      name: PackageDiverted
+      title: PackageDiverted
+      summary: A package was diverted off the standard path to the problem-solve area.
+      description: A package failed its SLAM weigh-check and was routed to the problem-solve area
+        instead of being labelled. Published on `warehouse.fulfillment.events` (keyed by package id)
+        with the same type, subject and data as the analytics occurrence (ADR-0053); also published
+        on `warehouse.fulfillment.analytics`. Consumed by exception-management, which opens its
+        problem-solve case on it.
+      contentType: application/cloudevents+json
+      tags:
+      - name: package
+      - name: fulfillment-execution
+      headers:
+        $ref: '#/components/schemas/KafkaHeaders'
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          required:
+          - type
+          - source
+          - dataschema
+          - data
+          properties:
+            type:
+              type: string
+              const: com.warehouse.wes.fulfillment-execution.package.PackageDiverted
+            source:
+              type: string
+              const: /warehouse/fulfillment-execution
+            dataschema:
+              type: string
+              const: urn:warehouse:fulfillment-execution:events:PackageDiverted:v1
+            data:
+              type: object
+              required:
+              - package_id
+              properties:
+                package_id:
+                  type: string
+                  description: Diverted package id.
+      examples:
+      - name: packageDiverted
+        headers:
+          content-type: application/cloudevents+json; charset=UTF-8
+          traceparent: 00-8812c36621d214139a08949823716b93-14ddf02dbd8913ba-01
+        payload:
+          specversion: "1.0"
+          id: 6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b
+          source: /warehouse/fulfillment-execution
+          type: com.warehouse.wes.fulfillment-execution.package.PackageDiverted
+          subject: p1
+          time: '2026-09-30T15:00:00Z'
+          datacontenttype: application/json
+          dataschema: urn:warehouse:fulfillment-execution:events:PackageDiverted:v1
+          data:
+            package_id: p1
+    WeightDiscrepancyDetected:
+      name: WeightDiscrepancyDetected
+      title: WeightDiscrepancyDetected
+      summary: SLAM found a package weight out of tolerance.
+      description: The SLAM weigh-check measured a weight outside tolerance — the fact that causes a
+        divert. Published on `warehouse.fulfillment.events` (keyed by package id) with the same type,
+        subject and data as the analytics occurrence (ADR-0053); also published on
+        `warehouse.fulfillment.analytics`. Consumed by exception-management.
+      contentType: application/cloudevents+json
+      tags:
+      - name: package
+      - name: fulfillment-execution
+      headers:
+        $ref: '#/components/schemas/KafkaHeaders'
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          required:
+          - type
+          - source
+          - dataschema
+          - data
+          properties:
+            type:
+              type: string
+              const: com.warehouse.wes.fulfillment-execution.package.WeightDiscrepancyDetected
+            source:
+              type: string
+              const: /warehouse/fulfillment-execution
+            dataschema:
+              type: string
+              const: urn:warehouse:fulfillment-execution:events:WeightDiscrepancyDetected:v1
+            data:
+              type: object
+              required:
+              - package_id
+              - expected_g
+              - actual_g
+              properties:
+                package_id:
+                  type: string
+                  description: Package id.
+                expected_g:
+                  type: number
+                  description: Expected weight.
+                  format: double
+                actual_g:
+                  type: number
+                  description: Measured weight.
+                  format: double
+      examples:
+      - name: weightDiscrepancyDetected
+        headers:
+          content-type: application/cloudevents+json; charset=UTF-8
+          traceparent: 00-8812c36621d214139a08949823716b93-14ddf02dbd8913ba-01
+        payload:
+          specversion: "1.0"
+          id: 6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b
+          source: /warehouse/fulfillment-execution
+          type: com.warehouse.wes.fulfillment-execution.package.WeightDiscrepancyDetected
+          subject: p1
+          time: '2026-09-30T15:00:00Z'
+          datacontenttype: application/json
+          dataschema: urn:warehouse:fulfillment-execution:events:WeightDiscrepancyDetected:v1
+          data:
+            package_id: p1
+            expected_g: 1000
+            actual_g: 1200
     AnalyticsTaskCreated:
       name: AnalyticsTaskCreated
       title: TaskCreated
@@ -1144,6 +1273,42 @@ components:
                 package_id:
                   type: string
                   description: Package id.
+                ship_in_own_container:
+                  type: boolean
+                  description: Optional and additive (ADR-0056, v1 stays v1). Present, always `true`, only when the
+                    package was sealed in its own container (an order line that is exactly one full active CASE);
+                    omitted from an ordinary carton, whose payload is unchanged.
+                container_source:
+                  type: string
+                  enum:
+                  - CASE
+                  description: Optional. What the package ships in; present exactly when `ship_in_own_container` is.
+                container_gtin:
+                  type: string
+                  pattern: ^[0-9]{14}$
+                  description: Optional. The case GTIN (14 digits); present exactly when `ship_in_own_container` is.
+                container_dims:
+                  type: object
+                  description: Optional. The declared dimensions (mm) and weight (g) of the case, copied at seal
+                    time; present exactly when `ship_in_own_container` is.
+                  required:
+                  - length_mm
+                  - width_mm
+                  - height_mm
+                  - weight_g
+                  properties:
+                    length_mm:
+                      type: integer
+                      minimum: 1
+                    width_mm:
+                      type: integer
+                      minimum: 1
+                    height_mm:
+                      type: integer
+                      minimum: 1
+                    weight_g:
+                      type: integer
+                      minimum: 1
       examples:
       - name: analyticsPackageSealed
         headers:
@@ -1160,6 +1325,30 @@ components:
           dataschema: urn:warehouse:fulfillment-execution:analytics:PackageSealed:v1
           data:
             package_id: p1
+      - name: analyticsPackageSealedInOwnContainer
+        summary: The package shipped in its own CASE (ship-in-own-container, ADR-0056).
+        headers:
+          content-type: application/cloudevents+json; charset=UTF-8
+          traceparent: 00-8812c36621d214139a08949823716b93-14ddf02dbd8913ba-01
+        payload:
+          specversion: "1.0"
+          id: 0d3b5a7c-91e2-4c48-b6f0-7a2e9c1d4b86
+          source: /warehouse/fulfillment-execution
+          type: com.warehouse.wes.fulfillment-execution.package.PackageSealed
+          subject: p2
+          time: '2026-09-30T15:05:00Z'
+          datacontenttype: application/json
+          dataschema: urn:warehouse:fulfillment-execution:analytics:PackageSealed:v1
+          data:
+            package_id: p2
+            ship_in_own_container: true
+            container_source: CASE
+            container_gtin: '24006381333935'
+            container_dims:
+              length_mm: 400
+              width_mm: 300
+              height_mm: 200
+              weight_g: 6500
     AnalyticsWeightDiscrepancyDetected:
       name: AnalyticsWeightDiscrepancyDetected
       title: WeightDiscrepancyDetected
@@ -2081,6 +2270,133 @@ components:
           dataschema: urn:warehouse:process-path-management:events:ProcessPathDeactivated:v1
           data:
             path_id: PICK
+    ProductPackLevelDeclared:
+      name: ProductPackLevelDeclared
+      title: ProductPackLevelDeclared
+      summary: product-master declared or revised a pack level of a SKU (consumed).
+      description: Published by product-master on `warehouse.product-master.events` (its AsyncAPI is the
+        source of truth); consumed here into the local PackView read per scanned GTIN at scan time (ADR 0054),
+        by the always-on consumer under the required `PACK_VIEW_CONSUMER_GROUP`.
+      contentType: application/cloudevents+json
+      tags:
+      - name: consumed
+      headers:
+        $ref: '#/components/schemas/KafkaHeaders'
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          required:
+          - type
+          - source
+          - dataschema
+          - data
+          properties:
+            type:
+              type: string
+              const: com.warehouse.wms.product-master.product.ProductPackLevelDeclared
+            source:
+              type: string
+              const: /warehouse/product-master
+            dataschema:
+              type: string
+              const: urn:warehouse:product-master:events:ProductPackLevelDeclared:v1
+            data:
+              type: object
+              required:
+              - sku
+              - level
+              - gtin
+              - units_per_pack
+              - is_orderable
+              - is_despatch_unit
+              - effective_from
+              - version
+              properties:
+                sku:
+                  type: string
+                  description: The SKU (also the Kafka key and the CloudEvents `subject`).
+                level:
+                  type: string
+                gtin:
+                  type: string
+                child_gtin:
+                  type: string
+                qty_of_child:
+                  type: integer
+                  minimum: 2
+                  description: Absent for EACH.
+                units_per_pack:
+                  type: integer
+                  minimum: 1
+                  description: Direct factor to eaches; 1 for EACH.
+                is_orderable:
+                  type: boolean
+                is_despatch_unit:
+                  type: boolean
+                effective_from:
+                  type: string
+                  format: date-time
+                version:
+                  type: integer
+                  minimum: 1
+
+    ProductPackLevelRetired:
+      name: ProductPackLevelRetired
+      title: ProductPackLevelRetired
+      summary: product-master retired a pack level of a SKU (consumed).
+      description: Published by product-master on `warehouse.product-master.events` (its AsyncAPI is the
+        source of truth); consumed here into the local PackView read per scanned GTIN at scan time (ADR 0054),
+        by the always-on consumer under the required `PACK_VIEW_CONSUMER_GROUP`.
+      contentType: application/cloudevents+json
+      tags:
+      - name: consumed
+      headers:
+        $ref: '#/components/schemas/KafkaHeaders'
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          required:
+          - type
+          - source
+          - dataschema
+          - data
+          properties:
+            type:
+              type: string
+              const: com.warehouse.wms.product-master.product.ProductPackLevelRetired
+            source:
+              type: string
+              const: /warehouse/product-master
+            dataschema:
+              type: string
+              const: urn:warehouse:product-master:events:ProductPackLevelRetired:v1
+            data:
+              type: object
+              required:
+              - sku
+              - level
+              - gtin
+              - effective_to
+              - reason
+              - version
+              properties:
+                sku:
+                  type: string
+                level:
+                  type: string
+                gtin:
+                  type: string
+                effective_to:
+                  type: string
+                  format: date-time
+                reason:
+                  type: string
+                version:
+                  type: integer
+                  minimum: 1
+
     ProductClassified:
       name: ProductClassified
       title: ProductClassified
