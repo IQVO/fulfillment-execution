@@ -80,7 +80,7 @@ Build the full bounded context described in CLAUDE.md, in order. Keep
 - Full existing suite (build/vet/test/-race), including Tasks 0-8, must stay
   green — Station aggregate and ClaimNext must be provably unmodified.
 - REAL smoke test is the actual bar: POST /stations, POST /tasks, POST
-  /stations/{id}/claim-next must return 200 with the claimed task, not the
+  /stations/{id}/task-claims must return 200 with the claimed task, not the
   previous "station not found" error.
 
 ## Task 10 — Quality engineering: linting, coverage, integration tests, mutation tests, CI

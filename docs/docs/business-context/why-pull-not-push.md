@@ -56,7 +56,7 @@ free and you have paid an associate to stand still.
 
 Under pull, availability is not modelled at all. A station that calls
 `claimNext` is, by construction, free. This is why the endpoint is
-`POST /stations/{stationId}/claim-next` and not a query — the call *is* the
+`POST /stations/{stationId}/task-claims` and not a query — the call *is* the
 declaration of availability.
 
 ### 3. It keeps this context out of the workforce business
@@ -125,7 +125,7 @@ in the shape of the API and the domain:
   but only to *verify ownership of an existing claim*.
 - The `Task` aggregate has no `assignedTo` field. It has a `*Lease`, which is
   only ever set by `Claim`.
-- The router has `POST /stations/{stationId}/claim-next` — the station is the
+- The router has `POST /stations/{stationId}/task-claims` — the station is the
   resource being acted upon, and the task is the *result*. A push design would
   have `PUT /tasks/{id}/assignee`.
 - `ClaimNext.Execute` loops over CPT-ordered candidates and takes the first

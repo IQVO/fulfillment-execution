@@ -72,7 +72,7 @@ claimNext(stationId, capabilities) -> the highest-priority (earliest CPT)
                                       certified and equipped for
 ```
 
-exposed as `POST /stations/{stationId}/claim-next`.
+exposed as `POST /stations/{stationId}/task-claims`.
 
 **There will be no `assign(task, station)` operation** — not as a use case, not
 as an endpoint, not as a field on the aggregate. Specifically:

@@ -3,7 +3,7 @@ id: 0056-ship-in-own-container
 slug: /adr/0056-ship-in-own-container
 title: 56. Ship in own container
 sidebar_label: "56. Ship in own container"
-description: "ADR 0056 — an order line that is exactly one full active CASE may be sealed in the case itself (the case's GTIN, dimensions and weight), with no cartonisation. Opt-in on POST /tasks/{id}/seal-package; additive field on the package and on PackageSealed."
+description: "ADR 0056 — an order line that is exactly one full active CASE may be sealed in the case itself (the case's GTIN, dimensions and weight), with no cartonisation. Opt-in on POST /tasks/{id}/package-seals; additive field on the package and on PackageSealed."
 ---
 
 # 56. Ship in own container
@@ -24,7 +24,7 @@ call product-master on the hot path.
 
 ## Decision
 
-- **Opt-in.** `POST /tasks/{id}/seal-package` accepts two additive request fields: `shipInOwnContainer`
+- **Opt-in.** `POST /tasks/{id}/package-seals` accepts two additive request fields: `shipInOwnContainer`
   (boolean) and `lineQuantity` (integer, EACHES, never cases). Absent or `false`: the ordinary seal,
   request and response byte-for-byte unchanged. `true` without a `lineQuantity >= 1` is `400`.
 - **Rule.** The package ships in its own container only when `contents` names exactly one SKU and

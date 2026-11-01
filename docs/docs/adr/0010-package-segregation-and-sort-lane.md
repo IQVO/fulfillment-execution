@@ -271,7 +271,7 @@ Following the exact same judgement call ADR-0009 already made for
 `fragile`/`fragileHandling`: `PackageSealed` (and `LabelApplied`) still
 carry only their aggregate id — see `internal/domain/shared/events.go`.
 `SortLane` is not pushed onto either event's payload. It is fully visible
-on the `POST /tasks/{id}/seal-package` response (`sortLane` field on
+on the `POST /tasks/{id}/package-seals` response (`sortLane` field on
 `PackageResponse`), which is sufficient for anything needing the value
 today. If a future external consumer needs `sortLane` on the wire, the
 existing repo-lookup-enrichment pattern (`TaskCompleted`'s

@@ -179,8 +179,8 @@ with the `/app/sweep` entrypoint ([ADR-0037](../adr/0037-sweeps-scheduled-by-cro
 
 | CronJob | Schedule | Calls | Effect |
 | --- | --- | --- | --- |
-| `<release>-expire-leases` | `* * * * *` | `POST /tasks/expire-leases` | Returns `{"freed":N}`; every freed task goes back to Pending and raises `LeaseExpired`. |
-| `<release>-sweep-cpt-misses` | `*/5 * * * *` | `POST /tasks/sweep-cpt-misses` | Returns `{"reported":N}`; publishes one `TaskCPTMissed` per open task at or past its CPT, again on every pass until it completes. Kafka volume = overdue tasks × passes. |
+| `<release>-expire-leases` | `* * * * *` | `POST /task-lease-expirations` | Returns `{"freed":N}`; every freed task goes back to Pending and raises `LeaseExpired`. |
+| `<release>-sweep-cpt-misses` | `*/5 * * * *` | `POST /cpt-miss-sweeps` | Returns `{"reported":N}`; publishes one `TaskCPTMissed` per open task at or past its CPT, again on every pass until it completes. Kafka volume = overdue tasks × passes. |
 
 Both: `concurrencyPolicy: Forbid`, `startingDeadlineSeconds: 60`,
 `activeDeadlineSeconds: 120`, `backoffLimit: 0`. Each POST is cut after 15 s;
@@ -214,8 +214,8 @@ See [ADR-0030](../adr/0030-horizontal-autoscaling-and-pgxpool-tuning.md).
 ## Routine procedures
 
 **Run a sweep by hand.**
-`curl -sS -X POST http://<api>/tasks/expire-leases` and
-`curl -sS -X POST http://<api>/tasks/sweep-cpt-misses`. Neither needs a body
+`curl -sS -X POST -H "Idempotency-Key: $(uuidgen)" http://<api>/task-lease-expirations` and
+`curl -sS -X POST -H "Idempotency-Key: $(uuidgen)" http://<api>/cpt-miss-sweeps`. Neither needs a body
 or an `Idempotency-Key`.
 
 **Replay a dead-lettered `WorkReleased`.** Read the message from
@@ -238,7 +238,7 @@ A RELOCATE task (a slot-plan move,
 only with the operator's count and the scanned open bin. Read the move with
 `GET /tasks?orderRef=<work_unit_id>`: `relocation.kind`, plus `fromBin` /
 `toBin` (the missing one is the side to scan). Then
-`curl -sS -X POST http://<api>/tasks/<id>/complete -H 'Content-Type: application/json' -d '{"stationId":"<claiming station>","quantity":12,"toBin":"<scanned reserve bin>"}'`.
+`curl -sS -X POST -H "Idempotency-Key: $(uuidgen)" http://<api>/tasks/<id>/completions -H 'Content-Type: application/json' -d '{"stationId":"<claiming station>","quantity":12,"toBin":"<scanned reserve bin>"}'`.
 Never guess the quantity or a bin. inventory-storage applies the move to its
 ledger from the published `TaskCompleted`, and it dead-letters a move its
 ledger rejects (unknown bin, not enough stock).
@@ -251,7 +251,7 @@ A REPLENISH task (a pick-face replenishment,
 completes only with the operator's count. Read the move with
 `GET /tasks?orderRef=<work_unit_id>`: `replenishment` has the request, both
 bins and the planned quantity. Then
-`curl -sS -X POST http://<api>/tasks/<id>/complete -H 'Content-Type: application/json' -d '{"stationId":"<claiming station>","quantity":20}'`
+`curl -sS -X POST -H "Idempotency-Key: $(uuidgen)" http://<api>/tasks/<id>/completions -H 'Content-Type: application/json' -d '{"stationId":"<claiming station>","quantity":20}'`
 (a `fromBin` / `toBin`, when sent, must equal the planned bin). Never guess the
 quantity. inventory-storage applies the move from the published `TaskCompleted`
 (`request_ref` = the request id) and pick-face-replenishment closes the request

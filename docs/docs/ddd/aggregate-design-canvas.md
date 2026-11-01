@@ -65,9 +65,9 @@ expiry inside `Claim` / `RenewLease` / `Complete` (they run the same
 
 ### 5. Corrective Policies
 
-- **Lease expiry sweep** — `ExpireLeases` (`POST /tasks/expire-leases`)
+- **Lease expiry sweep** — `ExpireLeases` (`POST /task-lease-expirations`)
   frees every lapsed claim and raises `LeaseExpired`.
-- **CPT-miss sweep** — `SweepCPTMisses` (`POST /tasks/sweep-cpt-misses`)
+- **CPT-miss sweep** — `SweepCPTMisses` (`POST /cpt-miss-sweeps`)
   reports open tasks at or past CPT as `TaskCPTMissed`; it changes nothing,
   so `order-management` re-promises.
 - **Claim race** — a station that loses the `SaveClaim` compare-and-set
@@ -76,9 +76,9 @@ expiry inside `Claim` / `RenewLease` / `Complete` (they run the same
 ### 6. Handled Commands
 
 `CreateTask` (REST `POST /tasks`, the `WorkReleased` consumer,
-`ArriveAtRebin`), `ClaimNext` (`POST /stations/{stationId}/claim-next`),
-`RenewLease` (`POST /tasks/{id}/renew-lease`), `CompleteTask`
-(`POST /tasks/{id}/complete`, MCP `complete_task`), `ExpireLeases`,
+`ArriveAtRebin`), `ClaimNext` (`POST /stations/{stationId}/task-claims`),
+`RenewLease` (`POST /tasks/{id}/lease-renewals`), `CompleteTask`
+(`POST /tasks/{id}/completions`, MCP `complete_task`), `ExpireLeases`,
 `SweepCPTMisses` (reads only).
 
 ### 7. Created Events
@@ -154,8 +154,8 @@ None. A station left occupied stays occupied until someone checks it out;
 ### 6. Handled Commands
 
 `RegisterStation` (`POST /stations`), `CheckInStation`
-(`POST /stations/{stationId}/check-in`), `CheckOutStation`
-(`POST /stations/{stationId}/check-out`).
+(`POST /stations/{stationId}/check-ins`), `CheckOutStation`
+(`POST /stations/{stationId}/check-outs`).
 
 ### 7. Created Events
 
@@ -230,8 +230,8 @@ expired lease, `task.ErrNotOwner` for an active lease of another station;
 
 ### 6. Handled Commands
 
-`SealPackage` (`POST /tasks/{id}/seal-package`), `RunSlam`
-(`POST /packages/{id}/slam`). Reads: `GetPackage`, `GetPackagesByOrderRef`.
+`SealPackage` (`POST /tasks/{id}/package-seals`), `RunSlam`
+(`POST /packages/{id}/slam-runs`). Reads: `GetPackage`, `GetPackagesByOrderRef`.
 
 ### 7. Created Events
 

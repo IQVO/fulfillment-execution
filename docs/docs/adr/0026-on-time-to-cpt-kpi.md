@@ -77,7 +77,7 @@ originating SLAM task.
 > `TestAnalyticsPublisher_PackageManifested_RetriedSlamPicksWorkedTask`.
 > A true SLAM-task-id correlation would need `RunSlam` to be told which
 > SLAM task it is running for; that is not part of today's
-> `POST /packages/{id}/slam` contract.
+> `POST /packages/{id}/slam-runs` contract.
 
 The original reasoning follows. `pack.Package` was believed to carry no `TaskId` field (its fields are `id`,
 `orderRef`, `status`, `scannedContents`, `fragileHandling`,

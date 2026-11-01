@@ -222,6 +222,18 @@ const sidebar: SidebarsConfig = {
         },
         {
           type: "doc",
+          id: "api-reference/rest/schemas/taskpage",
+          label: "TaskPage",
+          className: "schema",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/schemas/packagepage",
+          label: "PackagePage",
+          className: "schema",
+        },
+        {
+          type: "doc",
           id: "api-reference/rest/schemas/tasktype",
           label: "TaskType",
           className: "schema",

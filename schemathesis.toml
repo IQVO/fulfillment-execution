@@ -41,18 +41,6 @@ checks.positive_data_acceptance.expected-statuses = ["2xx", "401", "403", "404",
 include-operation-id = "completeTask"
 checks.positive_data_acceptance.expected-statuses = ["2xx", "401", "403", "404", "409", "422", "429", "5xx"]
 
-# confirmPickScan (POST /tasks/{id}/scans): the Idempotency-Key (ADR 0055) is
-# a cross-request rule. A schema-valid request that reuses a key already seen
-# with a different body or on another task is correctly rejected with 422
-# idempotency-key-reused, which OpenAPI 3.0.3 cannot express (it depends on
-# the earlier requests). The 422 is documented on the operation. Tested by
-# TestScanIdempotency_* (internal/adapters/inbound/http/scan_idempotency_integration_test.go).
-# Default positive_data_acceptance statuses plus 422; every other check runs
-# unchanged.
-[[operations]]
-include-operation-id = "confirmPickScan"
-checks.positive_data_acceptance.expected-statuses = ["2xx", "401", "403", "404", "409", "422", "429", "5xx"]
-
 # requestNextWork (POST /paths/{pathId}/work-requests): answers 503
 # work-planning-not-configured whenever this deployment has no
 # WORK_PLANNING_A2A_URL (ADR-0058) — an environment condition the contract
@@ -68,3 +56,21 @@ checks.positive_data_acceptance.expected-statuses = ["2xx", "401", "403", "404",
 include-operation-id = "requestNextWork"
 checks.not_a_server_error.expected-statuses = ["2xx", "4xx", "5xx"]
 checks.positive_data_acceptance.expected-statuses = ["2xx", "4xx", "5xx"]
+
+# getTasksByOrderRef / getPackagesByOrderRef (GET /tasks, GET /packages):
+# `cursor` is an opaque keyset token (REST guideline 3.4) that OpenAPI can
+# only describe as `string`, so Schemathesis sends a random schema-valid
+# string and the service rightly answers 400 invalid-cursor, which is the
+# documented answer for an undecodable cursor. Tested by
+# TestCollections_RejectBadPagingQuery
+# (internal/adapters/inbound/http/rest_guideline_test.go) and
+# TestGetTasks_PostgresKeysetWalksEveryRowOnce (the valid-cursor walk).
+# Widens ONLY positive_data_acceptance with 400; every other check runs
+# unchanged.
+[[operations]]
+include-operation-id = "getTasksByOrderRef"
+checks.positive_data_acceptance.expected-statuses = ["2xx", "400", "401", "403", "404", "409", "429", "5xx"]
+
+[[operations]]
+include-operation-id = "getPackagesByOrderRef"
+checks.positive_data_acceptance.expected-statuses = ["2xx", "400", "401", "403", "404", "409", "429", "5xx"]
