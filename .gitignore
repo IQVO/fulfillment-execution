@@ -14,3 +14,6 @@ coverage.out
 .schemathesis/
 apis/tooling/node_modules/
 .claude/settings.local.json
+
+# Python bytecode (code-scanning BinaryArtifacts) — never commit
+__pycache__/
