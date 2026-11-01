@@ -86,6 +86,10 @@ func (h *Handlers) PostTask(w http.ResponseWriter, r *http.Request) {
 		writeBadRequestNoInstance(w, msg)
 		return
 	}
+	if req.CPT.IsZero() {
+		writeZeroDeadline(w, "cpt")
+		return
+	}
 
 	caps := make([]shared.Capability, len(req.RequiredCapabilities))
 	for i, c := range req.RequiredCapabilities {
@@ -96,7 +100,7 @@ func (h *Handlers) PostTask(w http.ResponseWriter, r *http.Request) {
 	// fragile, it has exactly one ingestion path (WorkReleased.data.gift_wrap
 	// via the Kafka consumer — see ADR-0011), so a direct HTTP POST /tasks
 	// caller always gets false here; the taskResponse field is read-only.
-	t, err := h.CreateTask.Execute(r.Context(), task.Type(req.Type), shared.NewCPT(req.CPT), shared.OrderRef(req.OrderRef), shared.NewCapabilitySet(caps...), req.Fragile, false)
+	t, err := h.CreateTask.Execute(r.Context(), task.Type(req.Type), shared.NewCPT(*req.CPT), shared.OrderRef(req.OrderRef), shared.NewCapabilitySet(caps...), req.Fragile, false)
 	if err != nil {
 		writeError(w, r, err)
 		return

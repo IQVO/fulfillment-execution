@@ -90,6 +90,10 @@ func (h *Handlers) PostArriveAtRebin(w http.ResponseWriter, r *http.Request) {
 		writeBadRequestNoInstance(w, msg)
 		return
 	}
+	if req.PackCPT.IsZero() {
+		writeZeroDeadline(w, "packCpt")
+		return
+	}
 
 	caps := make([]shared.Capability, len(req.PackRequiredCapabilities))
 	for i, c := range req.PackRequiredCapabilities {
@@ -101,7 +105,7 @@ func (h *Handlers) PostArriveAtRebin(w http.ResponseWriter, r *http.Request) {
 		shared.OrderRef(req.OrderRef),
 		req.LineId,
 		req.RequiredLineIds,
-		shared.NewCPT(req.PackCPT),
+		shared.NewCPT(*req.PackCPT),
 		shared.NewCapabilitySet(caps...),
 		req.PackFragile,
 		req.PackGiftWrap,
