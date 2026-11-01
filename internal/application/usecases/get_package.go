@@ -10,7 +10,7 @@ import (
 
 // GetPackage is a read-only query returning one Package by id — the read
 // side of the Package aggregate (ADR-0033). It exists so the SLAM operator
-// and the outbound dock loader can tell, after POST /packages/{id}/slam
+// and the outbound dock loader can tell, after POST /packages/{id}/slam-runs
 // returned its outcome-agnostic 204, whether a carton was LABELED (goes to
 // the truck by its sortLane) or DIVERTED (goes to problem-solve).
 type GetPackage struct {

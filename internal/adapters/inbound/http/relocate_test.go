@@ -32,7 +32,7 @@ func seedRelocation(t *testing.T, tasks *memory.TaskRepo, stations *memory.Stati
 
 func claimRelocate(t *testing.T, srv stdhttp.Handler) map[string]any {
 	t.Helper()
-	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "RELOCATE"})
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/task-claims", map[string]any{"taskType": "RELOCATE"})
 	if rec.Code != stdhttp.StatusOK {
 		t.Fatalf("claim-next RELOCATE: expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -77,7 +77,7 @@ func TestRelocate_CompletionRecordsTheExecutedMove(t *testing.T) {
 	seedRelocation(t, tasks, stations, clock, "Vacate", "FWD-A", "")
 	claimRelocate(t, srv)
 
-	rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/rel-1/complete", map[string]any{"stationId": "s1", "quantity": 12, "toBin": "RSV-2"})
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/rel-1/completions", map[string]any{"stationId": "s1", "quantity": 12, "toBin": "RSV-2"})
 	if rec.Code != stdhttp.StatusNoContent {
 		t.Fatalf("complete: expected 204, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -88,12 +88,16 @@ func TestRelocate_CompletionRecordsTheExecutedMove(t *testing.T) {
 	}
 
 	list := doJSON(t, srv, stdhttp.MethodGet, "/tasks?orderRef=slot-plan-7-move-3", nil)
-	var tasksResp []struct {
-		Relocation struct {
-			Executed map[string]any `json:"executed"`
-		} `json:"relocation"`
+	var tasksPage struct {
+		Items []struct {
+			Relocation struct {
+				Executed map[string]any `json:"executed"`
+			} `json:"relocation"`
+		} `json:"items"`
 	}
-	if err := json.Unmarshal(list.Body.Bytes(), &tasksResp); err != nil || len(tasksResp) != 1 {
+	err := json.Unmarshal(list.Body.Bytes(), &tasksPage)
+	tasksResp := tasksPage.Items
+	if err != nil || len(tasksResp) != 1 {
 		t.Fatalf("GET /tasks: %v %s", err, list.Body.String())
 	}
 	executed := tasksResp[0].Relocation.Executed
@@ -119,8 +123,8 @@ func TestRelocate_CompletionRejections(t *testing.T) {
 			srv, tasks, stations, _, clock := newTestServer()
 			seedRelocation(t, tasks, stations, clock, "Assign", "", "FWD-B")
 			claimRelocate(t, srv)
-			rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/rel-1/complete", tc.body)
-			assertProblemDetails(t, rec, stdhttp.StatusUnprocessableEntity, problemBase+tc.slug, "/tasks/rel-1/complete")
+			rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/rel-1/completions", tc.body)
+			assertProblemDetails(t, rec, stdhttp.StatusUnprocessableEntity, problemBase+tc.slug, "/tasks/rel-1/completions")
 			saved, _ := tasks.FindById(context.TODO(), "rel-1")
 			if saved.Status() != task.Claimed {
 				t.Fatalf("status = %s, want CLAIMED", saved.Status())
@@ -137,7 +141,7 @@ func TestRelocate_InputsOnANonRelocateTaskAre422(t *testing.T) {
 	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
 		"type": "PICK", "cpt": clock.Now().Add(time.Hour), "orderRef": "order-1", "requiredCapabilities": []string{"pick"},
 	})
-	claim := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "PICK"})
+	claim := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/task-claims", map[string]any{"taskType": "PICK"})
 	var claimed struct {
 		Id         string         `json:"id"`
 		Relocation map[string]any `json:"relocation"`
@@ -146,9 +150,9 @@ func TestRelocate_InputsOnANonRelocateTaskAre422(t *testing.T) {
 	if claimed.Relocation != nil {
 		t.Fatalf("a PICK task has no relocation object, got %v", claimed.Relocation)
 	}
-	rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/complete", map[string]any{"stationId": "s1", "quantity": 3})
-	assertProblemDetails(t, rec, stdhttp.StatusUnprocessableEntity, problemBase+"not-relocation-task", "/tasks/"+claimed.Id+"/complete")
-	ok := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/complete", map[string]any{"stationId": "s1"})
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/completions", map[string]any{"stationId": "s1", "quantity": 3})
+	assertProblemDetails(t, rec, stdhttp.StatusUnprocessableEntity, problemBase+"not-relocation-task", "/tasks/"+claimed.Id+"/completions")
+	ok := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/completions", map[string]any{"stationId": "s1"})
 	if ok.Code != stdhttp.StatusNoContent {
 		t.Fatalf("PICK without inputs: expected 204, got %d", ok.Code)
 	}
@@ -168,8 +172,8 @@ func TestCompleteTask_MalformedRelocationInputsAre400(t *testing.T) {
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
 			srv, _, _, _, _ := newTestServer()
-			rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/any/complete", body)
-			assertProblemDetails(t, rec, stdhttp.StatusBadRequest, problemBase+"invalid-request", "/tasks/any/complete")
+			rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/any/completions", body)
+			assertProblemDetails(t, rec, stdhttp.StatusBadRequest, problemBase+"invalid-request", "/tasks/any/completions")
 		})
 	}
 }
@@ -188,8 +192,8 @@ func TestCompleteTask_ContractWhitespaceBinsAre400(t *testing.T) {
 		for _, field := range []string{"fromBin", "toBin"} {
 			t.Run(field+"/"+name, func(t *testing.T) {
 				srv, _, _, _, _ := newTestServer()
-				rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/any/complete", map[string]any{"stationId": "s1", field: blank})
-				assertProblemDetails(t, rec, stdhttp.StatusBadRequest, problemBase+"invalid-request", "/tasks/any/complete")
+				rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/any/completions", map[string]any{"stationId": "s1", field: blank})
+				assertProblemDetails(t, rec, stdhttp.StatusBadRequest, problemBase+"invalid-request", "/tasks/any/completions")
 			})
 		}
 	}
@@ -200,7 +204,7 @@ func TestCompleteTask_ContractWhitespaceBinsAre400(t *testing.T) {
 // past request validation (the unknown task then answers 404, not 400).
 func TestCompleteTask_NELBinIsNotBlankForTheContract(t *testing.T) {
 	srv, _, _, _, _ := newTestServer()
-	rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/any/complete", map[string]any{"stationId": "s1", "fromBin": "\u0085"})
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/any/completions", map[string]any{"stationId": "s1", "fromBin": "\u0085"})
 	if rec.Code == stdhttp.StatusBadRequest {
 		t.Fatalf("U+0085 is not whitespace for the contract; got 400: %s", rec.Body.String())
 	}

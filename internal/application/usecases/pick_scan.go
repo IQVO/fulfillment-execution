@@ -36,7 +36,7 @@ type PickScanResult struct {
 // resolved against the LOCAL PackView (no call to product-master), must
 // identify the task's SKU at the task's pick unit, and adds count eaches (an
 // EACH pick) or count x unitsPerPack eaches (a CASE pick). Quantities stay in
-// eaches; the confirm-pick completion (POST /tasks/{id}/complete) and its
+// eaches; the confirm-pick completion (POST /tasks/{id}/completions) and its
 // TaskCompleted are unchanged. A rejected scan changes nothing.
 type ConfirmPickScan struct {
 	Tasks      ports.TaskRepo

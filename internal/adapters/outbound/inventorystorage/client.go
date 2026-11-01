@@ -1,5 +1,5 @@
 // Package inventorystorage is the outbound adapter of ports.CaseBreaker: an
-// HTTP client of inventory-storage's POST /containers/{lpn}:break (ADR 0054),
+// HTTP client of inventory-storage's POST /containers/{lpn}/case-breaks (ADR 0054),
 // behind the fleet's retry + circuit-breaker pattern (see facilitylayout). A
 // break is a write, so every attempt carries the same Idempotency-Key and a
 // retry can never break a case twice.
@@ -60,7 +60,7 @@ func (c *Client) BreakCase(ctx context.Context, r ports.CaseBreakRequest) error 
 	if err != nil {
 		return err
 	}
-	endpoint := fmt.Sprintf("%s/containers/%s:break", c.baseURL, url.PathEscape(r.LPN))
+	endpoint := fmt.Sprintf("%s/containers/%s/case-breaks", c.baseURL, url.PathEscape(r.LPN))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return err

@@ -34,13 +34,13 @@ Feature: Station recertification, capacity and claim selection
 
   @bdd
   Scenario: Completing or sealing for a task that does not exist is a task-not-found problem
-    When a POST is sent to "/tasks/ghost-task/complete" with the JSON body {"stationId":"pick-01"}
+    When a POST is sent to "/tasks/ghost-task/completions" with the JSON body {"stationId":"pick-01"}
     Then the response status is 404
     And the response is a Problem Details document of type "task-not-found"
-    And the Problem Details document has instance "/tasks/ghost-task/complete"
-    When a POST is sent to "/tasks/ghost-task/seal-package" with the JSON body {"stationId":"pack-01","contents":["sku-1"]}
+    And the Problem Details document has instance "/tasks/ghost-task/completions"
+    When a POST is sent to "/tasks/ghost-task/package-seals" with the JSON body {"stationId":"pack-01","contents":["sku-1"]}
     Then the response status is 404
     And the response is a Problem Details document of type "task-not-found"
-    And the Problem Details document has instance "/tasks/ghost-task/seal-package"
+    And the Problem Details document has instance "/tasks/ghost-task/package-seals"
     And no "TaskCompleted" domain event is recorded
     And no "PackageSealed" domain event is recorded

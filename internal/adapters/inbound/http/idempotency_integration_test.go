@@ -97,6 +97,7 @@ func newIdempotencyRouter(t *testing.T, pool *pgxpool.Pool) http.Handler {
 			NewId:      (&fixedIdGenerator{pfx: "task"}).next,
 			UnitOfWork: uow,
 		},
+		GetTasksByOrderRef: &usecases.GetTasksByOrderRef{Tasks: tasks},
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	return inboundhttp.NewRouter(handlers, logger, inboundhttp.WithIdempotencyPool(pool))
@@ -187,8 +188,8 @@ func TestIdempotency_Replay_SameKeySameBody_ReturnsIdenticalResponseNoDuplicate(
 	}
 }
 
-// TestIdempotency_SameKeyDifferentBody_Returns422 is scenario (c).
-func TestIdempotency_SameKeyDifferentBody_Returns422(t *testing.T) {
+// TestIdempotency_SameKeyDifferentBody_Returns409 is scenario (c).
+func TestIdempotency_SameKeyDifferentBody_Returns409(t *testing.T) {
 	pool := idempotencyDB(t)
 	router := newIdempotencyRouter(t, pool)
 
@@ -208,8 +209,8 @@ func TestIdempotency_SameKeyDifferentBody_Returns422(t *testing.T) {
 	rec2 := httptest.NewRecorder()
 	router.ServeHTTP(rec2, req2)
 
-	if rec2.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("status = %d, want 422 (body: %s)", rec2.Code, rec2.Body.String())
+	if rec2.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (body: %s)", rec2.Code, rec2.Body.String())
 	}
 	var problem struct {
 		Type string `json:"type"`

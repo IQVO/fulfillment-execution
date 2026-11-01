@@ -489,7 +489,7 @@ func TestRehydrate_ClaimedAtNilForPreMigrationRows(t *testing.T) {
 
 // REBIN is a fourth process-path task type (see the consolidation package
 // and its ADR) and deliberately gets NO special-cased behavior anywhere in
-// Task's claim/complete lifecycle — a REBIN task is claimed, leased, and
+// Task's claim/completions lifecycle — a REBIN task is claimed, leased, and
 // completed by the exact same rules as PICK/PACK/SLAM. This test proves
 // that at the Task level. It intentionally does not exercise order-level
 // fan-in/consolidation at all, because Task has no opinion about that —

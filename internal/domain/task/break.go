@@ -13,7 +13,7 @@ import (
 // BreakCase is the task type that opens one sealed case into loose eaches at
 // a pick face (ADR 0054). It is created when an EACH pick finds only a
 // sealed case at its source bin, claimed like any other task, and completing
-// it asks inventory-storage to break the case (POST /containers/{lpn}:break);
+// it asks inventory-storage to break the case (POST /containers/{lpn}/case-breaks);
 // it is never completed without that call succeeding.
 const BreakCase Type = "BREAK_CASE"
 

@@ -27,7 +27,7 @@ type CaseBreakRequest struct {
 }
 
 // CaseBreaker is the outbound port to inventory-storage's
-// POST /containers/{lpn}:break {looseBin} (ADR 0054). Quantity is conserved
+// POST /containers/{lpn}/case-breaks {looseBin} (ADR 0054). Quantity is conserved
 // by inventory-storage: the loose eaches produced equal the container's
 // eaches; this context never states a quantity for the break.
 type CaseBreaker interface {

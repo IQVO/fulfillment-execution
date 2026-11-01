@@ -37,7 +37,7 @@ func seedReplenishment(t *testing.T, tasks *memory.TaskRepo, stations *memory.St
 
 func claimReplenish(t *testing.T, srv stdhttp.Handler) map[string]any {
 	t.Helper()
-	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "REPLENISH"})
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/task-claims", map[string]any{"taskType": "REPLENISH"})
 	if rec.Code != stdhttp.StatusOK {
 		t.Fatalf("claim-next REPLENISH: expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -83,7 +83,7 @@ func TestReplenish_CompletionRecordsTheExecutedMove(t *testing.T) {
 	seedReplenishment(t, tasks, stations, clock)
 	claimReplenish(t, srv)
 
-	rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/rep-1/complete", map[string]any{"stationId": "s1", "quantity": 20, "fromBin": replSrc, "toBin": replDst})
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/rep-1/completions", map[string]any{"stationId": "s1", "quantity": 20, "fromBin": replSrc, "toBin": replDst})
 	if rec.Code != stdhttp.StatusNoContent {
 		t.Fatalf("complete: expected 204, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -94,12 +94,16 @@ func TestReplenish_CompletionRecordsTheExecutedMove(t *testing.T) {
 	}
 
 	list := doJSON(t, srv, stdhttp.MethodGet, "/tasks?orderRef=replenish-req-9", nil)
-	var tasksResp []struct {
-		Replenishment struct {
-			Executed map[string]any `json:"executed"`
-		} `json:"replenishment"`
+	var tasksPage struct {
+		Items []struct {
+			Replenishment struct {
+				Executed map[string]any `json:"executed"`
+			} `json:"replenishment"`
+		} `json:"items"`
 	}
-	if err := json.Unmarshal(list.Body.Bytes(), &tasksResp); err != nil || len(tasksResp) != 1 {
+	err := json.Unmarshal(list.Body.Bytes(), &tasksPage)
+	tasksResp := tasksPage.Items
+	if err != nil || len(tasksResp) != 1 {
 		t.Fatalf("GET /tasks: %v %s", err, list.Body.String())
 	}
 	executed := tasksResp[0].Replenishment.Executed
@@ -126,8 +130,8 @@ func TestReplenish_CompletionRejections(t *testing.T) {
 			srv, tasks, stations, _, clock := newTestServer()
 			seedReplenishment(t, tasks, stations, clock)
 			claimReplenish(t, srv)
-			rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/rep-1/complete", tc.body)
-			assertProblemDetails(t, rec, stdhttp.StatusUnprocessableEntity, problemBase+tc.slug, "/tasks/rep-1/complete")
+			rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/rep-1/completions", tc.body)
+			assertProblemDetails(t, rec, stdhttp.StatusUnprocessableEntity, problemBase+tc.slug, "/tasks/rep-1/completions")
 			saved, _ := tasks.FindById(context.TODO(), "rep-1")
 			if saved.Status() != task.Claimed {
 				t.Fatalf("status = %s, want CLAIMED", saved.Status())
@@ -141,7 +145,7 @@ func TestReplenish_ClaimNeedsTheCapability(t *testing.T) {
 	srv, tasks, stations, _, clock := newTestServer()
 	seedReplenishment(t, tasks, stations, clock)
 	_ = stations.Save(context.TODO(), station.New("s2", shared.NewCapabilitySet("pick", "relocate")))
-	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s2/claim-next", map[string]any{"taskType": "REPLENISH"})
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s2/task-claims", map[string]any{"taskType": "REPLENISH"})
 	if rec.Code != stdhttp.StatusConflict {
 		t.Fatalf("a station without replenish: expected 409, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -164,7 +168,7 @@ func TestPostTask_ReplenishIsNotCreatable(t *testing.T) {
 // An unknown claim-next taskType still lists the full set, REPLENISH included.
 func TestClaimNext_UnknownTaskTypeNamesReplenish(t *testing.T) {
 	srv, _, _, _, _ := newTestServer()
-	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "NOPE"})
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/task-claims", map[string]any{"taskType": "NOPE"})
 	if rec.Code != stdhttp.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
 	}

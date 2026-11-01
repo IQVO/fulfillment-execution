@@ -216,7 +216,7 @@ func TestPostClaimNext_LeasesTaskToStation(t *testing.T) {
 		"type": "PICK", "cpt": clock.Now().Add(time.Hour), "orderRef": "order-1", "requiredCapabilities": []string{"pick"},
 	})
 
-	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "PICK"})
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/task-claims", map[string]any{"taskType": "PICK"})
 	if rec.Code != stdhttp.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -226,13 +226,13 @@ func TestPostClaimNext_NoWorkReturns409(t *testing.T) {
 	srv, _, stations, _, _ := newTestServer()
 	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pick")))
 
-	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "PICK"})
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/task-claims", map[string]any{"taskType": "PICK"})
 	if rec.Code != stdhttp.StatusConflict {
 		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
 	}
 	assertProblemDetails(t, rec, stdhttp.StatusConflict,
 		"https://errors.fulfillment-execution.warehouse-systems.dev/no-claimable-task",
-		"/stations/s1/claim-next")
+		"/stations/s1/task-claims")
 }
 
 func TestFullPickLifecycle_ClaimThenComplete(t *testing.T) {
@@ -242,25 +242,25 @@ func TestFullPickLifecycle_ClaimThenComplete(t *testing.T) {
 		"type": "PICK", "cpt": clock.Now().Add(time.Hour), "orderRef": "order-1", "requiredCapabilities": []string{"pick"},
 	})
 
-	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "PICK"})
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/task-claims", map[string]any{"taskType": "PICK"})
 	var claimed struct {
 		Id string `json:"id"`
 	}
 	_ = json.NewDecoder(rec.Body).Decode(&claimed)
 
-	completeRec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/complete", map[string]any{"stationId": "s1"})
+	completeRec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/completions", map[string]any{"stationId": "s1"})
 	if completeRec.Code != stdhttp.StatusNoContent {
 		t.Fatalf("expected 204, got %d: %s", completeRec.Code, completeRec.Body.String())
 	}
 
 	// No double-complete via the API.
-	secondRec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/complete", map[string]any{"stationId": "s1"})
+	secondRec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/completions", map[string]any{"stationId": "s1"})
 	if secondRec.Code != stdhttp.StatusConflict {
 		t.Fatalf("expected 409 on double-complete, got %d", secondRec.Code)
 	}
 	assertProblemDetails(t, secondRec, stdhttp.StatusConflict,
 		"https://errors.fulfillment-execution.warehouse-systems.dev/task-already-completed",
-		"/tasks/"+claimed.Id+"/complete")
+		"/tasks/"+claimed.Id+"/completions")
 }
 
 func TestSealPackage_ExpiredLeaseIsNotClaimedAndOtherStationIsNotOwner(t *testing.T) {
@@ -269,12 +269,12 @@ func TestSealPackage_ExpiredLeaseIsNotClaimedAndOtherStationIsNotOwner(t *testin
 	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
 		"type": "PACK", "cpt": clock.Now().Add(time.Hour * 24), "orderRef": "order-1", "requiredCapabilities": []string{"pack"},
 	})
-	claimRec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "PACK"})
+	claimRec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/task-claims", map[string]any{"taskType": "PACK"})
 	var claimed struct {
 		Id string `json:"id"`
 	}
 	_ = json.NewDecoder(claimRec.Body).Decode(&claimed)
-	path := "/tasks/" + claimed.Id + "/seal-package"
+	path := "/tasks/" + claimed.Id + "/package-seals"
 	body := map[string]any{"stationId": "s1", "contents": []string{"sku-1"}}
 
 	// Another station while the lease is ACTIVE: 409 task-not-owner.
@@ -283,14 +283,14 @@ func TestSealPackage_ExpiredLeaseIsNotClaimedAndOtherStationIsNotOwner(t *testin
 		"https://errors.fulfillment-execution.warehouse-systems.dev/task-not-owner", path)
 
 	// The former holder after its lease expired: 409 task-not-claimed — the
-	// same problem type /complete and /renew-lease return for that condition.
+	// same problem type /completions and /lease-renewals return for that condition.
 	clock.Advance(usecases.DefaultLeaseDuration + time.Minute)
 	expired := doJSON(t, srv, stdhttp.MethodPost, path, body)
 	assertProblemDetails(t, expired, stdhttp.StatusConflict,
 		"https://errors.fulfillment-execution.warehouse-systems.dev/task-not-claimed", path)
-	complete := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/complete", map[string]any{"stationId": "s1"})
+	complete := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/completions", map[string]any{"stationId": "s1"})
 	assertProblemDetails(t, complete, stdhttp.StatusConflict,
-		"https://errors.fulfillment-execution.warehouse-systems.dev/task-not-claimed", "/tasks/"+claimed.Id+"/complete")
+		"https://errors.fulfillment-execution.warehouse-systems.dev/task-not-claimed", "/tasks/"+claimed.Id+"/completions")
 }
 
 func TestPackAndSlamLifecycle(t *testing.T) {
@@ -300,13 +300,13 @@ func TestPackAndSlamLifecycle(t *testing.T) {
 		"type": "PACK", "cpt": clock.Now().Add(time.Hour), "orderRef": "order-1", "requiredCapabilities": []string{"pack"},
 	})
 
-	claimRec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "PACK"})
+	claimRec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/task-claims", map[string]any{"taskType": "PACK"})
 	var claimed struct {
 		Id string `json:"id"`
 	}
 	_ = json.NewDecoder(claimRec.Body).Decode(&claimed)
 
-	sealRec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/seal-package", map[string]any{
+	sealRec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/package-seals", map[string]any{
 		"stationId": "s1", "contents": []string{"sku-1"},
 	})
 	if sealRec.Code != stdhttp.StatusCreated {
@@ -324,7 +324,7 @@ func TestPackAndSlamLifecycle(t *testing.T) {
 		t.Fatalf("expected fragileHandling false: the owning task was not fragile")
 	}
 
-	slamRec := doJSON(t, srv, stdhttp.MethodPost, "/packages/"+sealed.Id+"/slam", map[string]any{
+	slamRec := doJSON(t, srv, stdhttp.MethodPost, "/packages/"+sealed.Id+"/slam-runs", map[string]any{
 		"actualWeight": 2.0, "expectedWeight": 2.0,
 	})
 	if slamRec.Code != stdhttp.StatusNoContent {
@@ -343,7 +343,7 @@ func TestPackLifecycle_FragileHandlingDerivedFromTask(t *testing.T) {
 		"requiredCapabilities": []string{"pack"}, "fragile": true,
 	})
 
-	claimRec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "PACK"})
+	claimRec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/task-claims", map[string]any{"taskType": "PACK"})
 	var claimed struct {
 		Id      string `json:"id"`
 		Fragile bool   `json:"fragile"`
@@ -353,7 +353,7 @@ func TestPackLifecycle_FragileHandlingDerivedFromTask(t *testing.T) {
 		t.Fatalf("expected the claimed task response to carry fragile: true")
 	}
 
-	sealRec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/seal-package", map[string]any{
+	sealRec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/package-seals", map[string]any{
 		"stationId": "s1", "contents": []string{"sku-1"},
 	})
 	if sealRec.Code != stdhttp.StatusCreated {
@@ -383,13 +383,13 @@ func TestPackLifecycle_GiftWrapRequestedDefaultsFalseViaHTTP(t *testing.T) {
 		"requiredCapabilities": []string{"pack"}, "fragile": true,
 	})
 
-	claimRec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "PACK"})
+	claimRec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/task-claims", map[string]any{"taskType": "PACK"})
 	var claimed struct {
 		Id string `json:"id"`
 	}
 	_ = json.NewDecoder(claimRec.Body).Decode(&claimed)
 
-	sealRec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/seal-package", map[string]any{
+	sealRec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/package-seals", map[string]any{
 		"stationId": "s1", "contents": []string{"sku-1"},
 	})
 	if sealRec.Code != stdhttp.StatusCreated {
@@ -422,13 +422,13 @@ func TestPackLifecycle_SortLaneFragileNoTiltWhenFragileAndNoHazmat(t *testing.T)
 		"type": "PACK", "cpt": clock.Now().Add(time.Hour), "orderRef": "order-1",
 		"requiredCapabilities": []string{"pack"}, "fragile": true,
 	})
-	claimRec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "PACK"})
+	claimRec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/task-claims", map[string]any{"taskType": "PACK"})
 	var claimed struct {
 		Id string `json:"id"`
 	}
 	_ = json.NewDecoder(claimRec.Body).Decode(&claimed)
 
-	sealRec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/seal-package", map[string]any{
+	sealRec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/package-seals", map[string]any{
 		"stationId": "s1", "contents": []string{"sku-1"},
 	})
 	var sealed struct {
@@ -451,13 +451,13 @@ func TestPackLifecycle_SortLaneStandardWhenNeitherHazmatNorFragile(t *testing.T)
 		"type": "PACK", "cpt": clock.Now().Add(time.Hour), "orderRef": "order-1",
 		"requiredCapabilities": []string{"pack"},
 	})
-	claimRec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "PACK"})
+	claimRec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/task-claims", map[string]any{"taskType": "PACK"})
 	var claimed struct {
 		Id string `json:"id"`
 	}
 	_ = json.NewDecoder(claimRec.Body).Decode(&claimed)
 
-	sealRec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/seal-package", map[string]any{
+	sealRec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/package-seals", map[string]any{
 		"stationId": "s1", "contents": []string{"sku-1"},
 	})
 	var sealed struct {
@@ -552,17 +552,20 @@ func TestGetTasksByOrderRef_ReturnsMatchingTasks(t *testing.T) {
 	if rec.Code != stdhttp.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	var resp []struct {
-		Id       string `json:"id"`
-		Type     string `json:"type"`
-		Status   string `json:"status"`
-		OrderRef string `json:"orderRef"`
-		Fragile  bool   `json:"fragile"`
-		GiftWrap bool   `json:"giftWrap"`
+	var page struct {
+		Items []struct {
+			Id       string `json:"id"`
+			Type     string `json:"type"`
+			Status   string `json:"status"`
+			OrderRef string `json:"orderRef"`
+			Fragile  bool   `json:"fragile"`
+			GiftWrap bool   `json:"giftWrap"`
+		} `json:"items"`
 	}
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+	if err := json.NewDecoder(rec.Body).Decode(&page); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
+	resp := page.Items
 	if len(resp) != 2 {
 		t.Fatalf("expected 2 tasks for order-1, got %d: %+v", len(resp), resp)
 	}
@@ -587,10 +590,17 @@ func TestGetTasksByOrderRef_UnknownOrderRefReturnsEmptyArray(t *testing.T) {
 	if rec.Code != stdhttp.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	var resp []any
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+	var page struct {
+		Items      []any  `json:"items"`
+		NextCursor string `json:"nextCursor"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&page); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
+	if page.Items == nil || page.NextCursor != "" {
+		t.Fatalf("expected an empty page with no nextCursor, got %s", rec.Body.String())
+	}
+	resp := page.Items
 	if len(resp) != 0 {
 		t.Fatalf("expected empty array, got %v", resp)
 	}
@@ -602,18 +612,21 @@ func TestGetTasksByOrderRef_SurfacesLeaseStationId(t *testing.T) {
 	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
 		"type": "PICK", "cpt": clock.Now().Add(time.Hour), "orderRef": "order-1", "requiredCapabilities": []string{"pick"},
 	})
-	doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "PICK"})
+	doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/task-claims", map[string]any{"taskType": "PICK"})
 
 	rec := doJSON(t, srv, stdhttp.MethodGet, "/tasks?orderRef=order-1", nil)
 	if rec.Code != stdhttp.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	var resp []struct {
-		LeaseStationId *string `json:"leaseStationId"`
+	var page struct {
+		Items []struct {
+			LeaseStationId *string `json:"leaseStationId"`
+		} `json:"items"`
 	}
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+	if err := json.NewDecoder(rec.Body).Decode(&page); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
+	resp := page.Items
 	if len(resp) != 1 || resp[0].LeaseStationId == nil || *resp[0].LeaseStationId != "s1" {
 		t.Fatalf("expected leaseStationId s1, got %+v", resp)
 	}
@@ -625,11 +638,11 @@ func TestPostExpireLeases(t *testing.T) {
 	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
 		"type": "PICK", "cpt": clock.Now().Add(time.Hour), "orderRef": "order-1", "requiredCapabilities": []string{"pick"},
 	})
-	doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "PICK"})
+	doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/task-claims", map[string]any{"taskType": "PICK"})
 
 	clock.Advance(usecases.DefaultLeaseDuration + time.Minute)
 
-	rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/expire-leases", nil)
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/task-lease-expirations", nil)
 	if rec.Code != stdhttp.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -650,7 +663,7 @@ func TestPostSweepCPTMisses(t *testing.T) {
 
 	clock.Advance(2 * time.Minute)
 
-	rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/sweep-cpt-misses", nil)
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/cpt-miss-sweeps", nil)
 	if rec.Code != stdhttp.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -665,13 +678,13 @@ func TestPostSweepCPTMisses(t *testing.T) {
 
 func TestPostRenewLease_NotFoundOnUnknownTask(t *testing.T) {
 	srv, _, _, _, _ := newTestServer()
-	rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/does-not-exist/renew-lease", map[string]any{"stationId": "s1"})
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/does-not-exist/lease-renewals", map[string]any{"stationId": "s1"})
 	if rec.Code != stdhttp.StatusNotFound {
 		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
 	}
 	assertProblemDetails(t, rec, stdhttp.StatusNotFound,
 		"https://errors.fulfillment-execution.warehouse-systems.dev/task-not-found",
-		"/tasks/does-not-exist/renew-lease")
+		"/tasks/does-not-exist/lease-renewals")
 }
 
 // assertProblemDetails checks rec's body against the RFC 7807 Problem
@@ -779,7 +792,7 @@ func TestPostRegisterStation_ThenClaimNextSucceeds(t *testing.T) {
 		t.Fatalf("expected 201 creating task, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	rec = doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "PICK"})
+	rec = doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/task-claims", map[string]any{"taskType": "PICK"})
 	if rec.Code != stdhttp.StatusOK {
 		t.Fatalf("expected 200 claiming against freshly registered station, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -789,7 +802,7 @@ func TestPostCheckInStation_Success(t *testing.T) {
 	srv, _, stations, _, _ := newTestServer()
 	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pick")))
 
-	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/check-in", map[string]any{"occupantId": "worker-1"})
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/check-ins", map[string]any{"occupantId": "worker-1"})
 	if rec.Code != stdhttp.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -814,7 +827,7 @@ func TestPostCheckInStation_MissingOccupantId_Returns400(t *testing.T) {
 	srv, _, stations, _, _ := newTestServer()
 	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pick")))
 
-	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/check-in", map[string]any{})
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/check-ins", map[string]any{})
 	if rec.Code != stdhttp.StatusBadRequest {
 		t.Fatalf("expected 400 for missing occupantId, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -822,36 +835,36 @@ func TestPostCheckInStation_MissingOccupantId_Returns400(t *testing.T) {
 
 func TestPostCheckInStation_UnknownStation_Returns404(t *testing.T) {
 	srv, _, _, _, _ := newTestServer()
-	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/does-not-exist/check-in", map[string]any{"occupantId": "worker-1"})
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/does-not-exist/check-ins", map[string]any{"occupantId": "worker-1"})
 	if rec.Code != stdhttp.StatusNotFound {
 		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
 	}
 	assertProblemDetails(t, rec, stdhttp.StatusNotFound,
 		"https://errors.fulfillment-execution.warehouse-systems.dev/station-not-found",
-		"/stations/does-not-exist/check-in")
+		"/stations/does-not-exist/check-ins")
 }
 
 // Domain invariant surfaced through HTTP: one occupant at a time.
 func TestPostCheckInStation_SecondOccupant_Returns409(t *testing.T) {
 	srv, _, stations, _, _ := newTestServer()
 	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pick")))
-	doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/check-in", map[string]any{"occupantId": "worker-1"})
+	doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/check-ins", map[string]any{"occupantId": "worker-1"})
 
-	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/check-in", map[string]any{"occupantId": "worker-2"})
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/check-ins", map[string]any{"occupantId": "worker-2"})
 	if rec.Code != stdhttp.StatusConflict {
 		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
 	}
 	assertProblemDetails(t, rec, stdhttp.StatusConflict,
 		"https://errors.fulfillment-execution.warehouse-systems.dev/station-occupied",
-		"/stations/s1/check-in")
+		"/stations/s1/check-ins")
 }
 
 func TestPostCheckOutStation_Success(t *testing.T) {
 	srv, _, stations, _, _ := newTestServer()
 	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pick")))
-	doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/check-in", map[string]any{"occupantId": "worker-1"})
+	doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/check-ins", map[string]any{"occupantId": "worker-1"})
 
-	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/check-out", nil)
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/check-outs", nil)
 	if rec.Code != stdhttp.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -873,13 +886,13 @@ func TestPostCheckOutStation_Success(t *testing.T) {
 
 func TestPostCheckOutStation_UnknownStation_Returns404(t *testing.T) {
 	srv, _, _, _, _ := newTestServer()
-	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/does-not-exist/check-out", nil)
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/does-not-exist/check-outs", nil)
 	if rec.Code != stdhttp.StatusNotFound {
 		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
 	}
 	assertProblemDetails(t, rec, stdhttp.StatusNotFound,
 		"https://errors.fulfillment-execution.warehouse-systems.dev/station-not-found",
-		"/stations/does-not-exist/check-out")
+		"/stations/does-not-exist/check-outs")
 }
 
 // Domain invariant surfaced through HTTP: check-out on an empty station.
@@ -887,13 +900,13 @@ func TestPostCheckOutStation_NotOccupied_Returns409(t *testing.T) {
 	srv, _, stations, _, _ := newTestServer()
 	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pick")))
 
-	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/check-out", nil)
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/check-outs", nil)
 	if rec.Code != stdhttp.StatusConflict {
 		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
 	}
 	assertProblemDetails(t, rec, stdhttp.StatusConflict,
 		"https://errors.fulfillment-execution.warehouse-systems.dev/station-not-occupied",
-		"/stations/s1/check-out")
+		"/stations/s1/check-outs")
 }
 
 func TestPostArriveAtRebin_SingleLineOrderCreatesPackTaskImmediately(t *testing.T) {

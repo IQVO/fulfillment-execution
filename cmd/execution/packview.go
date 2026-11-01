@@ -23,7 +23,7 @@ var errNoPackViewGroup = errors.New(
 // (ADR 0054): completing a BREAK_CASE task calls inventory-storage, so there
 // is no degraded mode without it.
 var errNoInventoryStorage = errors.New(
-	"INVENTORY_STORAGE_BASE_URL is required: completing a BREAK_CASE task calls inventory-storage POST /containers/{lpn}:break")
+	"INVENTORY_STORAGE_BASE_URL is required: completing a BREAK_CASE task calls inventory-storage POST /containers/{lpn}/case-breaks")
 
 // parsePackViewGroup validates PACK_VIEW_CONSUMER_GROUP, and rejects the
 // product-classification group: two consumers on one topic need two groups.

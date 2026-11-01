@@ -198,6 +198,21 @@ func (r *TaskRepo) CountByTypeAndStatus(ctx context.Context, taskType task.Type,
 	return count, err
 }
 
+// FindPageByOrderRef returns at most limit tasks of orderRef with id > afterId,
+// ordered by id (the primary key, so the keyset never skips or repeats).
+func (r *TaskRepo) FindPageByOrderRef(ctx context.Context, orderRef shared.OrderRef, afterId shared.TaskId, limit int) ([]*task.Task, error) {
+	rows, err := querierFrom(ctx, r.pool).Query(ctx, `
+		SELECT `+taskColumns+`
+		FROM tasks WHERE order_ref = $1 AND id > $2
+		ORDER BY id LIMIT $3
+	`, string(orderRef), string(afterId), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanTasks(rows)
+}
+
 func (r *TaskRepo) FindByOrderRef(ctx context.Context, orderRef shared.OrderRef) ([]*task.Task, error) {
 	rows, err := querierFrom(ctx, r.pool).Query(ctx, `
 		SELECT `+taskColumns+`

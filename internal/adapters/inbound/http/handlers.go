@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/claudioed/fulfillment-execution/internal/adapters/inbound/http/page"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
 	"github.com/claudioed/fulfillment-execution/internal/domain/task"
@@ -20,7 +21,7 @@ type Handlers struct {
 	RenewLease   *usecases.RenewLease
 	CompleteTask *usecases.CompleteTask
 	// ConfirmPickScan and CompleteCaseBreak back POST /tasks/{id}/scans and
-	// POST /tasks/{id}/break-case (ADR 0054).
+	// POST /tasks/{id}/case-breaks (ADR 0054).
 	ConfirmPickScan      *usecases.ConfirmPickScan
 	CompleteCaseBreak    *usecases.CompleteCaseBreak
 	SealPackage          *usecases.SealPackage
@@ -108,7 +109,7 @@ func (h *Handlers) PostTask(w http.ResponseWriter, r *http.Request) {
 	writeCreated(w, "/tasks/"+string(t.Id()), toTaskResponse(t))
 }
 
-// PostClaimNext handles POST /stations/{stationId}/claim-next.
+// PostClaimNext handles POST /stations/{stationId}/task-claims.
 func (h *Handlers) PostClaimNext(w http.ResponseWriter, r *http.Request) {
 	stationId := chi.URLParam(r, "stationId")
 	var req claimNextRequest
@@ -129,7 +130,7 @@ func (h *Handlers) PostClaimNext(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toTaskResponse(t))
 }
 
-// PostRenewLease handles POST /tasks/{id}/renew-lease.
+// PostRenewLease handles POST /tasks/{id}/lease-renewals.
 func (h *Handlers) PostRenewLease(w http.ResponseWriter, r *http.Request) {
 	taskId := chi.URLParam(r, "id")
 	var req renewLeaseRequest
@@ -149,7 +150,7 @@ func (h *Handlers) PostRenewLease(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// PostCompleteTask handles POST /tasks/{id}/complete.
+// PostCompleteTask handles POST /tasks/{id}/completions.
 func (h *Handlers) PostCompleteTask(w http.ResponseWriter, r *http.Request) {
 	taskId := chi.URLParam(r, "id")
 	var req completeTaskRequest
@@ -193,7 +194,7 @@ func (h *Handlers) PostPickScan(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// PostBreakCase handles POST /tasks/{id}/break-case: it completes a
+// PostBreakCase handles POST /tasks/{id}/case-breaks: it completes a
 // BREAK_CASE task by asking inventory-storage to break the sealed case.
 func (h *Handlers) PostBreakCase(w http.ResponseWriter, r *http.Request) {
 	taskId := chi.URLParam(r, "id")
@@ -241,19 +242,24 @@ func (h *Handlers) GetInstalledCapacityHandler(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, installedCapacityResponse{Capability: capability, Installed: installed})
 }
 
-// GetTasksHandler handles GET /tasks?orderRef=<ref>. It requires the
-// orderRef query parameter (400 if missing) and returns every task
-// recorded for that order — normally one PICK/PACK/SLAM leg each, more if
-// a leg was retried after a lease expired — as a JSON array. An unknown
-// orderRef is not an error: it returns an empty array.
+// GetTasksHandler handles GET /tasks?orderRef=<ref>&limit=&cursor=. It
+// requires the orderRef query parameter (400 if missing) and returns one
+// keyset page ({items,nextCursor}, ordered by id) of the tasks recorded for
+// that order — normally one PICK/PACK/SLAM leg each, more if a leg was
+// retried after a lease expired. An unknown orderRef is not an error: it
+// returns an empty page.
 func (h *Handlers) GetTasksHandler(w http.ResponseWriter, r *http.Request) {
+	limit, after, ok := pageParams(w, r, "orderRef")
+	if !ok {
+		return
+	}
 	orderRef := r.URL.Query().Get("orderRef")
 	if orderRef == "" {
 		writeBadRequest(w, r, "orderRef is required")
 		return
 	}
 
-	tasks, err := h.GetTasksByOrderRef.Execute(r.Context(), shared.OrderRef(orderRef))
+	tasks, err := h.GetTasksByOrderRef.ExecutePage(r.Context(), shared.OrderRef(orderRef), shared.TaskId(afterID(after)), page.FetchSize(limit))
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -263,10 +269,10 @@ func (h *Handlers) GetTasksHandler(w http.ResponseWriter, r *http.Request) {
 	for _, t := range tasks {
 		resp = append(resp, toTaskResponse(t))
 	}
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, page.Of(resp, limit, func(t taskResponse) page.Position { return idPosition(t.Id) }))
 }
 
-// PostExpireLeases handles POST /tasks/expire-leases.
+// PostExpireLeases handles POST /task-lease-expirations.
 func (h *Handlers) PostExpireLeases(w http.ResponseWriter, r *http.Request) {
 	freed, err := h.ExpireLeases.Execute(r.Context())
 	if err != nil {
@@ -276,7 +282,7 @@ func (h *Handlers) PostExpireLeases(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, expireLeasesResponse{Freed: freed})
 }
 
-// PostSweepCPTMisses handles POST /tasks/sweep-cpt-misses: the Clock-driven
+// PostSweepCPTMisses handles POST /cpt-miss-sweeps: the Clock-driven
 // sweep that detects tasks still open past their CPT and raises
 // TaskCPTMissed for each (ADR-0025). Mirrors PostExpireLeases's own
 // externally-triggered convention exactly — a collection-level action on
@@ -299,9 +305,10 @@ func (h *Handlers) GetHealthz(w http.ResponseWriter, r *http.Request) {
 // PULL side of the execution/planning seam. Execution asks the Work Planning
 // agent, over A2A, to admit the next unit for the path; the authoritative
 // fact still arrives as the WorkReleased CloudEvent through the existing
-// consumer — this answer is the delegation acknowledgement. The handler is
-// intentionally NOT behind the idempotency middleware: each call asks for
-// exactly one more unit, and repeating the ask is a legitimate second pull.
+// consumer — this answer is the delegation acknowledgement. Each call asks
+// for exactly one more unit, so the route is behind the idempotency
+// middleware: a retry of ONE logical pull (same Idempotency-Key) replays the
+// answer, while a legitimate second pull mints a new key.
 func (h *Handlers) PostWorkRequest(w http.ResponseWriter, r *http.Request) {
 	pathId := chi.URLParam(r, "pathId")
 	released, err := h.RequestNextWork.Execute(r.Context(), usecases.RequestNextWorkRequest{PathId: pathId})

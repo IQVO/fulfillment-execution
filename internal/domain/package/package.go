@@ -127,7 +127,7 @@ func (p *Package) OrderRef() shared.OrderRef { return p.orderRef }
 
 // TaskId is the id of the Pack task this package was sealed for, or "" for
 // a package sealed before this field was added. See SealPackage's doc
-// comment for why this is the dedupe key for POST /tasks/{id}/seal-package.
+// comment for why this is the dedupe key for POST /tasks/{id}/package-seals.
 func (p *Package) TaskId() shared.TaskId     { return p.taskId }
 func (p *Package) Status() Status            { return p.status }
 func (p *Package) ScannedContents() []string { return p.scannedContents }

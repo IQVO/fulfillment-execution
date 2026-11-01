@@ -20,7 +20,7 @@
 include-operation-id = "arriveAtRebin"
 checks.positive_data_acceptance.expected-statuses = ["2xx", "401", "403", "404", "409", "422", "429", "5xx"]
 
-# completeTask (POST /tasks/{id}/complete): the optional quantity / fromBin /
+# completeTask (POST /tasks/{id}/completions): the optional quantity / fromBin /
 # toBin are valid only for a RELOCATE or REPLENISH task, and for that task they
 # must match the stored planned move (ADR 0047, ADR 0050). A schema-valid body
 # is therefore correctly rejected with 422 not-relocation-task (inputs on a
