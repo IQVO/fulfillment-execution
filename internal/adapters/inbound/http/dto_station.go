@@ -46,13 +46,13 @@ func (r checkInStationRequest) validate() string {
 }
 
 type arriveAtRebinRequest struct {
-	OrderRef                 string    `json:"orderRef"`
-	LineId                   string    `json:"lineId"`
-	RequiredLineIds          []string  `json:"requiredLineIds"`
-	PackCPT                  time.Time `json:"packCpt"`
-	PackRequiredCapabilities []string  `json:"packRequiredCapabilities"`
-	PackFragile              bool      `json:"packFragile"`
-	PackGiftWrap             bool      `json:"packGiftWrap"`
+	OrderRef                 string     `json:"orderRef"`
+	LineId                   string     `json:"lineId"`
+	RequiredLineIds          []string   `json:"requiredLineIds"`
+	PackCPT                  *time.Time `json:"packCpt"`
+	PackRequiredCapabilities []string   `json:"packRequiredCapabilities"`
+	PackFragile              bool       `json:"packFragile"`
+	PackGiftWrap             bool       `json:"packGiftWrap"`
 }
 
 // validate reports the first missing required field. requiredLineIds
@@ -69,7 +69,7 @@ func (r arriveAtRebinRequest) validate() string {
 		return "lineId is required"
 	case len(r.RequiredLineIds) == 0:
 		return "requiredLineIds must contain at least one line id"
-	case r.PackCPT.IsZero():
+	case r.PackCPT == nil:
 		return "packCpt is required"
 	case len(r.PackRequiredCapabilities) == 0:
 		return "packRequiredCapabilities must contain at least one capability"

@@ -8,11 +8,11 @@ import (
 )
 
 type createTaskRequest struct {
-	Type                 string    `json:"type"`
-	CPT                  time.Time `json:"cpt"`
-	OrderRef             string    `json:"orderRef"`
-	RequiredCapabilities []string  `json:"requiredCapabilities"`
-	Fragile              bool      `json:"fragile"`
+	Type                 string     `json:"type"`
+	CPT                  *time.Time `json:"cpt"`
+	OrderRef             string     `json:"orderRef"`
+	RequiredCapabilities []string   `json:"requiredCapabilities"`
+	Fragile              bool       `json:"fragile"`
 }
 
 // isValidTaskType reports whether v is one of the process-path task types
@@ -51,7 +51,7 @@ func (r createTaskRequest) validate() string {
 		return "type is required"
 	case !isValidTaskType(r.Type):
 		return "type must be one of PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL"
-	case r.CPT.IsZero():
+	case r.CPT == nil:
 		return "cpt is required"
 	case r.OrderRef == "":
 		return "orderRef is required"
