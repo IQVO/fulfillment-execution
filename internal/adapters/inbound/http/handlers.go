@@ -9,9 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
-	pack "github.com/claudioed/fulfillment-execution/internal/domain/package"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
-	"github.com/claudioed/fulfillment-execution/internal/domain/station"
 	"github.com/claudioed/fulfillment-execution/internal/domain/task"
 )
 
@@ -75,43 +73,6 @@ func toTaskResponse(t *task.Task) taskResponse {
 	resp.Relocation = toRelocationResponse(t)
 	resp.Replenishment = toReplenishmentResponse(t)
 	return resp
-}
-
-func toPackageResponse(p *pack.Package) packageResponse {
-	resp := ordinaryPackageResponse(p)
-	if oc := p.OwnContainer(); oc != nil {
-		resp.ShipInOwnContainer = true
-		resp.ContainerSource = string(oc.Source)
-		resp.Container = &containerResponse{
-			Gtin: oc.GTIN, LengthMm: oc.Dims.LengthMM, WidthMm: oc.Dims.WidthMM, HeightMm: oc.Dims.HeightMM, WeightG: oc.Dims.WeightG,
-		}
-	}
-	return resp
-}
-
-func ordinaryPackageResponse(p *pack.Package) packageResponse {
-	return packageResponse{
-		Id:                string(p.Id()),
-		OrderRef:          string(p.OrderRef()),
-		Status:            string(p.Status()),
-		ScannedContents:   p.ScannedContents(),
-		FragileHandling:   p.FragileHandling(),
-		GiftWrapRequested: p.GiftWrapRequested(),
-		SortLane:          p.SortLane(),
-	}
-}
-
-func toStationResponse(s *station.Station) stationResponse {
-	caps := make([]string, 0, len(s.Capabilities()))
-	for c := range s.Capabilities() {
-		caps = append(caps, string(c))
-	}
-	return stationResponse{
-		Id:           string(s.Id()),
-		Capabilities: caps,
-		Occupied:     s.IsOccupied(),
-		LocationCode: s.LocationCode(),
-	}
 }
 
 // PostTask handles POST /tasks.
@@ -248,93 +209,6 @@ func (h *Handlers) PostBreakCase(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// PostSealPackage handles POST /tasks/{id}/seal-package.
-func (h *Handlers) PostSealPackage(w http.ResponseWriter, r *http.Request) {
-	taskId := chi.URLParam(r, "id")
-	var req sealPackageRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeBadRequest(w, r, "invalid request body")
-		return
-	}
-	if msg := req.validate(); msg != "" {
-		writeBadRequest(w, r, msg)
-		return
-	}
-
-	var (
-		p   *pack.Package
-		err error
-	)
-	if req.ShipInOwnContainer {
-		p, err = h.SealPackage.ExecuteInOwnContainer(r.Context(), shared.TaskId(taskId), shared.StationId(req.StationId), req.Contents, *req.LineQuantity)
-	} else {
-		p, err = h.SealPackage.Execute(r.Context(), shared.TaskId(taskId), shared.StationId(req.StationId), req.Contents)
-	}
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	writeCreated(w, "/packages/"+string(p.Id()), toPackageResponse(p))
-}
-
-// PostRunSlam handles POST /packages/{id}/slam.
-func (h *Handlers) PostRunSlam(w http.ResponseWriter, r *http.Request) {
-	packageId := chi.URLParam(r, "id")
-	var req runSlamRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeBadRequest(w, r, "invalid request body")
-		return
-	}
-	if msg := req.validate(); msg != "" {
-		writeBadRequest(w, r, msg)
-		return
-	}
-
-	if err := h.RunSlam.Execute(r.Context(), shared.PackageId(packageId), req.ActualWeight, req.ExpectedWeight); err != nil {
-		writeError(w, r, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// GetPackageHandler handles GET /packages/{id} (ADR-0033): the read side of
-// the Package aggregate, returning the same Package shape seal-package's
-// 201 returns. This is how a caller learns the SLAM outcome — LABELED vs
-// DIVERTED — after POST /packages/{id}/slam's outcome-agnostic 204. An
-// unknown id is 404 package-not-found.
-func (h *Handlers) GetPackageHandler(w http.ResponseWriter, r *http.Request) {
-	packageId := chi.URLParam(r, "id")
-	p, err := h.GetPackage.Execute(r.Context(), shared.PackageId(packageId))
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, toPackageResponse(p))
-}
-
-// GetPackagesHandler handles GET /packages?orderRef=<ref> (ADR-0033),
-// mirroring GetTasksHandler: orderRef is required (400 invalid-request if
-// missing or empty) and an unknown orderRef returns an empty array.
-func (h *Handlers) GetPackagesHandler(w http.ResponseWriter, r *http.Request) {
-	orderRef := r.URL.Query().Get("orderRef")
-	if orderRef == "" {
-		writeBadRequest(w, r, "orderRef is required")
-		return
-	}
-
-	packages, err := h.GetPackagesByOrderRef.Execute(r.Context(), shared.OrderRef(orderRef))
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	resp := make([]packageResponse, 0, len(packages))
-	for _, p := range packages {
-		resp = append(resp, toPackageResponse(p))
-	}
-	writeJSON(w, http.StatusOK, resp)
-}
-
 // GetQueueDepthHandler handles GET /queues/{taskType}/depth.
 func (h *Handlers) GetQueueDepthHandler(w http.ResponseWriter, r *http.Request) {
 	taskType := chi.URLParam(r, "taskType")
@@ -412,99 +286,9 @@ func (h *Handlers) PostSweepCPTMisses(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sweepCPTMissesResponse{Reported: reported})
 }
 
-// PostRegisterStation handles POST /stations.
-func (h *Handlers) PostRegisterStation(w http.ResponseWriter, r *http.Request) {
-	var req registerStationRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeBadRequestNoInstance(w, "invalid request body")
-		return
-	}
-	if msg := req.validate(); msg != "" {
-		writeBadRequestNoInstance(w, msg)
-		return
-	}
-
-	s, err := h.RegisterStation.Execute(r.Context(), req.StationId, req.Capabilities, req.LocationCode)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	writeCreated(w, "/stations/"+string(s.Id()), toStationResponse(s))
-}
-
 // GetHealthz handles GET /healthz.
 func (h *Handlers) GetHealthz(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
-}
-
-// PostCheckInStation handles POST /stations/{stationId}/check-in.
-func (h *Handlers) PostCheckInStation(w http.ResponseWriter, r *http.Request) {
-	stationId := chi.URLParam(r, "stationId")
-	var req checkInStationRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeBadRequest(w, r, "invalid request body")
-		return
-	}
-	if msg := req.validate(); msg != "" {
-		writeBadRequest(w, r, msg)
-		return
-	}
-
-	s, err := h.CheckInStation.Execute(r.Context(), shared.StationId(stationId), station.OccupantId(req.OccupantId))
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, toStationResponse(s))
-}
-
-// PostCheckOutStation handles POST /stations/{stationId}/check-out.
-func (h *Handlers) PostCheckOutStation(w http.ResponseWriter, r *http.Request) {
-	stationId := chi.URLParam(r, "stationId")
-
-	s, err := h.CheckOutStation.Execute(r.Context(), shared.StationId(stationId))
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, toStationResponse(s))
-}
-
-// PostArriveAtRebin handles POST /rebin/arrivals: one required line of an
-// order has reached the Rebin path. Once every required line for the
-// order has arrived, this creates the order's PACK task — see
-// usecases.ArriveAtRebin.
-func (h *Handlers) PostArriveAtRebin(w http.ResponseWriter, r *http.Request) {
-	var req arriveAtRebinRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeBadRequestNoInstance(w, "invalid request body")
-		return
-	}
-	if msg := req.validate(); msg != "" {
-		writeBadRequestNoInstance(w, msg)
-		return
-	}
-
-	caps := make([]shared.Capability, len(req.PackRequiredCapabilities))
-	for i, c := range req.PackRequiredCapabilities {
-		caps[i] = shared.Capability(c)
-	}
-
-	err := h.ArriveAtRebin.Execute(
-		r.Context(),
-		shared.OrderRef(req.OrderRef),
-		req.LineId,
-		req.RequiredLineIds,
-		shared.NewCPT(req.PackCPT),
-		shared.NewCapabilitySet(caps...),
-		req.PackFragile,
-		req.PackGiftWrap,
-	)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 // PostWorkRequest handles POST /paths/{pathId}/work-requests (ADR-0058): the
