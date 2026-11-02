@@ -55,7 +55,8 @@ channels:
       operationId: consumeFulfillmentIntegrationEvents
       summary: Consume Fulfillment Execution integration events.
       description: Receive the TaskAvailable, TaskClaimed, TaskCompleted, TaskCPTMissed, PackageManifested,
-        PackageDiverted and WeightDiscrepancyDetected CloudEvents this bounded context publishes.
+        PackageDiverted, WeightDiscrepancyDetected, TransferPicked, TransferDispatched and TransferArrived
+        CloudEvents this bounded context publishes.
       tags:
       - name: fulfillment-execution
       message:
@@ -105,7 +106,9 @@ channels:
         $ref: '#/components/messages/WorkReleased'
   warehouse.process-path-management.events:
     description: process-path-management's integration topic; this service replays ProcessPath* events
-      into its local catalogue.
+      into its local catalogue only when `PATH_CATALOGUE_SOURCE=kafka` (default `file`). The consumer is
+      group-less (it reads the whole topic from the earliest offset on every start to rebuild an in-memory
+      cache), so it declares no consumer group.
     publish:
       operationId: receiveProcessPathEvents
       summary: Receive process-path catalogue events.
@@ -119,23 +122,30 @@ channels:
         - $ref: '#/components/messages/ProcessPathUpdated'
         - $ref: '#/components/messages/ProcessPathDeactivated'
   warehouse.product-master.events:
-    description: product-master's integration topic (key and `subject` = SKU). This service consumes only
-      ProductClassified from it, into its local classification copy (ADR-0039), under the consumer group
-      from `PRODUCT_CLASSIFICATION_CONSUMER_GROUP`, only when `PRODUCT_CLASSIFICATION_MODE=kafka`. Every other
-      type on the topic (ProductRegistered, ProductDescriptionChanged, ProductDimensionsDeclared, ProductMeasured)
+    description: product-master's integration topic (key and `subject` = SKU). This service runs two
+      independent consumers on it, each under its own consumer group (the two must differ). ProductClassified
+      feeds the local classification copy (ADR-0039) under `PRODUCT_CLASSIFICATION_CONSUMER_GROUP`, only
+      when `PRODUCT_CLASSIFICATION_MODE=kafka`. ProductPackLevelDeclared and ProductPackLevelRetired feed the
+      local PackView (ADR 0054) under the required `PACK_VIEW_CONSUMER_GROUP`, always on. Every other type
+      on the topic (ProductRegistered, ProductDescriptionChanged, ProductDimensionsDeclared, ProductMeasured)
       is ignored.
     publish:
       operationId: receiveProductClassified
-      summary: Receive ProductClassified from product-master.
+      summary: Receive ProductClassified, ProductPackLevelDeclared and ProductPackLevelRetired from product-master.
       description: product-master publishes the full classification of a SKU here. The CloudEvents `id` claim
         and the version-guarded upsert of `product_classification_copy` commit in one transaction; the offset
         is committed afterwards. A message is applied only when its `version` is greater than the stored one.
         A message that is not a valid CloudEvent, or whose payload breaks the contract, is logged at WARN
-        and skipped. SealPackage reads the copy for its DOT hazard segregation check.
+        and skipped. SealPackage reads the copy for its DOT hazard segregation check. The pack-level events
+        follow the same delivery contract (CloudEvents `id` claim and version-guarded write in one
+        transaction, offset committed afterwards; invalid payloads are logged at WARN and skipped).
       tags:
       - name: consumed
       message:
-        $ref: '#/components/messages/ProductClassified'
+        oneOf:
+        - $ref: '#/components/messages/ProductClassified'
+        - $ref: '#/components/messages/ProductPackLevelDeclared'
+        - $ref: '#/components/messages/ProductPackLevelRetired'
   warehouse.task-interleaving.events:
     description: task-interleaving's integration topic (key and `subject` = the station id). This service
       consumes only InterleavingHintIssued from it, into its local hint copy `interleaving_hints` (ADR-0051),
@@ -1810,6 +1820,66 @@ components:
                       - URGENT
                       description: The request urgency. Recorded on the task and shown on its read model;
                         claimNext orders by CPT only (ADR-0050), so urgency is expressed upstream by an earlier CPT.
+                pick:
+                  type: object
+                  description: Present ONLY on work released on the PICK path with scan confirmation
+                    (ADR 0054; additive, the event stays v1). The pick plan the station scans against
+                    (`POST /tasks/{id}/scans`). Absent on every other release and on a PICK released without
+                    scan confirmation. A present object that is not a valid plan (blank sku, missing or
+                    non-positive quantity, a unit other than EACH or CASE) is rejected and dead-lettered;
+                    no task is created.
+                  required:
+                  - sku
+                  - quantity
+                  - unit
+                  properties:
+                    sku:
+                      type: string
+                      minLength: 1
+                      description: The SKU to pick.
+                    quantity:
+                      type: integer
+                      minimum: 1
+                      description: The planned quantity in EACHES (the ledger unit), whatever the unit.
+                    unit:
+                      type: string
+                      enum:
+                      - EACH
+                      - CASE
+                      description: The unit the operator scans.
+                    from_bin:
+                      type: string
+                      description: Optional source bin.
+                case_break:
+                  type: object
+                  description: Present ONLY on work released on the BREAK_CASE path (ADR 0054; additive,
+                    the event stays v1). Break the sealed case `lpn` of `sku` into `loose_bin` for the EACH
+                    pick `pick_task_id`. Absent on every other release. An object with a blank field or an
+                    `lpn` that is not 1-64 characters of [A-Za-z0-9._-] is rejected and dead-lettered; no
+                    task is created.
+                  required:
+                  - lpn
+                  - sku
+                  - loose_bin
+                  - pick_task_id
+                  properties:
+                    lpn:
+                      type: string
+                      minLength: 1
+                      maxLength: 64
+                      pattern: '^[A-Za-z0-9._-]+$'
+                      description: The sealed case's licence plate number.
+                    sku:
+                      type: string
+                      minLength: 1
+                    loose_bin:
+                      type: string
+                      minLength: 1
+                      description: The bin the case is broken into.
+                    pick_task_id:
+                      type: string
+                      minLength: 1
+                      description: The EACH pick task this break serves.
       examples:
       - name: workReleased
         headers:
@@ -2308,20 +2378,26 @@ components:
               - level
               - gtin
               - units_per_pack
-              - is_orderable
-              - is_despatch_unit
               - effective_from
               - version
               properties:
                 sku:
                   type: string
-                  description: The SKU (also the Kafka key and the CloudEvents `subject`).
+                  description: The SKU (also the Kafka key and the CloudEvents `subject`). Must not be blank.
                 level:
                   type: string
+                  enum:
+                  - EACH
+                  - INNER
+                  - CASE
+                  - PALLET
+                  description: Any other level makes the payload invalid.
                 gtin:
                   type: string
+                  description: Must parse as a GTIN (normalised to 14 digits).
                 child_gtin:
                   type: string
+                  description: Optional; must parse as a GTIN when present.
                 qty_of_child:
                   type: integer
                   minimum: 2
@@ -2332,8 +2408,28 @@ components:
                   description: Direct factor to eaches; 1 for EACH.
                 is_orderable:
                   type: boolean
+                  description: Carried by the producer; ignored by this consumer.
                 is_despatch_unit:
                   type: boolean
+                  description: Carried by the producer; ignored by this consumer.
+                dims:
+                  type: object
+                  description: Optional DECLARED dimensions and weight of the level, used by ship-in-own-container
+                    (ADR 0056). Kept only when all four measures are positive; otherwise dropped (the level is
+                    still applied, but cannot ship in its own container).
+                  properties:
+                    length_mm:
+                      type: integer
+                      description: Length in millimetres.
+                    width_mm:
+                      type: integer
+                      description: Width in millimetres.
+                    height_mm:
+                      type: integer
+                      description: Height in millimetres.
+                    weight_g:
+                      type: integer
+                      description: Weight in grams.
                 effective_from:
                   type: string
                   format: date-time
@@ -2433,16 +2529,13 @@ components:
               type: object
               required:
               - sku
-              - handling_tags
-              - classification_source
               - version
               properties:
                 sku:
                   type: string
-                  description: The SKU (also the Kafka key and the CloudEvents `subject`).
+                  description: The SKU (also the Kafka key and the CloudEvents `subject`). An empty sku makes the payload invalid.
                 handling_tags:
                   type: array
-                  minItems: 1
                   items:
                     type: string
                     enum:
@@ -2471,7 +2564,7 @@ components:
                   enum:
                   - native
                   - legacy-import
-                  description: Migration artefact of product-master (its ADR 0003); not used here.
+                  description: Migration artefact of product-master (its ADR 0003); optional and not used here.
                 version:
                   type: integer
                   minimum: 1
