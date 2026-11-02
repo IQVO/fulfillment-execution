@@ -15,10 +15,10 @@ Feature: SLAM weigh-check requires both weights
 
   @bdd
   Scenario: A weigh-check with no weights is rejected and the package stays unprocessed
-    When a POST is sent to "/packages/pkg-1/slam" with the JSON body {}
+    When a POST is sent to "/packages/pkg-1/slam-runs" with the JSON body {}
     Then the response status is 400
     And the response is a Problem Details document of type "invalid-request"
-    And the Problem Details document has instance "/packages/pkg-1/slam"
+    And the Problem Details document has instance "/packages/pkg-1/slam-runs"
     And no "LabelApplied" domain event is recorded
     And no "WeightDiscrepancyDetected" domain event is recorded
     When the Package is read back
@@ -26,14 +26,14 @@ Feature: SLAM weigh-check requires both weights
 
   @bdd
   Scenario: A weigh-check missing one weight is rejected
-    When a POST is sent to "/packages/pkg-1/slam" with the JSON body {"actualWeight":2.0}
+    When a POST is sent to "/packages/pkg-1/slam-runs" with the JSON body {"actualWeight":2.0}
     Then the response status is 400
     And the response is a Problem Details document of type "invalid-request"
     And no "LabelApplied" domain event is recorded
 
   @bdd
   Scenario: A rejected weigh-check can be retried with both weights
-    Given a POST is sent to "/packages/pkg-1/slam" with the JSON body {"expectedWeight":2.0}
+    Given a POST is sent to "/packages/pkg-1/slam-runs" with the JSON body {"expectedWeight":2.0}
     And the response status is 400
     When the SLAM weigh-check runs on the Package with an actual weight of 2.00 against an expected weight of 2.00
     Then the response status is 204
@@ -41,6 +41,6 @@ Feature: SLAM weigh-check requires both weights
 
   @bdd
   Scenario: Explicit null weights are accepted and read as zero, as the schema documents
-    When a POST is sent to "/packages/pkg-1/slam" with the JSON body {"actualWeight":null,"expectedWeight":null}
+    When a POST is sent to "/packages/pkg-1/slam-runs" with the JSON body {"actualWeight":null,"expectedWeight":null}
     Then the response status is 204
     And a "LabelApplied" domain event is recorded

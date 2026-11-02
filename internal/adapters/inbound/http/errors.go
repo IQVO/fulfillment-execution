@@ -172,7 +172,7 @@ var problemCatalog = []struct {
 	{task.ErrPickOverQuantity, "pick-over-quantity", "The scan would pick more than the planned quantity"},
 	{task.ErrPickIncomplete, "pick-incomplete", "The scanned eaches do not add up to the planned quantity"},
 	{task.ErrNotCaseBreakTask, "not-case-break-task", "The task is not a BREAK_CASE task"},
-	{task.ErrCaseBreakCompletionRequired, "case-break-completion-required", "A BREAK_CASE task completes only through POST /tasks/{id}/break-case"},
+	{task.ErrCaseBreakCompletionRequired, "case-break-completion-required", "A BREAK_CASE task completes only through POST /tasks/{id}/case-breaks"},
 	{ports.ErrCaseBreakUnavailable, "case-break-unavailable", "inventory-storage could not be reached for the case break"},
 	{ports.ErrCaseBreakRejected, "case-break-rejected", "inventory-storage rejected the case break"},
 }

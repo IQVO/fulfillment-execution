@@ -22,6 +22,12 @@ type GetTasksByOrderRef struct {
 // repository returns them. An unknown orderRef returns an empty slice, not
 // an error — this mirrors GetQueueDepth treating an unrecognized taskType
 // as zero rather than a failure.
+// ExecutePage returns one keyset page of the order's tasks: at most limit
+// tasks with id > afterId ("" = first page), ordered by id.
+func (uc *GetTasksByOrderRef) ExecutePage(ctx context.Context, orderRef shared.OrderRef, afterId shared.TaskId, limit int) ([]*task.Task, error) {
+	return uc.Tasks.FindPageByOrderRef(ctx, orderRef, afterId, limit)
+}
+
 func (uc *GetTasksByOrderRef) Execute(ctx context.Context, orderRef shared.OrderRef) ([]*task.Task, error) {
 	return uc.Tasks.FindByOrderRef(ctx, orderRef)
 }

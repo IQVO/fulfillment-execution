@@ -19,6 +19,12 @@ type GetPackagesByOrderRef struct {
 // Execute returns every package recorded for orderRef. An unknown orderRef
 // returns an empty slice, not an error — the same convention as
 // GetTasksByOrderRef.
+// ExecutePage returns one keyset page of the order's packages: at most limit
+// packages with id > afterId ("" = first page), ordered by id.
+func (uc *GetPackagesByOrderRef) ExecutePage(ctx context.Context, orderRef shared.OrderRef, afterId shared.PackageId, limit int) ([]*pack.Package, error) {
+	return uc.Packages.FindPageByOrderRef(ctx, orderRef, afterId, limit)
+}
+
 func (uc *GetPackagesByOrderRef) Execute(ctx context.Context, orderRef shared.OrderRef) ([]*pack.Package, error) {
 	return uc.Packages.FindByOrderRef(ctx, orderRef)
 }

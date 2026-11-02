@@ -49,12 +49,12 @@ func siocServer(t *testing.T, rec *ports.PackRecord) (stdhttp.Handler, string) {
 	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
 		"type": "PACK", "cpt": clock.Now().Add(time.Hour), "orderRef": "order-1", "requiredCapabilities": []string{"pack"},
 	})
-	claim := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "PACK"})
+	claim := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/task-claims", map[string]any{"taskType": "PACK"})
 	var claimed struct {
 		Id string `json:"id"`
 	}
 	_ = json.NewDecoder(claim.Body).Decode(&claimed)
-	return srv, "/tasks/" + claimed.Id + "/seal-package"
+	return srv, "/tasks/" + claimed.Id + "/package-seals"
 }
 
 var fullCase = &ports.PackRecord{UnitsPerPack: 12, Dims: &ports.PackDims{LengthMM: 400, WidthMM: 300, HeightMM: 200, WeightG: 6500}}
@@ -179,14 +179,18 @@ func TestGetPackagesByOrderRef_CarriesOwnContainer(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(stdhttp.MethodGet, "/packages?orderRef=order-1", nil)
 	srv.ServeHTTP(rec, req)
-	var list []struct {
-		ShipInOwnContainer bool   `json:"shipInOwnContainer"`
-		ContainerSource    string `json:"containerSource"`
-		Container          struct {
-			WeightG int `json:"weightG"`
-		} `json:"container"`
+	var listPage struct {
+		Items []struct {
+			ShipInOwnContainer bool   `json:"shipInOwnContainer"`
+			ContainerSource    string `json:"containerSource"`
+			Container          struct {
+				WeightG int `json:"weightG"`
+			} `json:"container"`
+		} `json:"items"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil || len(list) != 1 {
+	err := json.Unmarshal(rec.Body.Bytes(), &listPage)
+	list := listPage.Items
+	if err != nil || len(list) != 1 {
 		t.Fatalf("list = %s (%v)", rec.Body.String(), err)
 	}
 	if !list[0].ShipInOwnContainer || list[0].ContainerSource != "CASE" || list[0].Container.WeightG != 6500 {

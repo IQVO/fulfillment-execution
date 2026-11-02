@@ -42,12 +42,12 @@ func sealViaAPI(t *testing.T, srv stdhttp.Handler, stations interface {
 	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
 		"type": "PACK", "cpt": now.Add(time.Hour), "orderRef": orderRef, "requiredCapabilities": []string{"pack"},
 	})
-	claimRec := doJSON(t, srv, stdhttp.MethodPost, "/stations/pack-1/claim-next", map[string]any{"taskType": "PACK"})
+	claimRec := doJSON(t, srv, stdhttp.MethodPost, "/stations/pack-1/task-claims", map[string]any{"taskType": "PACK"})
 	var claimed struct {
 		Id string `json:"id"`
 	}
 	_ = json.NewDecoder(claimRec.Body).Decode(&claimed)
-	sealRec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/seal-package", map[string]any{
+	sealRec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/package-seals", map[string]any{
 		"stationId": "pack-1", "contents": []string{"sku-1", "sku-2"},
 	})
 	if sealRec.Code != stdhttp.StatusCreated {
@@ -108,7 +108,7 @@ func TestGetPackage_SurfacesSlamOutcomeAfter204(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv, _, stations, _, clock := newTestServer()
 			id := sealViaAPI(t, srv, stations, clock.Now(), "order-1")
-			slamRec := doJSON(t, srv, stdhttp.MethodPost, "/packages/"+id+"/slam", map[string]any{
+			slamRec := doJSON(t, srv, stdhttp.MethodPost, "/packages/"+id+"/slam-runs", map[string]any{
 				"actualWeight": tc.actual, "expectedWeight": 2.0,
 			})
 			if slamRec.Code != stdhttp.StatusNoContent {
@@ -151,17 +151,23 @@ func TestGetPackagesByOrderRef_ReturnsMatchingPackages(t *testing.T) {
 	if rec.Code != stdhttp.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	var got []packageBody
-	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+	var gotPage struct {
+		Items []packageBody `json:"items"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&gotPage); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
+	got := gotPage.Items
 	if len(got) != 1 || got[0].Id != id || got[0].OrderRef != "order-1" || got[0].Status != "SEALED" {
 		t.Fatalf("expected the one order-1 package, got %+v", got)
 	}
 
 	other := doJSON(t, srv, stdhttp.MethodGet, "/packages?orderRef=order-2", nil)
-	var none []packageBody
-	_ = json.NewDecoder(other.Body).Decode(&none)
+	var nonePage struct {
+		Items []packageBody `json:"items"`
+	}
+	_ = json.NewDecoder(other.Body).Decode(&nonePage)
+	none := nonePage.Items
 	if len(none) != 0 {
 		t.Fatalf("expected no packages for order-2, got %+v", none)
 	}
@@ -173,8 +179,8 @@ func TestGetPackagesByOrderRef_UnknownOrderRefReturnsEmptyArray(t *testing.T) {
 	if rec.Code != stdhttp.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if body := rec.Body.String(); body != "[]\n" {
-		t.Fatalf("expected a JSON empty array, got %q", body)
+	if body := rec.Body.String(); body != "{\"items\":[]}\n" {
+		t.Fatalf("expected an empty page, got %q", body)
 	}
 }
 

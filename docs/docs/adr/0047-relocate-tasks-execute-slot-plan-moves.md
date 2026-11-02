@@ -89,7 +89,7 @@ its presence is one unambiguous marker.
 `task.Relocate` (`RELOCATE`) carries the planned `RelocationMove`. It is created
 only from released work (never through `POST /tasks`, which keeps its
 creatable type enum), requires the catalogue path's capabilities (`relocate`)
-and is claimed like any other type (`POST /stations/{id}/claim-next` with
+and is claimed like any other type (`POST /stations/{id}/task-claims` with
 `taskType: RELOCATE`). The move is persisted with the task (migration 0019,
 nullable `relocation_*` columns, NULL for every other task) and shown on the
 task read model (`relocation` on `TaskResponse`, MCP `find_claimable_work`),
@@ -97,7 +97,7 @@ so the operator sees what to move.
 
 ### 3. Completing a RELOCATE task
 
-`POST /tasks/{id}/complete` and the MCP `complete_task` tool take three
+`POST /tasks/{id}/completions` and the MCP `complete_task` tool take three
 optional inputs next to `stationId`. Each is required for a RELOCATE task in
 the cases below and rejected for any other task type:
 

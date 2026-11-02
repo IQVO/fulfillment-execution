@@ -25,15 +25,15 @@ ADR-0054 also left `BREAK_CASE` out of `AnyTaskType`, so a station could not cla
 - `POST /tasks/{id}/scans` runs behind `RequireIdempotencyKey`, inside the scan's own transaction. Same key
   and same body on the same path replays the stored status and body and does not apply the scan again
   (a stored 4xx is replayed too). A missing key is `400 idempotency-key-required`. The same key with a
-  different body is `422 idempotency-key-reused`, as for `POST /tasks`.
+  different body is `409 idempotency-key-reused` (was `422`, see [ADR-0060](./0060-adopt-the-fleet-rest-api-guideline.md)), as for `POST /tasks`.
 - Each physical scan uses its own key, so two scans with different keys both count.
 - The key is one table key across routes and the scan body carries no task id, so the middleware now also
-  compares the stored path: the same key and body on another task is `422 idempotency-key-reused`, not a replay.
+  compares the stored path: the same key and body on another task is `409 idempotency-key-reused`, not a replay.
   The 400 detail no longer says the endpoint "creates a resource".
 - `BREAK_CASE` joins the claimable task types: `claim-next` `taskType`, the `AnyTaskType` enum and the MCP
   process-path argument accept it. Station capabilities are matched as for every type, against the
   capabilities stamped on the task at release. `BREAK_CASE` is still not creatable through `POST /tasks`, and
-  `POST /tasks/{id}/break-case` stays the only way to complete it (`POST /tasks/{id}/complete` is refused).
+  `POST /tasks/{id}/case-breaks` stays the only way to complete it (`POST /tasks/{id}/completions` is refused).
 
 ## Consequences
 

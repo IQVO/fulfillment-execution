@@ -43,7 +43,7 @@ func (h *Handlers) PostRegisterStation(w http.ResponseWriter, r *http.Request) {
 	writeCreated(w, "/stations/"+string(s.Id()), toStationResponse(s))
 }
 
-// PostCheckInStation handles POST /stations/{stationId}/check-in.
+// PostCheckInStation handles POST /stations/{stationId}/check-ins.
 func (h *Handlers) PostCheckInStation(w http.ResponseWriter, r *http.Request) {
 	stationId := chi.URLParam(r, "stationId")
 	var req checkInStationRequest
@@ -64,7 +64,7 @@ func (h *Handlers) PostCheckInStation(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toStationResponse(s))
 }
 
-// PostCheckOutStation handles POST /stations/{stationId}/check-out.
+// PostCheckOutStation handles POST /stations/{stationId}/check-outs.
 func (h *Handlers) PostCheckOutStation(w http.ResponseWriter, r *http.Request) {
 	stationId := chi.URLParam(r, "stationId")
 

@@ -1,7 +1,7 @@
 # Derived from docs/docs/adr/0014-labor-performance-integration-hooks.md,
 # section "Check-in/check-out: application + HTTP only, no domain change",
 # and apis/openapi.yaml operations checkInStation / checkOutStation
-# (POST /stations/{stationId}/check-in and /check-out): the Station
+# (POST /stations/{stationId}/check-ins and /check-outs): the Station
 # aggregate's one-occupant-at-a-time invariant — a second check-in is a
 # 409 station-occupied problem, checking out clears the occupant, checking
 # out an unoccupied station is a 409 station-not-occupied problem, and

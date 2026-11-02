@@ -110,7 +110,7 @@ case-sensitive upper case as on MCP.
 ### Facts still travel on Kafka
 
 A2A never becomes a data-sync channel. `complete_task` writes the same outbox
-rows `POST /tasks/{id}/complete` writes (integration and analytics topics, in
+rows `POST /tasks/{id}/completions` writes (integration and analytics topics, in
 the use case's transaction); `cmd/a2a` never runs the relay (only
 `cmd/execution` drains `outbox_events`). Proven on real Postgres by
 `TestA2ACompleteTask_LeavesUnpublishedOutboxRowsForBothTopics` (build tag

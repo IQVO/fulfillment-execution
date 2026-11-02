@@ -20,12 +20,12 @@ func sealedPackageServer(t *testing.T) stdhttp.Handler {
 	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
 		"type": "PACK", "cpt": clock.Now().Add(time.Hour), "orderRef": "order-1", "requiredCapabilities": []string{"pack"},
 	})
-	claimRec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "PACK"})
+	claimRec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/task-claims", map[string]any{"taskType": "PACK"})
 	var claimed struct {
 		Id string `json:"id"`
 	}
 	_ = json.NewDecoder(claimRec.Body).Decode(&claimed)
-	sealRec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/seal-package", map[string]any{
+	sealRec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/package-seals", map[string]any{
 		"stationId": "s1", "contents": []string{"sku-1"},
 	})
 	if sealRec.Code != stdhttp.StatusCreated {
@@ -49,17 +49,17 @@ func TestPostRunSlam_MissingWeightReturns400AndProcessesNothing(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			srv := sealedPackageServer(t)
 
-			rec := doJSON(t, srv, stdhttp.MethodPost, "/packages/pkg-1/slam", json.RawMessage(body))
+			rec := doJSON(t, srv, stdhttp.MethodPost, "/packages/pkg-1/slam-runs", json.RawMessage(body))
 
 			if rec.Code != stdhttp.StatusBadRequest {
 				t.Fatalf("expected 400 for %s, got %d: %s", body, rec.Code, rec.Body.String())
 			}
 			assertProblemDetails(t, rec, stdhttp.StatusBadRequest,
-				problemTypePrefix+"invalid-request", "/packages/pkg-1/slam")
+				problemTypePrefix+"invalid-request", "/packages/pkg-1/slam-runs")
 
 			// Nothing was processed: a correct weigh-check afterwards is the
 			// first one (204), not a repeat (409 package-already-processed).
-			retry := doJSON(t, srv, stdhttp.MethodPost, "/packages/pkg-1/slam", map[string]any{
+			retry := doJSON(t, srv, stdhttp.MethodPost, "/packages/pkg-1/slam-runs", map[string]any{
 				"actualWeight": 2.0, "expectedWeight": 2.0,
 			})
 			if retry.Code != stdhttp.StatusNoContent {
@@ -73,10 +73,10 @@ func TestPostRunSlam_MissingWeightReturns400AndProcessesNothing(t *testing.T) {
 func TestPostRunSlam_BodyThatIsNotAnObjectReturns400(t *testing.T) {
 	srv := sealedPackageServer(t)
 
-	rec := doJSON(t, srv, stdhttp.MethodPost, "/packages/pkg-1/slam", json.RawMessage(`[1,2]`))
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/packages/pkg-1/slam-runs", json.RawMessage(`[1,2]`))
 
 	assertProblemDetails(t, rec, stdhttp.StatusBadRequest,
-		problemTypePrefix+"invalid-request", "/packages/pkg-1/slam")
+		problemTypePrefix+"invalid-request", "/packages/pkg-1/slam-runs")
 }
 
 // The spec documents that an explicit null is accepted and treated as 0 (Go's
@@ -91,7 +91,7 @@ func TestPostRunSlam_ExplicitNullAndZeroWeightsAreStillAccepted(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			srv := sealedPackageServer(t)
 
-			rec := doJSON(t, srv, stdhttp.MethodPost, "/packages/pkg-1/slam", json.RawMessage(body))
+			rec := doJSON(t, srv, stdhttp.MethodPost, "/packages/pkg-1/slam-runs", json.RawMessage(body))
 
 			if rec.Code != stdhttp.StatusNoContent {
 				t.Fatalf("expected 204 for %s, got %d: %s", body, rec.Code, rec.Body.String())

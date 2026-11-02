@@ -28,11 +28,11 @@ type outboundLookups struct {
 	classification ports.ProductClassificationLookup
 	locationRole   ports.LocationRoleLookup
 	// packs and caseBreaker back POST /tasks/{id}/scans and
-	// POST /tasks/{id}/break-case (ADR 0054). Nil in unit tests that build a
+	// POST /tasks/{id}/case-breaks (ADR 0054). Nil in unit tests that build a
 	// server over test doubles.
 	packs       ports.PackViewLookup
 	caseBreaker ports.CaseBreaker
-	// cases backs ship-in-own-container on POST /tasks/{id}/seal-package
+	// cases backs ship-in-own-container on POST /tasks/{id}/package-seals
 	// (ADR 0056): the same local PackView as packs, read for a SKU's CASE
 	// levels. Nil exactly when packs is nil.
 	cases ports.CaseLevelLookup

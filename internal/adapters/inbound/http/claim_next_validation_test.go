@@ -18,13 +18,13 @@ func TestPostClaimNext_TaskTypeOutsideEnumReturns400(t *testing.T) {
 			srv, _, stations, _, _ := newTestServer()
 			_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pick")))
 
-			rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": taskType})
+			rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/task-claims", map[string]any{"taskType": taskType})
 
 			if rec.Code != stdhttp.StatusBadRequest {
 				t.Fatalf("expected 400 for taskType %q, got %d: %s", taskType, rec.Code, rec.Body.String())
 			}
 			assertProblemDetails(t, rec, stdhttp.StatusBadRequest,
-				problemTypePrefix+"invalid-request", "/stations/s1/claim-next")
+				problemTypePrefix+"invalid-request", "/stations/s1/task-claims")
 		})
 	}
 }
@@ -37,10 +37,10 @@ func TestPostClaimNext_EveryEnumTaskTypeReachesTheUseCase(t *testing.T) {
 			srv, _, stations, _, _ := newTestServer()
 			_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pick")))
 
-			rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": taskType})
+			rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/task-claims", map[string]any{"taskType": taskType})
 
 			assertProblemDetails(t, rec, stdhttp.StatusConflict,
-				problemTypePrefix+"no-claimable-task", "/stations/s1/claim-next")
+				problemTypePrefix+"no-claimable-task", "/stations/s1/task-claims")
 		})
 	}
 }
@@ -50,8 +50,8 @@ func TestPostClaimNext_MissingTaskTypeStillReturns400(t *testing.T) {
 	srv, _, stations, _, _ := newTestServer()
 	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pick")))
 
-	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{})
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/task-claims", map[string]any{})
 
 	assertProblemDetails(t, rec, stdhttp.StatusBadRequest,
-		problemTypePrefix+"invalid-request", "/stations/s1/claim-next")
+		problemTypePrefix+"invalid-request", "/stations/s1/task-claims")
 }

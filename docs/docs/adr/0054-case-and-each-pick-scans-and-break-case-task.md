@@ -27,13 +27,13 @@ that `INVENTORY_STORAGE_BASE_URL` is no longer read: it is read again, for the c
   otherwise, which is the guard against the each barcode printed on a case of something else) at the
   task's pick unit (`scan-level-mismatch`). An EACH scan adds `count` eaches; a CASE scan adds
   `count` x `units_per_pack` eaches. A rejected scan changes nothing.
-- Quantities are eaches everywhere: `POST /tasks/{id}/complete`, `TaskCompleted` and the
+- Quantities are eaches everywhere: `POST /tasks/{id}/completions`, `TaskCompleted` and the
   confirm-pick call to inventory-storage are unchanged.
 - A BREAK_CASE task is released when an each pick finds only a sealed case at the source. Completing it
-  with `POST /tasks/{id}/break-case` calls inventory-storage `POST /containers/{lpn}:break`
+  with `POST /tasks/{id}/case-breaks` calls inventory-storage `POST /containers/{lpn}/case-breaks`
   with `Idempotency-Key: break-case:<taskId>` behind a retry and circuit breaker, and only on success
   completes the task and publishes `TaskCompleted`. An unreachable inventory-storage leaves the task
-  claimed (503); a retry does not break twice. `POST /tasks/{id}/complete` on a BREAK_CASE task is
+  claimed (503); a retry does not break twice. `POST /tasks/{id}/completions` on a BREAK_CASE task is
   refused (`case-break-completion-required`).
 
 ## Consequences

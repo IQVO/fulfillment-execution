@@ -190,7 +190,7 @@ config:
   # group must differ from productClassificationConsumerGroup.
   packViewConsumerGroup: "fulfillment-execution-pack-view"
   # INVENTORY_STORAGE_BASE_URL (ADR 0054): completing a BREAK_CASE task calls
-  # inventory-storage POST /containers/{lpn}:break.
+  # inventory-storage POST /containers/{lpn}/case-breaks.
   inventoryStorageBaseUrl: "http://inventory-storage.warehouse-systems.svc.cluster.local:80"
   # Outbox relay attempt cap (gap fix D12, ADR-0042); OUTBOX_MAX_ATTEMPTS. A row
   # that has failed this many sends is excluded from the relay's claims (it
@@ -271,8 +271,8 @@ pathCatalogue:
   existingConfigMap: ""
 
 # ---------------------------------------------------------------------------
-# Sweep scheduler (ADR-0003, ADR-0025, ADR-0037). POST /tasks/expire-leases
-# and POST /tasks/sweep-cpt-misses have no in-process ticker by design; an
+# Sweep scheduler (ADR-0003, ADR-0025, ADR-0037). POST /task-lease-expirations
+# and POST /cpt-miss-sweeps have no in-process ticker by design; an
 # external scheduler has to call them, and a Kubernetes CronJob is the one
 # ADR-0003 names. ON by default (ADR-0037): without a scheduler leases are
 # only freed lazily and stuck tasks are never reported as CPT-missed. Set

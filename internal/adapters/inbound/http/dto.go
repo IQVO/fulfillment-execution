@@ -173,7 +173,7 @@ func (r renewLeaseRequest) validate() string {
 	return ""
 }
 
-// completeTaskRequest is POST /tasks/{id}/complete. Quantity, FromBin and
+// completeTaskRequest is POST /tasks/{id}/completions. Quantity, FromBin and
 // ToBin are the RELOCATE confirmation (ADR 0047) and the REPLENISH
 // confirmation (ADR 0050): optional on the wire, required by the domain for
 // a RELOCATE or REPLENISH task (the quantity always; the bins, for RELOCATE,
@@ -295,7 +295,7 @@ type pickScanResponse struct {
 	PlannedEaches int    `json:"plannedEaches"`
 }
 
-// breakCaseRequest is POST /tasks/{id}/break-case.
+// breakCaseRequest is POST /tasks/{id}/case-breaks.
 type breakCaseRequest struct {
 	StationId string `json:"stationId"`
 }

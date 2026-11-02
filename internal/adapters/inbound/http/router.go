@@ -22,7 +22,7 @@ type RouterOption func(*routerConfig)
 
 type routerConfig struct {
 	// idempotencyPool, when non-nil, wires RequireIdempotencyKey onto
-	// POST /tasks (see idempotency.go and WithIdempotencyPool). Every cmd
+	// every POST (see idempotency.go and WithIdempotencyPool). Every cmd
 	// binary passes its Postgres pool, so the check is on in every
 	// deployment; a nil pool exists only for the unit tests that build a
 	// router over in-memory test doubles with no transactional backing —
@@ -31,11 +31,10 @@ type routerConfig struct {
 	idempotencyPool *pgxpool.Pool
 }
 
-// WithIdempotencyPool wires RequireIdempotencyKey onto POST /tasks — the
-// one mutating endpoint that creates a NEW resource with a
-// server-generated id (see docs/docs/adr/0028-idempotency-key-middleware.md).
+// WithIdempotencyPool wires RequireIdempotencyKey onto EVERY POST route
+// (see docs/docs/adr/0028-idempotency-key-middleware.md and ADR-0060).
 // cmd/execution always passes its pool (Postgres is the only runtime); a nil
-// pool (or omitting this option entirely) leaves POST /tasks unprotected and
+// pool (or omitting this option entirely) leaves the POSTs unprotected and
 // is for unit tests over in-memory doubles only.
 func WithIdempotencyPool(pool *pgxpool.Pool) RouterOption {
 	return func(cfg *routerConfig) { cfg.idempotencyPool = pool }
@@ -57,7 +56,7 @@ func NewRouter(h *Handlers, logger *slog.Logger, opts ...RouterOption) *chi.Mux 
 	// otelchi runs before the logger so every log line emitted downstream
 	// sits inside the request span and picks up its trace_id/span_id.
 	// WithChiRoutes makes the span name the route pattern
-	// (POST /tasks/{id}/complete) rather than the raw path, keeping span
+	// (POST /tasks/{id}/completions) rather than the raw path, keeping span
 	// names low-cardinality.
 	//
 	// http.server.request.duration comes from the sanctioned
@@ -80,50 +79,46 @@ func NewRouter(h *Handlers, logger *slog.Logger, opts ...RouterOption) *chi.Mux 
 	r.Get("/healthz", h.GetHealthz)
 	r.Get("/readyz", h.GetReadyz)
 
-	r.Post("/stations", h.PostRegisterStation)
-	// POST /tasks is route-scoped (r.With, not r.Use) behind
-	// RequireIdempotencyKey — it is the one mutating endpoint that
-	// creates a NEW resource with a server-generated id, so a lost
-	// response and a client retry would otherwise create a duplicate
-	// task (docs/docs/adr/0028-idempotency-key-middleware.md). Every
-	// other mutating route either acts on a caller-supplied {id} or is a
-	// sweep/batch operation — see the ADR for the full survey.
-	// idempotencyPool nil (in-memory dev/test configuration, no
-	// transactional Postgres backing) skips the middleware entirely,
-	// mirroring every other optional Postgres-backed capability's nil
-	// convention in this repo.
-	if cfg.idempotencyPool != nil {
-		r.With(RequireIdempotencyKey(cfg.idempotencyPool)).Post("/tasks", h.PostTask)
-	} else {
-		r.Post("/tasks", h.PostTask)
+	// EVERY POST is route-scoped (r.With, not r.Use) behind
+	// RequireIdempotencyKey: a client may retry any of them after a timeout
+	// and the effect happens once (REST guideline section 2; ADR-0028,
+	// ADR-0060). A nil pool (in-memory dev/test configuration, no
+	// transactional Postgres backing) skips the middleware, mirroring every
+	// other optional Postgres-backed capability's nil convention in this repo.
+	post := func(pattern string, hf http.HandlerFunc) {
+		if cfg.idempotencyPool != nil {
+			r.With(RequireIdempotencyKey(cfg.idempotencyPool)).Post(pattern, hf)
+			return
+		}
+		r.Post(pattern, hf)
 	}
+
+	post("/stations", h.PostRegisterStation)
+	post("/tasks", h.PostTask)
 	r.Get("/tasks", h.GetTasksHandler)
-	r.Post("/stations/{stationId}/claim-next", h.PostClaimNext)
-	r.Post("/stations/{stationId}/check-in", h.PostCheckInStation)
-	r.Post("/stations/{stationId}/check-out", h.PostCheckOutStation)
-	r.Post("/tasks/{id}/renew-lease", h.PostRenewLease)
-	r.Post("/tasks/{id}/complete", h.PostCompleteTask)
+	post("/stations/{stationId}/task-claims", h.PostClaimNext)
+	post("/stations/{stationId}/check-ins", h.PostCheckInStation)
+	post("/stations/{stationId}/check-outs", h.PostCheckOutStation)
+	post("/tasks/{id}/lease-renewals", h.PostRenewLease)
+	post("/tasks/{id}/completions", h.PostCompleteTask)
 	// A scan adds eaches to the task's pick count, so a retry after a lost
 	// response (the floor client's outbox resends with the SAME key) must
 	// replay the stored answer instead of counting the scan twice (ADR 0055).
-	if cfg.idempotencyPool != nil {
-		r.With(RequireIdempotencyKey(cfg.idempotencyPool)).Post("/tasks/{id}/scans", h.PostPickScan)
-	} else {
-		r.Post("/tasks/{id}/scans", h.PostPickScan)
-	}
-	r.Post("/tasks/{id}/break-case", h.PostBreakCase)
-	r.Post("/tasks/{id}/seal-package", h.PostSealPackage)
+	post("/tasks/{id}/scans", h.PostPickScan)
+	post("/tasks/{id}/case-breaks", h.PostBreakCase)
+	post("/tasks/{id}/package-seals", h.PostSealPackage)
 	r.Get("/packages", h.GetPackagesHandler)
 	r.Get("/packages/{id}", h.GetPackageHandler)
-	r.Post("/packages/{id}/slam", h.PostRunSlam)
+	post("/packages/{id}/slam-runs", h.PostRunSlam)
 	r.Get("/queues/{taskType}/depth", h.GetQueueDepthHandler)
 	r.Get("/capacity/{capability}", h.GetInstalledCapacityHandler)
-	r.Post("/tasks/expire-leases", h.PostExpireLeases)
-	r.Post("/tasks/sweep-cpt-misses", h.PostSweepCPTMisses)
-	r.Post("/rebin/arrivals", h.PostArriveAtRebin)
+	post("/task-lease-expirations", h.PostExpireLeases)
+	post("/cpt-miss-sweeps", h.PostSweepCPTMisses)
+	post("/rebin/arrivals", h.PostArriveAtRebin)
 	// A2A delegation to Work Planning (ADR-0058): execution PULLS the next
-	// unit for a path; the fact returns as WorkReleased on Kafka.
-	r.Post("/paths/{pathId}/work-requests", h.PostWorkRequest)
+	// unit for a path; the fact returns as WorkReleased on Kafka. Keyed: a
+	// retry of one logical pull replays its answer, a new pull mints a key.
+	post("/paths/{pathId}/work-requests", h.PostWorkRequest)
 
 	return r
 }
@@ -182,8 +177,9 @@ func corsMiddleware() func(http.Handler) http.Handler {
 	}
 	return cors.Handler(cors.Options{
 		AllowedOrigins:   origins,
-		AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete},
+		AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete},
 		AllowedHeaders:   []string{"Content-Type", "Authorization", "Idempotency-Key"},
+		ExposedHeaders:   []string{"Location", IdempotencyReplayedHeader},
 		AllowCredentials: false,
 		MaxAge:           300,
 	})

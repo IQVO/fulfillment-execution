@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -168,10 +169,17 @@ func (r runner) runMain(ctx context.Context, lookup lookupFunc) int {
 // trigger POSTs cfg.URL up to cfg.MaxAttempts times with exponential backoff
 // (capped at cfg.MaxBackoff). A non-retryable rejection stops at once.
 func (r runner) trigger(ctx context.Context, cfg config) error {
+	// One Idempotency-Key per sweep pass: every retry of THIS pass reuses it
+	// (so a lost response replays the stored answer instead of sweeping twice),
+	// the next scheduled pass mints a new one.
+	key, err := newIdempotencyKey()
+	if err != nil {
+		return fmt.Errorf("%w: idempotency key: %v", errRejected, err)
+	}
 	backoff := cfg.InitialBackoff
 	var last error
 	for attempt := 1; attempt <= cfg.MaxAttempts; attempt++ {
-		err := r.attempt(ctx, cfg)
+		err := r.attempt(ctx, cfg, key)
 		if err == nil {
 			r.logger.InfoContext(ctx, "sweep: done", "url", cfg.URL, "attempt", attempt)
 			return nil
@@ -196,13 +204,14 @@ func (r runner) trigger(ctx context.Context, cfg config) error {
 // attempt performs ONE POST bounded by cfg.RequestTimeout and classifies the
 // outcome: nil (2xx), errRetryable (transport error, timeout, 429, 5xx) or
 // errRejected (any other status).
-func (r runner) attempt(ctx context.Context, cfg config) error {
+func (r runner) attempt(ctx context.Context, cfg config, key string) error {
 	ctx, cancel := context.WithTimeout(ctx, cfg.RequestTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.URL, http.NoBody)
 	if err != nil {
 		return fmt.Errorf("%w: build request: %v", errRejected, err)
 	}
+	req.Header.Set("Idempotency-Key", key)
 	resp, err := r.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("%w: %v", errRetryable, err)
@@ -210,6 +219,18 @@ func (r runner) attempt(ctx context.Context, cfg config) error {
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxBodyLog))
 	return classifyStatus(resp.StatusCode, body)
+}
+
+// newIdempotencyKey returns a random RFC 4122 version-4 UUID: 36 printable
+// ASCII characters, inside the API's 1-128 Idempotency-Key limit.
+func newIdempotencyKey() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:]), nil
 }
 
 // classifyStatus maps an HTTP status to the attempt outcome.

@@ -1,7 +1,7 @@
 # Derived from apis/openapi.yaml: AnyTaskType includes BREAK_CASE (ADR 0055),
 # so claimNextTask accepts it. A BREAK_CASE task is released by work planning
 # (WorkReleased.data.case_break, ADR 0054), never created through POST /tasks,
-# and completes only through POST /tasks/{id}/break-case.
+# and completes only through POST /tasks/{id}/case-breaks.
 Feature: A station claims a BREAK_CASE task through claim-next
   An each pick that finds only a sealed case gets a BREAK_CASE task. The
   station with the break capability pulls it like any other task.

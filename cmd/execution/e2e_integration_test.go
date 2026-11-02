@@ -402,8 +402,8 @@ func driveRest(t *testing.T, e2e e2eEnv, pool *pgxpool.Pool) {
 	if code != http.StatusCreated || hdr.Get("Location") == "" {
 		t.Fatalf("POST /tasks = %d %s, want 201 with a Location (the key survived the rejected NUL)", code, first)
 	}
-	if code, replay, _ := e2e.do(t, http.MethodPost, "/tasks", "key-e2e-1", body); code != http.StatusCreated || replay != first {
-		t.Fatalf("replay = %d %s, want the stored 201 %s", code, replay, first)
+	if code, replay, replayHdr := e2e.do(t, http.MethodPost, "/tasks", "key-e2e-1", body); code != http.StatusCreated || replay != first || replayHdr.Get("Idempotency-Replayed") != "true" {
+		t.Fatalf("replay = %d %s (Idempotency-Replayed=%q), want the stored 201 %s with Idempotency-Replayed: true", code, replay, replayHdr.Get("Idempotency-Replayed"), first)
 	}
 	if n := count(t, t.Context(), pool, "SELECT count(*) FROM tasks WHERE order_ref = 'order-rest'"); n != 1 {
 		t.Fatalf("tasks for order-rest = %d, want exactly 1", n)
@@ -439,27 +439,27 @@ func assertNothingLostOrDuplicated(t *testing.T, ctx context.Context, e2e e2eEnv
 	}
 }
 
-// claimAndComplete drives a station through register, claim-next and complete.
+// claimAndComplete drives a station through register, task-claims and completions.
 func claimAndComplete(t *testing.T, e2e e2eEnv, pool *pgxpool.Pool) {
 	t.Helper()
-	if code, resp, _ := e2e.do(t, http.MethodPost, "/stations", "", `{"stationId":"s-e2e","capabilities":["pick"]}`); code != http.StatusCreated {
+	if code, resp, _ := e2e.do(t, http.MethodPost, "/stations", "key-e2e-station", `{"stationId":"s-e2e","capabilities":["pick"]}`); code != http.StatusCreated {
 		t.Fatalf("POST /stations = %d %s, want 201", code, resp)
 	}
-	code, claimed, _ := e2e.do(t, http.MethodPost, "/stations/s-e2e/claim-next", "", `{"taskType":"PICK"}`)
+	code, claimed, _ := e2e.do(t, http.MethodPost, "/stations/s-e2e/task-claims", "key-e2e-claim", `{"taskType":"PICK"}`)
 	if code != http.StatusOK {
-		t.Fatalf("claim-next = %d %s, want 200", code, claimed)
+		t.Fatalf("task-claims = %d %s, want 200", code, claimed)
 	}
 	var task struct {
 		Id       string `json:"id"`
 		OrderRef string `json:"orderRef"`
 	}
 	if err := json.Unmarshal([]byte(claimed), &task); err != nil || task.Id == "" {
-		t.Fatalf("claim-next body %s: %v", claimed, err)
+		t.Fatalf("task-claims body %s: %v", claimed, err)
 	}
 	if task.OrderRef != "order-e2e" {
 		t.Fatalf("claimed %q, want the earlier-CPT Kafka-created order-e2e", task.OrderRef)
 	}
-	if code, resp, _ := e2e.do(t, http.MethodPost, fmt.Sprintf("/tasks/%s/complete", task.Id), "", `{"stationId":"s-e2e"}`); code/100 != 2 {
+	if code, resp, _ := e2e.do(t, http.MethodPost, fmt.Sprintf("/tasks/%s/completions", task.Id), "key-e2e-complete", `{"stationId":"s-e2e"}`); code/100 != 2 {
 		t.Fatalf("complete = %d %s, want 2xx", code, resp)
 	}
 	if n := count(t, t.Context(), pool, "SELECT count(*) FROM tasks WHERE id = $1 AND status = 'COMPLETED'", task.Id); n != 1 {

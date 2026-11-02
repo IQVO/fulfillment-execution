@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/claudioed/fulfillment-execution/internal/adapters/inbound/http/page"
 	pack "github.com/claudioed/fulfillment-execution/internal/domain/package"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
 )
@@ -34,7 +35,7 @@ func ordinaryPackageResponse(p *pack.Package) packageResponse {
 	}
 }
 
-// PostSealPackage handles POST /tasks/{id}/seal-package.
+// PostSealPackage handles POST /tasks/{id}/package-seals.
 func (h *Handlers) PostSealPackage(w http.ResponseWriter, r *http.Request) {
 	taskId := chi.URLParam(r, "id")
 	var req sealPackageRequest
@@ -63,7 +64,7 @@ func (h *Handlers) PostSealPackage(w http.ResponseWriter, r *http.Request) {
 	writeCreated(w, "/packages/"+string(p.Id()), toPackageResponse(p))
 }
 
-// PostRunSlam handles POST /packages/{id}/slam.
+// PostRunSlam handles POST /packages/{id}/slam-runs.
 func (h *Handlers) PostRunSlam(w http.ResponseWriter, r *http.Request) {
 	packageId := chi.URLParam(r, "id")
 	var req runSlamRequest
@@ -86,7 +87,7 @@ func (h *Handlers) PostRunSlam(w http.ResponseWriter, r *http.Request) {
 // GetPackageHandler handles GET /packages/{id} (ADR-0033): the read side of
 // the Package aggregate, returning the same Package shape seal-package's
 // 201 returns. This is how a caller learns the SLAM outcome — LABELED vs
-// DIVERTED — after POST /packages/{id}/slam's outcome-agnostic 204. An
+// DIVERTED — after POST /packages/{id}/slam-runs's outcome-agnostic 204. An
 // unknown id is 404 package-not-found.
 func (h *Handlers) GetPackageHandler(w http.ResponseWriter, r *http.Request) {
 	packageId := chi.URLParam(r, "id")
@@ -98,17 +99,22 @@ func (h *Handlers) GetPackageHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toPackageResponse(p))
 }
 
-// GetPackagesHandler handles GET /packages?orderRef=<ref> (ADR-0033),
-// mirroring GetTasksHandler: orderRef is required (400 invalid-request if
-// missing or empty) and an unknown orderRef returns an empty array.
+// GetPackagesHandler handles GET /packages?orderRef=<ref>&limit=&cursor=
+// (ADR-0033), mirroring GetTasksHandler: orderRef is required (400
+// invalid-request if missing or empty) and an unknown orderRef returns an
+// empty page ({items,nextCursor}, ordered by id).
 func (h *Handlers) GetPackagesHandler(w http.ResponseWriter, r *http.Request) {
+	limit, after, ok := pageParams(w, r, "orderRef")
+	if !ok {
+		return
+	}
 	orderRef := r.URL.Query().Get("orderRef")
 	if orderRef == "" {
 		writeBadRequest(w, r, "orderRef is required")
 		return
 	}
 
-	packages, err := h.GetPackagesByOrderRef.Execute(r.Context(), shared.OrderRef(orderRef))
+	packages, err := h.GetPackagesByOrderRef.ExecutePage(r.Context(), shared.OrderRef(orderRef), shared.PackageId(afterID(after)), page.FetchSize(limit))
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -118,5 +124,5 @@ func (h *Handlers) GetPackagesHandler(w http.ResponseWriter, r *http.Request) {
 	for _, p := range packages {
 		resp = append(resp, toPackageResponse(p))
 	}
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, page.Of(resp, limit, func(p packageResponse) page.Position { return idPosition(p.Id) }))
 }

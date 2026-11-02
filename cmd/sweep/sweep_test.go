@@ -63,7 +63,7 @@ func unreachableURL(t *testing.T) string {
 	if err := l.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
-	return "http://" + addr + "/tasks/expire-leases"
+	return "http://" + addr + "/task-lease-expirations"
 }
 
 func env(kv map[string]string) lookupFunc {
@@ -157,6 +157,53 @@ func TestSweepRetriesTransientStatusesThenSucceeds(t *testing.T) {
 	if quit.calls.Load() != 1 {
 		t.Fatalf("sidecar quit calls = %d, want 1", quit.calls.Load())
 	}
+}
+
+// Every pass sends an Idempotency-Key; the retries of ONE pass reuse it (a
+// lost response replays instead of sweeping twice) and the next pass mints a
+// new one.
+func TestSweepSendsOneIdempotencyKeyPerPassReusedAcrossRetries(t *testing.T) {
+	var keys []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		keys = append(keys, r.Header.Get("Idempotency-Key"))
+		if len(keys)%2 == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	var backoffs []time.Duration
+	run := func() {
+		t.Helper()
+		if code := testRunner(&backoffs).runMain(context.Background(), env(map[string]string{
+			"SWEEP_URL": srv.URL, "SIDECAR_QUIT_URL": "",
+		})); code != exitOK {
+			t.Fatalf("exit code = %d, want %d", code, exitOK)
+		}
+	}
+
+	run()
+	run()
+
+	if len(keys) != 4 || keys[0] == "" || keys[0] != keys[1] || keys[2] != keys[3] || keys[0] == keys[2] {
+		t.Fatalf("Idempotency-Keys = %q, want [A A B B] with A != B and none empty", keys)
+	}
+	if !validIdempotencyKey(keys[0]) {
+		t.Fatalf("key %q is not 1-128 printable ASCII", keys[0])
+	}
+}
+
+func validIdempotencyKey(k string) bool {
+	if len(k) < 1 || len(k) > 128 {
+		return false
+	}
+	for _, c := range []byte(k) {
+		if c < 0x20 || c > 0x7e {
+			return false
+		}
+	}
+	return true
 }
 
 func TestSweepBackoffIsCappedAtMaxBackoff(t *testing.T) {
@@ -266,12 +313,12 @@ func TestSweepCancelledDuringBackoffGivesUp(t *testing.T) {
 }
 
 func TestLoadConfigDefaults(t *testing.T) {
-	cfg, err := loadConfig(env(map[string]string{"SWEEP_URL": "http://svc/tasks/expire-leases"}))
+	cfg, err := loadConfig(env(map[string]string{"SWEEP_URL": "http://svc/task-lease-expirations"}))
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
 	want := config{
-		URL: "http://svc/tasks/expire-leases", RequestTimeout: 15 * time.Second, MaxAttempts: 4,
+		URL: "http://svc/task-lease-expirations", RequestTimeout: 15 * time.Second, MaxAttempts: 4,
 		InitialBackoff: time.Second, MaxBackoff: 8 * time.Second, QuitURL: "http://127.0.0.1:15020/quitquitquit",
 	}
 	if cfg != want {

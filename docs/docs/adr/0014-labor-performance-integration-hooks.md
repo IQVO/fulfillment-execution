@@ -89,8 +89,8 @@ already correct, just unreachable. Two new use cases,
 `CheckInStation`/`CheckOutStation`, mirror the existing simple use-case
 shape (`RegisterStation`'s struct-with-ports pattern): load the station,
 call the domain method, save. Two new routes,
-`POST /stations/{stationId}/check-in` and
-`POST /stations/{stationId}/check-out`, follow the existing chi
+`POST /stations/{stationId}/check-ins` and
+`POST /stations/{stationId}/check-outs`, follow the existing chi
 handler/DTO/RFC 7807 conventions exactly.
 
 **Neither use case publishes a domain event.** This is a deliberate

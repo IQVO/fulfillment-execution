@@ -474,7 +474,7 @@ func TestSealPackageAndRunSlam_LabelsWithinTolerance(t *testing.T) {
 }
 
 // The idempotency guard REST_AUDIT.md flags as a known gap: a retried
-// POST /tasks/{id}/seal-package (same taskId, same stationId) must return
+// POST /tasks/{id}/package-seals (same taskId, same stationId) must return
 // the ALREADY-sealed Package, not create a second one.
 func TestSealPackage_RetryReturnsExistingPackage_DoesNotCreateDuplicate(t *testing.T) {
 	h := newHarness()

@@ -294,7 +294,7 @@ still starts and serves at full speed — telemetry is simply dropped.
 
 | Signal | What |
 |--------|------|
-| Traces | One server span per HTTP request (via `otelchi`), named after the **route pattern** (`POST /tasks/{id}/complete`) rather than the raw path; a child span per Postgres query/batch/copy/acquire (via `otelpgx`), carrying the parameterised SQL — query values are never recorded; `kafka.publish <topic>` / `kafka.consume <topic>` spans around the Kafka boundary |
+| Traces | One server span per HTTP request (via `otelchi`), named after the **route pattern** (`POST /tasks/{id}/completions`) rather than the raw path; a child span per Postgres query/batch/copy/acquire (via `otelpgx`), carrying the parameterised SQL — query values are never recorded; `kafka.publish <topic>` / `kafka.consume <topic>` spans around the Kafka boundary |
 | Metrics | `http.server.request.duration` (histogram, seconds, by route + method + status); `fulfillment.tasks.claimed` and `fulfillment.tasks.completed` counters attributed by `task.type` (PICK \| PACK \| SLAM \| REBIN \| DISPATCH \| ARRIVAL); pgxpool connection gauges; Go runtime metrics (goroutines, GC, memory) |
 | Logs | Structured JSON on stdout. Any log emitted while a span is active also carries `trace_id` and `span_id`, so a log line links straight to its trace |
 
@@ -377,7 +377,7 @@ implementation for Go. The feature files live under `features/`:
 | `features/installed_capacity.feature` | `GET /capacity/{capability}` installed-capacity read model |
 | `features/order_ref_lookup.feature` | `GET /tasks?orderRef=` lookup |
 | `features/package_read_model.feature` | `GET /packages/{id}` and `GET /packages?orderRef=` (ADR-0033) |
-| `features/cpt_missed_sweep.feature` | `POST /tasks/sweep-cpt-misses` raising `TaskCPTMissed` (ADR-0025) |
+| `features/cpt_missed_sweep.feature` | `POST /cpt-miss-sweeps` raising `TaskCPTMissed` (ADR-0025) |
 
 The step definitions live in `features_test.go` at the repo root. They are
 black-box: each scenario spins up the real chi router (in-memory repositories,
@@ -406,7 +406,7 @@ removed — see the ADR below). All endpoints accept/return JSON. Every error re
   "title": "Task not found",
   "status": 404,
   "detail": "usecases: task not found",
-  "instance": "/tasks/does-not-exist/renew-lease"
+  "instance": "/tasks/does-not-exist/lease-renewals"
 }
 ```
 
@@ -421,7 +421,7 @@ See `apis/openapi.yaml`'s `components/schemas/Problem` for the full schema.
 ### Create a task (put work in the pool)
 
 ```sh
-curl -sX POST localhost:8080/tasks \
+curl -sX POST -H "Idempotency-Key: $(uuidgen)" localhost:8080/tasks \
   -H 'Content-Type: application/json' \
   -d '{
         "type": "PICK",
@@ -436,17 +436,21 @@ curl -sX POST localhost:8080/tasks \
 stamped by `wes-work-planning` at release time, not something a human caller
 typically sets by hand. When the service runs against Postgres, `POST /tasks`
 also requires an `Idempotency-Key` header (missing: `400`
-`idempotency-key-required`; same key with a different body: `422`
-`idempotency-key-reused`; same key and body: the stored response is replayed —
-[ADR-0028](docs/docs/adr/0028-idempotency-key-middleware.md)); the in-memory
-mode does not wire the middleware. `requiredCapabilities` may include `hazmat` — see
+`idempotency-key-required`; not 1-128 printable ASCII: `400`
+`idempotency-key-invalid`; same key with a different method, path or body:
+`409` `idempotency-key-reused`; same key and request: the stored response is
+replayed with `Idempotency-Replayed: true` —
+[ADR-0028](docs/docs/adr/0028-idempotency-key-middleware.md),
+[ADR-0060](docs/docs/adr/0060-adopt-the-fleet-rest-api-guideline.md)). So does
+EVERY other `POST` of the service; the in-memory mode does not wire the
+middleware. `requiredCapabilities` may include `hazmat` — see
 [Integration](#integration) below and `docs/docs/adr/0009-fragile-and-hazmat-handling-flags.md`
 for why that needs no special handling beyond the value itself.
 
 ### Register a station
 
 ```sh
-curl -sX POST localhost:8080/stations \
+curl -sX POST -H "Idempotency-Key: $(uuidgen)" localhost:8080/stations \
   -H 'Content-Type: application/json' \
   -d '{"stationId": "station-1", "capabilities": ["pick"]}'
 ```
@@ -460,7 +464,7 @@ below always failed with "station not found" against a freshly-started server.
 ### claimNext — a station pulls the best-fit pending task
 
 ```sh
-curl -sX POST localhost:8080/stations/station-1/claim-next \
+curl -sX POST -H "Idempotency-Key: $(uuidgen)" localhost:8080/stations/station-1/task-claims \
   -H 'Content-Type: application/json' \
   -d '{"taskType": "PICK"}'
 ```
@@ -472,7 +476,7 @@ pool has nothing the station can accept right now.
 ### Renew a lease
 
 ```sh
-curl -sX POST localhost:8080/tasks/{taskId}/renew-lease \
+curl -sX POST -H "Idempotency-Key: $(uuidgen)" localhost:8080/tasks/{taskId}/lease-renewals \
   -H 'Content-Type: application/json' \
   -d '{"stationId": "station-1"}'
 ```
@@ -480,7 +484,7 @@ curl -sX POST localhost:8080/tasks/{taskId}/renew-lease \
 ### Complete a task
 
 ```sh
-curl -sX POST localhost:8080/tasks/{taskId}/complete \
+curl -sX POST -H "Idempotency-Key: $(uuidgen)" localhost:8080/tasks/{taskId}/completions \
   -H 'Content-Type: application/json' \
   -d '{"stationId": "station-1"}'
 ```
@@ -488,7 +492,7 @@ curl -sX POST localhost:8080/tasks/{taskId}/complete \
 ### Seal a package (Pack path)
 
 ```sh
-curl -sX POST localhost:8080/tasks/{taskId}/seal-package \
+curl -sX POST -H "Idempotency-Key: $(uuidgen)" localhost:8080/tasks/{taskId}/package-seals \
   -H 'Content-Type: application/json' \
   -d '{"stationId": "station-1", "contents": ["sku-1", "sku-2"]}'
 ```
@@ -496,7 +500,7 @@ curl -sX POST localhost:8080/tasks/{taskId}/seal-package \
 ### Run SLAM (Scan, Label, Apply, Manifest)
 
 ```sh
-curl -sX POST localhost:8080/packages/{packageId}/slam \
+curl -sX POST -H "Idempotency-Key: $(uuidgen)" localhost:8080/packages/{packageId}/slam-runs \
   -H 'Content-Type: application/json' \
   -d '{"actualWeight": 2.02, "expectedWeight": 2.0}'
 ```
@@ -523,9 +527,14 @@ its `sortLane` and `DIVERTED` when it goes to problem-solve. Unknown id:
 curl -s 'localhost:8080/packages?orderRef=order-42'
 ```
 
-Returns an array of Packages for that order, ordered by id. The array is
-empty when the order has none. A missing or empty `orderRef` returns `400`
-`invalid-request`, the same as `GET /tasks?orderRef=`.
+Returns a page `{"items":[...],"nextCursor":"..."}` of Packages for that
+order, ordered by id. `items` is empty when the order has none. Collections
+are keyset-paged (REST guideline, [ADR-0060](docs/docs/adr/0060-adopt-the-fleet-rest-api-guideline.md)):
+`limit` (1-500, default 100) and `cursor` (the previous page's `nextCursor`,
+repeat the filters; absent on the last page). A missing or empty `orderRef`
+returns `400` `invalid-request`; a bad `limit` `400` `invalid-limit`; a bad
+`cursor` `400` `invalid-cursor`; any other query parameter `400`
+`unknown-query-parameter`. `GET /tasks?orderRef=` pages the same way.
 
 ### Queue depth (read model)
 
@@ -536,10 +545,10 @@ curl -s localhost:8080/queues/PICK/depth
 ### Sweep expired leases (Clock-driven)
 
 ```sh
-curl -sX POST localhost:8080/tasks/expire-leases
+curl -sX POST -H "Idempotency-Key: $(uuidgen)" localhost:8080/task-lease-expirations
 ```
 
-Nothing in the service calls this (or `POST /tasks/sweep-cpt-misses`) on a
+Nothing in the service calls this (or `POST /cpt-miss-sweeps`) on a
 timer. In Kubernetes the Helm chart runs both as `CronJob`s, **on by default**
 (`sweeps.enabled: true`; `expire-leases` every minute, `sweep-cpt-misses` every
 5 minutes; override via `sweeps.expireLeases.schedule` /
@@ -563,22 +572,22 @@ are kept in a two-way 1:1 match (19 operations) by
 
 | Method | Path | Use case |
 |---|---|---|
-| `POST` | `/tasks` | `CreateTask` — requires an `Idempotency-Key` header when Postgres is configured (ADR-0028) |
-| `GET` | `/tasks?orderRef=` | `GetTasksByOrderRef` |
+| `POST` | `/tasks` | `CreateTask` — every `POST` requires an `Idempotency-Key` header when Postgres is configured (ADR-0028, ADR-0060) |
+| `GET` | `/tasks?orderRef=&limit=&cursor=` | `GetTasksByOrderRef` (paged) |
 | `POST` | `/stations` | `RegisterStation` |
-| `POST` | `/stations/{stationId}/claim-next` | `ClaimNext` |
-| `POST` | `/stations/{stationId}/check-in` | `CheckInStation` |
-| `POST` | `/stations/{stationId}/check-out` | `CheckOutStation` |
-| `POST` | `/tasks/{id}/renew-lease` | `RenewLease` |
-| `POST` | `/tasks/{id}/complete` | `CompleteTask` |
-| `POST` | `/tasks/{id}/seal-package` | `SealPackage` |
+| `POST` | `/stations/{stationId}/task-claims` | `ClaimNext` |
+| `POST` | `/stations/{stationId}/check-ins` | `CheckInStation` |
+| `POST` | `/stations/{stationId}/check-outs` | `CheckOutStation` |
+| `POST` | `/tasks/{id}/lease-renewals` | `RenewLease` |
+| `POST` | `/tasks/{id}/completions` | `CompleteTask` |
+| `POST` | `/tasks/{id}/package-seals` | `SealPackage` |
 | `GET` | `/packages/{id}` | `GetPackage` |
-| `GET` | `/packages?orderRef=` | `GetPackagesByOrderRef` |
-| `POST` | `/packages/{id}/slam` | `RunSlam` |
+| `GET` | `/packages?orderRef=&limit=&cursor=` | `GetPackagesByOrderRef` (paged) |
+| `POST` | `/packages/{id}/slam-runs` | `RunSlam` |
 | `GET` | `/queues/{taskType}/depth` | `GetQueueDepth` |
 | `GET` | `/capacity/{capability}` | `GetInstalledCapacity` |
-| `POST` | `/tasks/expire-leases` | `ExpireLeases` |
-| `POST` | `/tasks/sweep-cpt-misses` | `SweepCPTMisses` |
+| `POST` | `/task-lease-expirations` | `ExpireLeases` |
+| `POST` | `/cpt-miss-sweeps` | `SweepCPTMisses` |
 | `POST` | `/rebin/arrivals` | `ArriveAtRebin` |
 | `GET` | `/healthz` | liveness |
 | `GET` | `/readyz` | readiness |
@@ -749,14 +758,14 @@ task through the full lifecycle over HTTP:
 kafka-console-consumer.sh \
   --bootstrap-server localhost:9092 --topic warehouse.fulfillment.events --from-beginning &
 
-curl -sX POST localhost:8080/tasks -H 'Content-Type: application/json' \
+curl -sX POST -H "Idempotency-Key: $(uuidgen)" localhost:8080/tasks -H 'Content-Type: application/json' \
   -d '{"type":"PICK","cpt":"2026-01-01T18:00:00Z","orderRef":"order-smoke-1","requiredCapabilities":["pick"]}'
 
-curl -sX POST localhost:8080/stations/station-smoke/claim-next -H 'Content-Type: application/json' \
+curl -sX POST -H "Idempotency-Key: $(uuidgen)" localhost:8080/stations/station-smoke/task-claims -H 'Content-Type: application/json' \
   -d '{"taskType":"PICK"}'
 # note the "id" field of the returned task as TASK_ID
 
-curl -sX POST localhost:8080/tasks/TASK_ID/complete -H 'Content-Type: application/json' \
+curl -sX POST -H "Idempotency-Key: $(uuidgen)" localhost:8080/tasks/TASK_ID/completions -H 'Content-Type: application/json' \
   -d '{"stationId":"station-smoke"}'
 ```
 

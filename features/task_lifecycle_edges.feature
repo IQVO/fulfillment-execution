@@ -1,11 +1,11 @@
 # Task lifecycle edges around leases, ownership and capability matching.
 #
 # Derived from:
-#   - apis/openapi.yaml: POST /stations/{id}/claim-next leases the
+#   - apis/openapi.yaml: POST /stations/{id}/task-claims leases the
 #     earliest-CPT pending task of the requested type the station can work
-#     (409 no-claimable-task otherwise); POST /tasks/{id}/renew-lease and
-#     /complete need the claiming station (409 task-not-owner) and a live
-#     claim (409 task-not-claimed); POST /tasks/expire-leases frees every
+#     (409 no-claimable-task otherwise); POST /tasks/{id}/lease-renewals and
+#     /completions need the claiming station (409 task-not-owner) and a live
+#     claim (409 task-not-claimed); POST /task-lease-expirations frees every
 #     lapsed lease and returns the task to the pool
 #   - .claude/rules/domain-model.md: a Task requires ALL of its
 #     requiredCapabilities from the claiming Station; a lease lasts 5
