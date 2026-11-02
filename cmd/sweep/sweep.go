@@ -174,7 +174,7 @@ func (r runner) trigger(ctx context.Context, cfg config) error {
 	// the next scheduled pass mints a new one.
 	key, err := newIdempotencyKey()
 	if err != nil {
-		return fmt.Errorf("%w: idempotency key: %v", errRejected, err)
+		return fmt.Errorf("%w: idempotency key: %w", errRejected, err)
 	}
 	backoff := cfg.InitialBackoff
 	var last error
@@ -194,7 +194,7 @@ func (r runner) trigger(ctx context.Context, cfg config) error {
 			break
 		}
 		if err := r.sleep(ctx, backoff); err != nil {
-			return fmt.Errorf("%w: interrupted while backing off: %v (last error: %v)", errGaveUp, err, last)
+			return fmt.Errorf("%w: interrupted while backing off: %w (last error: %w)", errGaveUp, err, last)
 		}
 		backoff = min(backoff*2, cfg.MaxBackoff)
 	}
@@ -209,12 +209,12 @@ func (r runner) attempt(ctx context.Context, cfg config, key string) error {
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.URL, http.NoBody)
 	if err != nil {
-		return fmt.Errorf("%w: build request: %v", errRejected, err)
+		return fmt.Errorf("%w: build request: %w", errRejected, err)
 	}
 	req.Header.Set("Idempotency-Key", key)
 	resp, err := r.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("%w: %v", errRetryable, err)
+		return fmt.Errorf("%w: %w", errRetryable, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxBodyLog))

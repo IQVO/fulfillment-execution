@@ -237,7 +237,7 @@ func (d Deps) lapsingLeases(ctx context.Context, path task.Type, window time.Dur
 		if lease == nil || t.Type() != path {
 			continue
 		}
-		reason := ""
+		var reason string
 		switch {
 		case !lease.Expiry.After(now):
 			reason = "lease already expired; task will return to the pool on the next sweep"

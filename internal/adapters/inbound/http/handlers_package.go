@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
@@ -104,25 +105,10 @@ func (h *Handlers) GetPackageHandler(w http.ResponseWriter, r *http.Request) {
 // invalid-request if missing or empty) and an unknown orderRef returns an
 // empty page ({items,nextCursor}, ordered by id).
 func (h *Handlers) GetPackagesHandler(w http.ResponseWriter, r *http.Request) {
-	limit, after, ok := pageParams(w, r, "orderRef")
-	if !ok {
-		return
-	}
-	orderRef := r.URL.Query().Get("orderRef")
-	if orderRef == "" {
-		writeBadRequest(w, r, "orderRef is required")
-		return
-	}
-
-	packages, err := h.GetPackagesByOrderRef.ExecutePage(r.Context(), shared.OrderRef(orderRef), shared.PackageId(afterID(after)), page.FetchSize(limit))
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	resp := make([]packageResponse, 0, len(packages))
-	for _, p := range packages {
-		resp = append(resp, toPackageResponse(p))
-	}
-	writeJSON(w, http.StatusOK, page.Of(resp, limit, func(p packageResponse) page.Position { return idPosition(p.Id) }))
+	writeOrderRefPage(w, r,
+		func(ctx context.Context, orderRef shared.OrderRef, after string, limit int) ([]*pack.Package, error) {
+			return h.GetPackagesByOrderRef.ExecutePage(ctx, orderRef, shared.PackageId(after), limit)
+		},
+		toPackageResponse,
+		func(p packageResponse) page.Position { return idPosition(p.Id) })
 }

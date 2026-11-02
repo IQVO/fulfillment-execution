@@ -141,6 +141,9 @@ func (g *Readiness) Failing(ctx context.Context) []string {
 	return append([]string(nil), failing...)
 }
 
+// statusKey is the shared readiness/report status field name (goconst).
+const statusKey = "status"
+
 // GetReadyz handles GET /readyz: 200 {"status":"ready"} while ready; 503
 // {"status":"not_ready"} during the boot warm-up and once SetNotReady has
 // been called (draining); 503 problem+json (dependency-unavailable, naming
@@ -148,7 +151,7 @@ func (g *Readiness) Failing(ctx context.Context) []string {
 // Readiness on Handlers (the zero value) always reports ready.
 func (h *Handlers) GetReadyz(w http.ResponseWriter, r *http.Request) {
 	if !h.Readiness.Ready() {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready"})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{statusKey: "not_ready"})
 		return
 	}
 	if failing := h.Readiness.Failing(r.Context()); len(failing) > 0 {
@@ -156,5 +159,5 @@ func (h *Handlers) GetReadyz(w http.ResponseWriter, r *http.Request) {
 			"not ready: "+strings.Join(failing, ", "), r.URL.Path)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+	writeJSON(w, http.StatusOK, map[string]string{statusKey: "ready"})
 }

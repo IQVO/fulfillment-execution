@@ -16,7 +16,7 @@ type registerStationRequest struct {
 func (r registerStationRequest) validate() string {
 	switch {
 	case r.StationId == "":
-		return "stationId is required"
+		return stationIDRequired
 	case len(r.Capabilities) == 0:
 		return "capabilities must contain at least one capability"
 	default:

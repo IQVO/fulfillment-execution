@@ -9,15 +9,10 @@ import (
 
 	"github.com/cenkalti/backoff/v4"
 	kafkago "github.com/segmentio/kafka-go"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/codes"
-	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
-	"go.opentelemetry.io/otel/trace"
 
 	"github.com/claudioed/fulfillment-execution/internal/adapters/kafka/cloudevents"
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
-	"github.com/claudioed/fulfillment-execution/internal/observability"
 )
 
 // TaskInterleavingTopic is task-interleaving's integration topic (its
@@ -75,7 +70,7 @@ type InterleavingHintIssuedData struct {
 // invalid payload, is WARN-logged and committed past; any other type is
 // ignored and committed past.
 type InterleavingHintConsumer struct {
-	reader MessageFetchCommitter
+	reader fetchCommitReader
 	closer interface{ Close() error }
 	topic  string
 	apply  *usecases.ApplyInterleavingHint
@@ -107,8 +102,8 @@ func NewInterleavingHintConsumer(brokers []string, topic, groupID string, apply 
 }
 
 // NewInterleavingHintConsumerFromReader builds the consumer over any
-// MessageFetchCommitter (unit tests pass a fake).
-func NewInterleavingHintConsumerFromReader(reader MessageFetchCommitter, topic string, apply *usecases.ApplyInterleavingHint, logger *slog.Logger) *InterleavingHintConsumer {
+// fetchCommitReader (unit tests pass a fake).
+func NewInterleavingHintConsumerFromReader(reader fetchCommitReader, topic string, apply *usecases.ApplyInterleavingHint, logger *slog.Logger) *InterleavingHintConsumer {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -217,40 +212,11 @@ func (c *InterleavingHintConsumer) handleUntilDone(ctx context.Context, msg kafk
 // done with (applied, duplicate, ignored type, or skipped as invalid) and
 // an error only for a transient failure worth retrying.
 func (c *InterleavingHintConsumer) Handle(ctx context.Context, msg kafkago.Message) error {
-	ctx = observability.ExtractKafkaTrace(ctx, msg.Headers)
-	ctx, span := otel.Tracer(observability.InstrumentationName).Start(ctx,
-		"kafka.consume "+msg.Topic,
-		trace.WithSpanKind(trace.SpanKindConsumer),
-		trace.WithAttributes(
-			semconv.MessagingSystemKafka,
-			semconv.MessagingDestinationName(msg.Topic),
-			semconv.MessagingOperationName("process"),
-		),
-	)
-	defer span.End()
-
-	req, ok, err := decodeInterleavingHintIssued(msg.Value)
-	switch {
-	case errors.Is(err, cloudevents.ErrNotCloudEvent):
-		c.logger.WarnContext(ctx, "skipping kafka message that is not a valid CloudEvent",
-			"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset, "error", err)
-		return nil
-	case errors.Is(err, ErrInvalidInterleavingHint):
-		c.logger.WarnContext(ctx, "skipping InterleavingHintIssued with an invalid payload",
-			"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset, "error", err)
-		return nil
-	case err != nil:
-		return err
-	case !ok:
-		return nil
-	}
-
-	if err := c.apply.Execute(ctx, req); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("kafka: apply InterleavingHintIssued %s: %w", req.EventId, err)
-	}
-	return nil
+	return handleConsumedEvent(ctx, msg, c.logger, decodeInterleavingHintIssued,
+		ErrInvalidInterleavingHint, "skipping InterleavingHintIssued with an invalid payload",
+		"InterleavingHintIssued",
+		func(req usecases.InterleavingHintRequest) string { return req.EventId },
+		c.apply.Execute)
 }
 
 // decodeInterleavingHintIssued decodes raw as a CloudEvents 1.0 event.
@@ -266,7 +232,7 @@ func decodeInterleavingHintIssued(raw []byte) (usecases.InterleavingHintRequest,
 	}
 	var data InterleavingHintIssuedData
 	if err := e.DataAs(&data); err != nil {
-		return usecases.InterleavingHintRequest{}, false, fmt.Errorf("%w: event %s: %v", ErrInvalidInterleavingHint, e.ID(), err)
+		return usecases.InterleavingHintRequest{}, false, fmt.Errorf("%w: event %s: %w", ErrInvalidInterleavingHint, e.ID(), err)
 	}
 	if data.HintId == "" || data.StationId == "" || data.SiteId == "" {
 		return usecases.InterleavingHintRequest{}, false, fmt.Errorf("%w: event %s: hint_id, station_id and site_id are required", ErrInvalidInterleavingHint, e.ID())

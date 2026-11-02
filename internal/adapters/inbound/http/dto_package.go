@@ -21,7 +21,7 @@ type sealPackageRequest struct {
 // mapped to 422), not a malformed request.
 func (r sealPackageRequest) validate() string {
 	if r.StationId == "" {
-		return "stationId is required"
+		return stationIDRequired
 	}
 	if r.ShipInOwnContainer {
 		if r.LineQuantity == nil {
