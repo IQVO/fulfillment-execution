@@ -10,7 +10,7 @@ this order — domain first, adapter last — never the reverse; writing the
 HTTP handler before the domain invariant it enforces produces handlers
 that validate nothing and use cases that get bypassed.
 
-This walks the exact path `POST /stations/{stationId}/claim-next` took
+This walks the exact path `POST /stations/{stationId}/task-claims` took
 (`internal/application/usecases/claim_next.go` +
 `internal/adapters/inbound/http/handlers.go`'s `PostClaimNext`) as the
 concrete worked example — read those two files alongside this guide.
@@ -19,7 +19,7 @@ concrete worked example — read those two files alongside this guide.
 
 Check `internal/domain/<aggregate>/` for the rule this endpoint enforces.
 A REST endpoint should almost never contain business logic itself — it
-decodes a request, calls a use case, encodes the result. `claim-next`'s
+decodes a request, calls a use case, encodes the result. `task-claims`'s
 real invariant lives on `task.Task.Claim` (at-most-once assignment via a
 lease, capability-match rejection) — the handler and use case never
 reimplement that check, they just call it. If the operation needs a new
@@ -97,14 +97,14 @@ In `internal/adapters/inbound/http/`:
 
 Write at least one httptest per endpoint: one success path, one error
 path (validation failure AND/OR the domain-rule failure, whichever this
-endpoint can produce) — see `handlers_test.go`'s claim-next cases (happy
+endpoint can produce) — see `handlers_test.go`'s task-claims cases (happy
 path, capability mismatch → 409, double-claim → 409).
 
 ## 4. Contract: update OpenAPI, then regenerate docs
 
 Add the path to `apis/openapi.yaml` (request/response schemas, the RFC
 7807 problem-detail response for each error case — see the existing
-`/stations/{stationId}/claim-next` entry for the shape).
+`/stations/{stationId}/task-claims` entry for the shape).
 
 Regenerate the Docusaurus REST reference — this repo's `docs-api-drift`
 CI job fails the PR if you skip this:

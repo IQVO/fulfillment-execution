@@ -148,7 +148,7 @@ two, closing the promise-feedback-loop half of order-management's ADR
     order's PACK task via CreateTask and raises OrderConsolidated (ADR-0016)
 15. GetPackage(packageId) -> one Package, read-only; ErrPackageNotFound when
     absent (backs `GET /packages/{id}`, ADR-0033 — how a caller learns the
-    SLAM outcome after `POST /packages/{id}/slam`'s 204)
+    SLAM outcome after `POST /packages/{id}/slam-runs`'s 204)
 16. GetPackagesByOrderRef(orderRef) -> every Package for one order ref,
     read-only (backs `GET /packages?orderRef=`, ADR-0033)
 
