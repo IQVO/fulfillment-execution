@@ -16,7 +16,7 @@ func CaseBreakIdempotencyKey(id shared.TaskId) string { return "break-case:" + s
 
 // CompleteCaseBreak completes a BREAK_CASE task (ADR 0054): after the claim
 // rules hold it asks inventory-storage to break the sealed case into the
-// loose bin (POST /containers/{lpn}:break, Idempotency-Key = the task), and
+// loose bin (POST /containers/{lpn}/case-breaks, Idempotency-Key = the task), and
 // only when that succeeds completes the task and publishes TaskCompleted. A
 // failed break leaves the task Claimed and unchanged; a retry reuses the
 // same idempotency key, so a break that succeeded but whose answer or local

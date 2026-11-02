@@ -163,7 +163,7 @@ from leaking.
 
 :::note[Honest status]
 Occupancy (`CheckIn` / `CheckOut`) is exposed over HTTP as
-`POST /stations/{stationId}/check-in` and `POST /stations/{stationId}/check-out`
+`POST /stations/{stationId}/check-ins` and `POST /stations/{stationId}/check-outs`
 ([ADR-0014](../adr/0014-labor-performance-integration-hooks.md)); it raises no
 domain event. `ClaimNext` still does **not** require a station to be occupied
 before it can claim — the registered capability set is the only station
@@ -187,7 +187,7 @@ SLAM weigh-check.
 | P6 | **Same-package DOT hazard segregation.** A scanned item's hazard class must be compatible with every already-scanned item's hazard class, per a class-level 49 CFR §177.848-derived matrix. An unclassified item (hazard class 0) never triggers or blocks this — fail-open. | `Package.ScanItemWithClass` → `pack.IsSegregationIncompatible` | `pack.ErrPackageSegregationViolation` | `409` |
 
 P5 is worth dwelling on: a diverted package is **not an error**. It is a
-successful weigh-check with a negative result, so `POST /packages/{id}/slam`
+successful weigh-check with a negative result, so `POST /packages/{id}/slam-runs`
 returns `204` — the same status as a pass — and raises
 `WeightDiscrepancyDetected` *and* `PackageDiverted`. A caller learns the
 outcome by reading the package back with `GET /packages/{id}`, whose `status`

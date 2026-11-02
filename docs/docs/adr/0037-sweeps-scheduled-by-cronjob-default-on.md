@@ -18,7 +18,7 @@ event or database contract changes.
 
 ## Context
 
-`POST /tasks/expire-leases` and `POST /tasks/sweep-cpt-misses` are
+`POST /task-lease-expirations` and `POST /cpt-miss-sweeps` are
 Clock-driven but externally triggered: nothing in the service calls them on a
 timer, and ADR-0025 rejected an in-process ticker. The chart already shipped
 the external scheduler as two Kubernetes `CronJob`s, but behind

@@ -38,8 +38,11 @@
 # empty file is fatal, never a partial catalogue). The script therefore
 # writes the same four-path catalogue warehouse-infra publishes
 # (config/process-paths/sortable-fc.yaml) into its temp dir and points
-# PATH_CATALOGUE_FILE at it. The consumer topics are auto-created by the
-# broker, so the consumers simply idle.
+# PATH_CATALOGUE_FILE at it. Every topic the service writes to or reads from
+# is pre-created (scripts/prektopics): on a cold broker the outbox relay
+# otherwise races the broker's auto-creation and fails its first passes with
+# [3] Unknown Topic Or Partition, which flaps readiness into 503s and fails
+# the run.
 #
 # Requires `st` on PATH:
 #   python3 -m pip install --user 'schemathesis==4.28.0'
@@ -83,6 +86,11 @@ cd "$(dirname "$0")/.."
 TMP="$(mktemp -d)"
 BIN="${TMP}/execution"
 go build -o "$BIN" ./cmd/execution
+
+# Pre-create every topic the service writes to or reads from: on a cold
+# broker auto-creation loses the race against the outbox relay and the
+# consumers ([3] Unknown Topic Or Partition, flapping readiness into 503s).
+go run ./scripts/prektopics
 
 cat >"${TMP}/process-paths.yaml" <<'EOF'
 building: contract-test

@@ -127,8 +127,8 @@ def main() -> int:
     docs = render([])
     jobs = cronjobs(docs)
     want = {
-        "fulfillment-execution-expire-leases": ("/tasks/expire-leases", "* * * * *"),
-        "fulfillment-execution-sweep-cpt-misses": ("/tasks/sweep-cpt-misses", "*/5 * * * *"),
+        "fulfillment-execution-expire-leases": ("/task-lease-expirations", "* * * * *"),
+        "fulfillment-execution-sweep-cpt-misses": ("/cpt-miss-sweeps", "*/5 * * * *"),
     }
     if set(jobs) != set(want):
         failures.append(f"expected CronJobs {sorted(want)} by default, got {sorted(jobs)}")

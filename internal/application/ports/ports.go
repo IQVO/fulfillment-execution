@@ -48,6 +48,10 @@ type TaskRepo interface {
 	// unspecified; an unknown orderRef returns an empty slice, not an
 	// error.
 	FindByOrderRef(ctx context.Context, orderRef shared.OrderRef) ([]*task.Task, error)
+	// FindPageByOrderRef is the keyset-paged FindByOrderRef behind
+	// GET /tasks?orderRef=: at most limit tasks with id > afterId (afterId ""
+	// means the first page), ordered by id ascending.
+	FindPageByOrderRef(ctx context.Context, orderRef shared.OrderRef, afterId shared.TaskId, limit int) ([]*task.Task, error)
 }
 
 // StationRepo persists and retrieves Station aggregates.
@@ -69,7 +73,7 @@ type PackageRepo interface {
 	FindById(ctx context.Context, id shared.PackageId) (*pack.Package, error)
 	// FindByTaskId returns the Package already sealed for taskId, or nil
 	// (not an error) if no Package has been sealed for that task yet.
-	// SealPackage uses this to make POST /tasks/{id}/seal-package
+	// SealPackage uses this to make POST /tasks/{id}/package-seals
 	// idempotent: a retried call returns the already-sealed Package
 	// instead of creating a duplicate (see SealPackage.Execute).
 	FindByTaskId(ctx context.Context, taskId shared.TaskId) (*pack.Package, error)
@@ -80,6 +84,10 @@ type PackageRepo interface {
 	// orderRef returns an empty slice, not an error. Backs
 	// GET /packages?orderRef= (ADR-0033), mirroring TaskRepo.FindByOrderRef.
 	FindByOrderRef(ctx context.Context, orderRef shared.OrderRef) ([]*pack.Package, error)
+	// FindPageByOrderRef is the keyset-paged FindByOrderRef behind
+	// GET /packages?orderRef=: at most limit packages with id > afterId
+	// (afterId "" means the first page), ordered by id ascending.
+	FindPageByOrderRef(ctx context.Context, orderRef shared.OrderRef, afterId shared.PackageId, limit int) ([]*pack.Package, error)
 }
 
 // OrderConsolidationRepo persists and retrieves OrderConsolidation

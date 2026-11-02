@@ -31,22 +31,22 @@ Cross-checked against `internal/adapters/inbound/http/router.go`:
 
 | Method | Path | Use case | In `openapi.yaml`? |
 | --- | --- | --- | --- |
-| `POST` | `/tasks` | `CreateTask` (`Idempotency-Key` header required when Postgres is wired, [ADR-0028](../adr/0028-idempotency-key-middleware.md)) | Yes |
-| `GET` | `/tasks?orderRef=` | `GetTasksByOrderRef` ([ADR-0013](../adr/0013-fulfillment-mfe-console-adoption.md)) | Yes |
+| `POST` | `/tasks` | `CreateTask` (every `POST` requires an `Idempotency-Key` header when Postgres is wired, [ADR-0028](../adr/0028-idempotency-key-middleware.md)) | Yes |
+| `GET` | `/tasks?orderRef=&limit=&cursor=` | `GetTasksByOrderRef` (paged, [ADR-0013](../adr/0013-fulfillment-mfe-console-adoption.md)) | Yes |
 | `POST` | `/stations` | `RegisterStation` (optional `locationCode`, [ADR-0024](../adr/0024-station-location-code-and-workcenter-role-check.md)) | Yes |
-| `POST` | `/stations/{stationId}/claim-next` | `ClaimNext` | Yes |
-| `POST` | `/stations/{stationId}/check-in` | `CheckInStation` | Yes |
-| `POST` | `/stations/{stationId}/check-out` | `CheckOutStation` | Yes |
-| `POST` | `/tasks/{id}/renew-lease` | `RenewLease` | Yes |
-| `POST` | `/tasks/{id}/complete` | `CompleteTask` | Yes |
-| `POST` | `/tasks/{id}/seal-package` | `SealPackage` | Yes |
+| `POST` | `/stations/{stationId}/task-claims` | `ClaimNext` | Yes |
+| `POST` | `/stations/{stationId}/check-ins` | `CheckInStation` | Yes |
+| `POST` | `/stations/{stationId}/check-outs` | `CheckOutStation` | Yes |
+| `POST` | `/tasks/{id}/lease-renewals` | `RenewLease` | Yes |
+| `POST` | `/tasks/{id}/completions` | `CompleteTask` | Yes |
+| `POST` | `/tasks/{id}/package-seals` | `SealPackage` | Yes |
 | `GET` | `/packages/{id}` | `GetPackage` ([ADR-0033](../adr/0033-package-read-model.md)) | Yes |
-| `GET` | `/packages?orderRef=` | `GetPackagesByOrderRef` ([ADR-0033](../adr/0033-package-read-model.md)) | Yes |
-| `POST` | `/packages/{id}/slam` | `RunSlam` (`204` in both outcomes) | Yes |
+| `GET` | `/packages?orderRef=&limit=&cursor=` | `GetPackagesByOrderRef` (paged, [ADR-0033](../adr/0033-package-read-model.md)) | Yes |
+| `POST` | `/packages/{id}/slam-runs` | `RunSlam` (`204` in both outcomes) | Yes |
 | `GET` | `/queues/{taskType}/depth` | `GetQueueDepth` | Yes |
 | `GET` | `/capacity/{capability}` | `GetInstalledCapacity` ([ADR-0018](../adr/0018-installed-capacity-read-endpoint.md)) | Yes |
-| `POST` | `/tasks/expire-leases` | `ExpireLeases` | Yes |
-| `POST` | `/tasks/sweep-cpt-misses` | `SweepCPTMisses` ([ADR-0025](../adr/0025-cpt-missed-sweep-and-package-manifested.md)) | Yes |
+| `POST` | `/task-lease-expirations` | `ExpireLeases` | Yes |
+| `POST` | `/cpt-miss-sweeps` | `SweepCPTMisses` ([ADR-0025](../adr/0025-cpt-missed-sweep-and-package-manifested.md)) | Yes |
 | `POST` | `/rebin/arrivals` | `ArriveAtRebin` ([ADR-0016](../adr/0016-rebin-and-order-consolidation.md)) | Yes |
 | `GET` | `/healthz` | *(liveness)* | Yes |
 | `GET` | `/readyz` | *(readiness, [ADR-0029](../adr/0029-resilience-circuit-breakers-retry-dlq-shutdown.md))* | Yes |
@@ -82,10 +82,11 @@ correct verbs, correct status codes, `Location` headers on creation — but no
 HATEOAS. Clients are expected to know the URL structure rather than discover
 it from response links, and the spec says so explicitly.
 
-**Actions are POSTs on sub-resources.** `claim-next`, `renew-lease`,
-`complete`, `seal-package`, `slam` and `expire-leases` are state transitions
-with side effects, not resource replacements — so they are `POST` on a
-sub-path, not `PUT` on a field. `POST /stations/{stationId}/claim-next` in
+**Actions are POSTs that create a noun** ([ADR-0060](../adr/0060-adopt-the-fleet-rest-api-guideline.md)).
+`task-claims`, `lease-renewals`, `completions`, `package-seals`, `slam-runs`
+and `task-lease-expirations` are state transitions with side effects, not
+resource replacements — so they are `POST` creating the record of the act, not
+`PUT` on a field and never a verb in the path. `POST /stations/{stationId}/task-claims` in
 particular reads correctly as "this station asks for its next task," which is
 the pull semantics made visible in the URL.
 
@@ -112,7 +113,7 @@ Every error response — without exception — is an RFC 7807 problem document:
   "title": "Task already claimed by another station",
   "status": 409,
   "detail": "task: already claimed",
-  "instance": "/tasks/task-8a1f/complete"
+  "instance": "/tasks/task-8a1f/completions"
 }
 ```
 
@@ -153,7 +154,11 @@ as a permanent failure.
 | Slug | Status | Title |
 | --- | --- | --- |
 | `invalid-request` | 400 | The request is malformed or missing a required field |
-| `idempotency-key-required` | 400 | Idempotency-Key header is required (`POST /tasks` with Postgres, ADR-0028) |
+| `idempotency-key-required` | 400 | Idempotency-Key header is required (every `POST`, with Postgres; ADR-0028, ADR-0060) |
+| `idempotency-key-invalid` | 400 | Idempotency-Key is not 1-128 printable ASCII characters |
+| `invalid-limit` | 400 | `limit` is not an integer 1-500 (collections, ADR-0060) |
+| `invalid-cursor` | 400 | `cursor` does not decode (collections) |
+| `unknown-query-parameter` | 400 | A query parameter the collection does not declare (e.g. the retired `after`, `offset`) |
 | `malformed-request-body` | 400 | The request body could not be read (idempotency middleware) |
 | `task-not-found` | 404 | Task not found |
 | `station-not-found` | 404 | Station not found |
@@ -175,7 +180,7 @@ as a permanent failure.
 | `rebin-unknown-line` | 422 | Line is not part of this order's required consolidation set |
 | `wrong-task-type` | 422 | Wrong task type for this operation |
 | `station-location-not-workcenter` | 422 | Station's locationCode does not resolve to a facility-layout WorkCenter |
-| `idempotency-key-reused` | 422 | Idempotency-Key was already used with a different request |
+| `idempotency-key-reused` | 409 | Idempotency-Key was already used with a different method, path or body |
 | `internal-error` | 500 | Internal server error |
 
 All types share the base URI

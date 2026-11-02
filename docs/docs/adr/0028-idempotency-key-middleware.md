@@ -22,15 +22,15 @@ Of every mutating route this service exposes —
 ```
 POST /stations
 POST /tasks
-POST /stations/{stationId}/claim-next
-POST /stations/{stationId}/check-in
-POST /stations/{stationId}/check-out
-POST /tasks/{id}/renew-lease
-POST /tasks/{id}/complete
-POST /tasks/{id}/seal-package
-POST /packages/{id}/slam
-POST /tasks/expire-leases
-POST /tasks/sweep-cpt-misses
+POST /stations/{stationId}/task-claims
+POST /stations/{stationId}/check-ins
+POST /stations/{stationId}/check-outs
+POST /tasks/{id}/lease-renewals
+POST /tasks/{id}/completions
+POST /tasks/{id}/package-seals
+POST /packages/{id}/slam-runs
+POST /task-lease-expirations
+POST /cpt-miss-sweeps
 POST /rebin/arrivals
 ```
 
@@ -140,7 +140,8 @@ transaction:
 - **0 rows** (a row for this key already exists): roll back this new,
   empty transaction and fall through to a plain, non-transactional
   `SELECT` (§5 explains why this is safe without additional locking):
-  - `request_hash` mismatch → `422` (`idempotency-key-reused`).
+  - `request_hash`, method or path mismatch → `409` (`idempotency-key-reused`;
+    was `422` before [ADR-0060](./0060-adopt-the-fleet-rest-api-guideline.md)).
   - `request_hash` match → a genuine retry: write
     `response_headers`/`status_code`/`response_body` VERBATIM to the
     real `http.ResponseWriter`, without calling the real handler at

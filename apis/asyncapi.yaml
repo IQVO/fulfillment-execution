@@ -373,7 +373,7 @@ components:
       name: TaskCPTMissed
       title: TaskCPTMissed
       summary: A task is still open (Pending or Claimed) past its CPT deadline.
-      description: Raised by the CPT-missed sweep (`POST /tasks/sweep-cpt-misses`, ADR-0025). Re-fires
+      description: Raised by the CPT-missed sweep (`POST /cpt-miss-sweeps`, ADR-0025). Re-fires
         on every sweep pass while the task stays open past its CPT, so consumers must dedupe on their
         own (order-management's RepromiseOrder is idempotent by design). Published on `warehouse.fulfillment.events`,
         keyed by task id. Consumed by order-management.

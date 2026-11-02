@@ -86,7 +86,7 @@ release leaves no processed marker.
 SKU, both bins, planned quantity, priority). It is created only from released
 work (never through `POST /tasks`, whose creatable enum is unchanged), requires
 the catalogue path's capabilities (`replenish`) and is claimed like any other type
-(`POST /stations/{id}/claim-next` with `taskType: REPLENISH`); a station without
+(`POST /stations/{id}/task-claims` with `taskType: REPLENISH`); a station without
 the `replenish` capability is never given one (the same capability matching as
 `relocate`). The move is persisted with the task (migration 0020, nullable
 `replenishment_*` columns, NULL for every other task; additive, with a tested
@@ -95,7 +95,7 @@ down) and shown on the read model (`replenishment` on `TaskResponse`, MCP
 
 ### 4. Completing a REPLENISH task
 
-`POST /tasks/{id}/complete` and the MCP `complete_task` tool take the same three
+`POST /tasks/{id}/completions` and the MCP `complete_task` tool take the same three
 optional inputs as for RELOCATE, now meaningful for two task types:
 
 - `quantity`: the operator-counted, confirmed units, at least 1. **Required** for

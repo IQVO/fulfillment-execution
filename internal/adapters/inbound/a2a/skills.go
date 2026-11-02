@@ -358,7 +358,7 @@ var classifications = []struct {
 	{task.ErrAlreadyCompleted, 409, "task-already-completed", "Task already completed"},
 	{task.ErrNotClaimed, 409, "task-not-claimed", "Task is not currently claimed"},
 	{task.ErrNotOwner, 409, "task-not-owner", "Station does not own the active claim on this task"},
-	{task.ErrCaseBreakCompletionRequired, 409, "case-break-completion-required", "A BREAK_CASE task completes only through POST /tasks/{id}/break-case"},
+	{task.ErrCaseBreakCompletionRequired, 409, "case-break-completion-required", "A BREAK_CASE task completes only through POST /tasks/{id}/case-breaks"},
 
 	{task.ErrRelocationConfirmationRequired, 422, "relocation-confirmation-required", "A RELOCATE task completes only with the confirmed quantity and the bins the move left open"},
 	{task.ErrInvalidRelocationConfirmation, 422, "invalid-relocation-confirmation", "The relocation confirmation does not match the planned move"},

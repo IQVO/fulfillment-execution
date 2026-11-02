@@ -67,7 +67,7 @@ error response, without exception.**
   "title": "Task already claimed by another station",
   "status": 409,
   "detail": "task: already claimed",
-  "instance": "/tasks/task-8a1f/complete"
+  "instance": "/tasks/task-8a1f/completions"
 }
 ```
 

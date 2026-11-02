@@ -39,7 +39,7 @@ func TestNUL_IsAClientErrorAndDoesNotConsumeTheKey(t *testing.T) {
 	if rec := post("/tasks", key, escaped); rec.Code != http.StatusBadRequest {
 		t.Fatalf("escaped NUL in the body = %d %s, want 400", rec.Code, rec.Body.String())
 	}
-	if rec := post("/tasks/a%00b/complete", key, `{}`); rec.Code != http.StatusNotFound {
+	if rec := post("/tasks/a%00b/completions", key, `{}`); rec.Code != http.StatusNotFound {
 		t.Fatalf("NUL in the path = %d %s, want 404", rec.Code, rec.Body.String())
 	}
 

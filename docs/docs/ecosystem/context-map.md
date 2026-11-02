@@ -135,9 +135,9 @@ sequenceDiagram
     K1->>FE: consume, filter on the full CloudEvents type
     FE->>FE: MarkProcessed(id), skip if already seen
     FE->>FE: CreateTask(PICK, cpt, orderRef = work_unit_id)
-    ST->>FE: cmd: POST /stations/station-03/claim-next
+    ST->>FE: cmd: POST /stations/station-03/task-claims
     FE-->>ST: 200 earliest-CPT matching task, leased 5 min
-    ST->>FE: cmd: POST /tasks/task-1/complete
+    ST->>FE: cmd: POST /tasks/task-1/completions
     FE->>K2: evt: TaskCompleted (task_id, station_id, work_unit_id)
     K2->>WP: consume
     WP->>WP: RecordCompletion(work_unit_id)

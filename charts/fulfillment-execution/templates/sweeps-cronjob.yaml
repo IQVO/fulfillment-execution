@@ -1,7 +1,7 @@
 {{- /*
 Scheduler for the two REST-triggered sweeps (ADR-0003, ADR-0025, ADR-0037):
-nothing in this service calls POST /tasks/expire-leases or
-POST /tasks/sweep-cpt-misses on a timer, by design -- a Kubernetes CronJob is
+nothing in this service calls POST /task-lease-expirations or
+POST /cpt-miss-sweeps on a timer, by design -- a Kubernetes CronJob is
 the external scheduler ADR-0003 names. ON by default (sweeps.enabled=true,
 ADR-0037); set it false when an external caller drives the endpoints. No
 in-process ticker is added (ADR-0025 rejected one).
@@ -27,6 +27,7 @@ activeDeadlineSeconds, so a values change can not reintroduce the hang.
 {{- fail (printf "sweeps: worst-case retry budget %ds (maxAttempts x requestTimeoutSeconds + (maxAttempts-1) x maxBackoffSeconds) must be below activeDeadlineSeconds %ds (ADR 0048)" (int $budget) (int $s.activeDeadlineSeconds)) }}
 {{- end }}
 {{- $jobs := dict "expire-leases" .Values.sweeps.expireLeases "sweep-cpt-misses" .Values.sweeps.cptMisses }}
+{{- $paths := dict "expire-leases" "task-lease-expirations" "sweep-cpt-misses" "cpt-miss-sweeps" }}
 {{- range $name, $job := $jobs }}
 {{- if $job.enabled }}
 ---
@@ -74,7 +75,7 @@ spec:
                 - /app/sweep
               env:
                 - name: SWEEP_URL
-                  value: {{ printf "http://%s:%v/tasks/%s" (include "fulfillment-execution.fullname" $root) $root.Values.service.port $name | quote }}
+                  value: {{ printf "http://%s:%v/%s" (include "fulfillment-execution.fullname" $root) $root.Values.service.port (index $paths $name) | quote }}
                 - name: SWEEP_REQUEST_TIMEOUT
                   value: {{ printf "%ds" (int $s.requestTimeoutSeconds) | quote }}
                 - name: SWEEP_MAX_ATTEMPTS

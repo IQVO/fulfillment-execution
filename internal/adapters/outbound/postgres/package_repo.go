@@ -130,6 +130,29 @@ func (r *PackageRepo) FindByTaskId(ctx context.Context, taskId shared.TaskId) (*
 	return r.findOne(ctx, selectPackageByTaskId, string(taskId))
 }
 
+// FindPageByOrderRef returns at most limit packages of orderRef with
+// id > afterId, ordered by id (the primary key: the keyset never skips or
+// repeats a row).
+func (r *PackageRepo) FindPageByOrderRef(ctx context.Context, orderRef shared.OrderRef, afterId shared.PackageId, limit int) ([]*pack.Package, error) {
+	rows, err := querierFrom(ctx, r.pool).Query(ctx, `SELECT `+packageColumns+
+		` FROM packages WHERE order_ref = $1 AND id > $2 ORDER BY id LIMIT $3`,
+		string(orderRef), string(afterId), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make([]*pack.Package, 0)
+	for rows.Next() {
+		p, err := scanPackage(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, p)
+	}
+	return result, rows.Err()
+}
+
 // FindByOrderRef returns every package sealed for orderRef, ordered by id,
 // backing GET /packages?orderRef= (ADR-0033). Served by
 // idx_packages_order_ref (migration 0013). An unknown orderRef returns an

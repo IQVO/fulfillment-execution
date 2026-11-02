@@ -172,7 +172,7 @@ var problemCatalog = []struct {
 	{task.ErrPickOverQuantity, "pick-over-quantity", "The scan would pick more than the planned quantity"},
 	{task.ErrPickIncomplete, "pick-incomplete", "The scanned eaches do not add up to the planned quantity"},
 	{task.ErrNotCaseBreakTask, "not-case-break-task", "The task is not a BREAK_CASE task"},
-	{task.ErrCaseBreakCompletionRequired, "case-break-completion-required", "A BREAK_CASE task completes only through POST /tasks/{id}/break-case"},
+	{task.ErrCaseBreakCompletionRequired, "case-break-completion-required", "A BREAK_CASE task completes only through POST /tasks/{id}/case-breaks"},
 	{ports.ErrCaseBreakUnavailable, "case-break-unavailable", "inventory-storage could not be reached for the case break"},
 	{ports.ErrCaseBreakRejected, "case-break-rejected", "inventory-storage rejected the case break"},
 }
@@ -237,6 +237,14 @@ func writeBadRequest(w http.ResponseWriter, r *http.Request, detail string) {
 // endpoint (POST /tasks, POST /stations) where the path has no segment
 // identifying a specific resource instance — RFC 7807 permits omitting
 // "instance" in that case (see REST_API_TASK.md Stage 2).
+// writeZeroDeadline answers a deadline that is present but the zero time (0001-01-01T00:00:00Z).
+// It is a valid RFC 3339 date-time, so the request is well-formed (not a 400 "is required"), but
+// no task can be due at the zero instant: 422, problem slug invalid-deadline.
+func writeZeroDeadline(w http.ResponseWriter, field string) {
+	writeProblem(w, http.StatusUnprocessableEntity, "invalid-deadline", "The deadline is not a real instant",
+		field+" must be a real deadline, not the zero time 0001-01-01T00:00:00Z", "")
+}
+
 func writeBadRequestNoInstance(w http.ResponseWriter, detail string) {
 	writeProblem(w, http.StatusBadRequest, "invalid-request", "The request is malformed or missing a required field", detail, "")
 }

@@ -57,7 +57,7 @@ While claimed:
   existed) is `ErrNotClaimed` on renew, complete **and** seal-package, whoever
   asks ([ADR-0038](../adr/0038-seal-package-expired-lease-is-not-claimed.md)).
 - The owner may extend the lease indefinitely via
-  `POST /tasks/{id}/renew-lease` — the right move for legitimately long work
+  `POST /tasks/{id}/lease-renewals` — the right move for legitimately long work
   (a deep-aisle pick, an awkward carton) rather than picking one lease
   duration long enough for the worst case.
 
@@ -79,7 +79,7 @@ Expiry is evaluated in two complementary places, and both matter:
    fresh claim even if no sweep has run yet — and a station trying to complete
    a task whose lease already lapsed gets `ErrNotClaimed`, not a silent
    success.
-2. **Eagerly, via the sweep.** `POST /tasks/expire-leases` runs the
+2. **Eagerly, via the sweep.** `POST /task-lease-expirations` runs the
    `ExpireLeases` use case, which walks every `Claimed` task, frees the ones
    past expiry, publishes `LeaseExpired` for each, and returns the count
    freed. This is what makes the freed work *visible* in the queue-depth read
@@ -107,7 +107,7 @@ not "earliest deadline, then fail if the station can't do it."
 A task still open (Pending or Claimed) at or past its CPT is **CPT-missed**
 (`Task.IsCPTMissed(now)`). Nothing in the lifecycle changes when that
 happens — the task stays claimable and completable. Instead, the Clock-driven
-`POST /tasks/sweep-cpt-misses` runs `SweepCPTMisses`, which publishes one
+`POST /cpt-miss-sweeps` runs `SweepCPTMisses`, which publishes one
 `TaskCPTMissed` per overdue open task onto `warehouse.fulfillment.events` so
 `order-management` can re-promise the order. Because the sweep changes no
 state, an overdue task re-fires on every pass until it completes — each pass

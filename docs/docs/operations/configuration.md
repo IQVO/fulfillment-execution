@@ -121,7 +121,7 @@ Runs once per CronJob schedule, POSTs one sweep endpoint and exits
 
 | Variable | Default | Required? | Meaning | Read in |
 | --- | --- | --- | --- | --- |
-| `SWEEP_URL` | *(unset)* | **yes** | Endpoint to POST, e.g. `http://<release>:80/tasks/expire-leases`. | `cmd/sweep/sweep.go` |
+| `SWEEP_URL` | *(unset)* | **yes** | Endpoint to POST, e.g. `http://<release>:80/task-lease-expirations`. | `cmd/sweep/sweep.go` |
 | `SWEEP_REQUEST_TIMEOUT` | `15s` | no | Per-attempt bound (connect + request + response), Go duration. | `cmd/sweep/sweep.go` |
 | `SWEEP_MAX_ATTEMPTS` | `4` | no | Attempts before giving up; connect errors, timeouts, 429 and 5xx are retried, other non-2xx are not. | `cmd/sweep/sweep.go` |
 | `SWEEP_RETRY_BACKOFF` | `1s` | no | First backoff; doubles per attempt. | `cmd/sweep/sweep.go` |

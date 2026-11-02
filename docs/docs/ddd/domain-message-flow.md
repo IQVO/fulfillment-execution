@@ -34,11 +34,11 @@ sequenceDiagram
     participant LP as labor-performance
     WP->>FE: evt: com.warehouse.wes.work-planning.workunit.WorkReleased via warehouse.work-planning.events
     Note over FE: CreateTask - PICK task, orderRef = work_unit_id
-    Picker->>FE: cmd: POST /stations/station-03/check-in
-    Picker->>FE: cmd: POST /stations/station-03/claim-next with taskType PICK
+    Picker->>FE: cmd: POST /stations/station-03/check-ins
+    Picker->>FE: cmd: POST /stations/station-03/task-claims with taskType PICK
     Note over FE: earliest-CPT PICK task leased to station-03 for 5 minutes
-    Picker->>FE: cmd: POST /tasks/task-1/renew-lease
-    Picker->>FE: cmd: POST /tasks/task-1/complete
+    Picker->>FE: cmd: POST /tasks/task-1/lease-renewals
+    Picker->>FE: cmd: POST /tasks/task-1/completions
     FE->>WP: evt: com.warehouse.wes.fulfillment-execution.task.TaskCompleted via warehouse.fulfillment.events
     FE->>LP: evt: com.warehouse.wes.fulfillment-execution.task.TaskCompleted with associate_id and task_type
     Note over WP: RecordCompletion of work_unit_id
@@ -68,12 +68,12 @@ sequenceDiagram
     Note over FE: ItemArrivedAtRebin - in-process only
     Rebinner->>FE: cmd: POST /rebin/arrivals line-2 of order wu-42
     Note over FE: last line - CreateTask PACK and OrderConsolidated
-    Packer->>FE: cmd: POST /stations/pack-01/claim-next with taskType PACK
-    Packer->>FE: cmd: POST /tasks/task-9/seal-package with contents
+    Packer->>FE: cmd: POST /stations/pack-01/task-claims with taskType PACK
+    Packer->>FE: cmd: POST /tasks/task-9/package-seals with contents
     Note over FE: per scanned SKU, DOT hazard class read from the local copy of product-master's ProductClassified - fail-open
     Note over FE: segregation check, Seal, PackageSealed - reply 201 with sortLane
-    Packer->>FE: cmd: POST /tasks/task-9/complete
-    Slam->>FE: cmd: POST /packages/pkg-7/slam with actualWeight and expectedWeight
+    Packer->>FE: cmd: POST /tasks/task-9/completions
+    Slam->>FE: cmd: POST /packages/pkg-7/slam-runs with actualWeight and expectedWeight
     FE->>OM: evt: com.warehouse.wes.fulfillment-execution.package.PackageManifested via warehouse.fulfillment.events
     Slam->>FE: qry: GET /packages/pkg-7 - reads status LABELED
 ```
@@ -102,10 +102,10 @@ sequenceDiagram
     participant FE as fulfillment-execution
     participant OM as order-management
     participant AN as fulfillment-projector
-    SCH->>FE: cmd: POST /tasks/expire-leases
+    SCH->>FE: cmd: POST /task-lease-expirations
     Note over FE: CLAIMED tasks with an expired lease go back to PENDING
     FE->>AN: evt: com.warehouse.wes.fulfillment-execution.task.LeaseExpired via warehouse.fulfillment.analytics
-    SCH->>FE: cmd: POST /tasks/sweep-cpt-misses
+    SCH->>FE: cmd: POST /cpt-miss-sweeps
     Note over FE: open tasks at or past CPT, no state change
     FE->>OM: evt: com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed via warehouse.fulfillment.events
     Note over OM: RepromiseOrder

@@ -146,6 +146,18 @@ func (r *TaskRepo) CountByTypeAndStatus(_ context.Context, taskType task.Type, s
 	return count, nil
 }
 
+// FindPageByOrderRef mirrors the Postgres keyset page: id > afterId, by id.
+func (r *TaskRepo) FindPageByOrderRef(ctx context.Context, orderRef shared.OrderRef, afterId shared.TaskId, limit int) ([]*task.Task, error) {
+	all, _ := r.FindByOrderRef(ctx, orderRef)
+	var page []*task.Task
+	for _, t := range all {
+		if t.Id() > afterId && len(page) < limit {
+			page = append(page, t)
+		}
+	}
+	return page, nil
+}
+
 func (r *TaskRepo) FindByOrderRef(_ context.Context, orderRef shared.OrderRef) ([]*task.Task, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

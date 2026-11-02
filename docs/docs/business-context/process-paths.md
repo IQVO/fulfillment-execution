@@ -45,7 +45,7 @@ the carton and affixes a barcode carrying everything needed to generate a
 shipping label downstream.
 
 In this service: a `PACK` task, whose completion path produces a `Package`
-aggregate via `POST /tasks/{id}/seal-package`. The invariant that matters is
+aggregate via `POST /tasks/{id}/package-seals`. The invariant that matters is
 that **a carton cannot be sealed without scanned contents** — sealing an
 unverified box is precisely how the wrong item ships.
 
@@ -157,7 +157,7 @@ Packages are scanned and weighed on a scale that detects expected-versus-actual
 weight discrepancies; a robotic arm prints and applies the shipping label with
 a blast of air.
 
-In this service: `POST /packages/{id}/slam`. The **weigh-check** is the
+In this service: `POST /packages/{id}/slam-runs`. The **weigh-check** is the
 invariant — if `|actual − expected|` exceeds tolerance the package is
 **diverted** rather than labelled, because a weight mismatch means the carton's
 contents do not match what the system believes is inside it. Shipping it would

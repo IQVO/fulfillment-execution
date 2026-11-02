@@ -146,14 +146,14 @@ time-based strings in this binary, so yours will differ):
 
 ```bash
 # 1. Register a station with the "pick" capability
-curl -sS -X POST localhost:8080/stations \
+curl -sS -X POST -H "Idempotency-Key: $(uuidgen)" localhost:8080/stations \
   -H 'Content-Type: application/json' \
   -d '{"stationId":"station-03","capabilities":["pick"]}'
 # 201 {"id":"station-03","capabilities":["pick"],"occupied":false}
 
 # 2. Put a Pick task in the pool
 #    (with DATABASE_URL set, also pass -H 'Idempotency-Key: <unique>')
-curl -sS -X POST localhost:8080/tasks \
+curl -sS -X POST -H "Idempotency-Key: $(uuidgen)" localhost:8080/tasks \
   -H 'Content-Type: application/json' \
   -d '{"type":"PICK","cpt":"2026-12-23T18:00:00Z","orderRef":"wu-8a1f","requiredCapabilities":["pick"]}'
 # 201 {"id":"20261012T170412.355825000","type":"PICK","status":"PENDING","cpt":"2026-12-23T18:00:00Z","orderRef":"wu-8a1f","requiredCapabilities":["pick"],"fragile":false,"giftWrap":false}
@@ -163,31 +163,31 @@ curl -sS localhost:8080/queues/PICK/depth
 # 200 {"taskType":"PICK","depth":1}
 
 # 4. PULL: the earliest-CPT task this station can do (5-minute lease)
-curl -sS -X POST localhost:8080/stations/station-03/claim-next \
+curl -sS -X POST -H "Idempotency-Key: $(uuidgen)" localhost:8080/stations/station-03/task-claims \
   -H 'Content-Type: application/json' -d '{"taskType":"PICK"}'
 # 200 {"id":"20261012T170412.355825000","type":"PICK","status":"CLAIMED",...,"leaseStationId":"station-03","leaseExpiry":"2026-10-12T14:09:12.356726-03:00"}
 
 # 5. Extend the lease, then complete (publishes TaskCompleted)
 TASK_ID=20261012T170412.355825000
-curl -sS -X POST localhost:8080/tasks/$TASK_ID/renew-lease \
+curl -sS -X POST -H "Idempotency-Key: $(uuidgen)" localhost:8080/tasks/$TASK_ID/lease-renewals \
   -H 'Content-Type: application/json' -d '{"stationId":"station-03"}'
 # 204
-curl -sS -X POST localhost:8080/tasks/$TASK_ID/complete \
+curl -sS -X POST -H "Idempotency-Key: $(uuidgen)" localhost:8080/tasks/$TASK_ID/completions \
   -H 'Content-Type: application/json' -d '{"stationId":"station-03"}'
 # 204
 
 # 6. Look the order up, and run the two sweeps the CronJobs call
-curl -sS 'localhost:8080/tasks?orderRef=wu-8a1f'          # 200 [ {... "status":"COMPLETED" ...} ]
+curl -sS 'localhost:8080/tasks?orderRef=wu-8a1f'          # 200 {"items":[ {... "status":"COMPLETED" ...} ]}
 curl -sS localhost:8080/capacity/pick                      # 200 {"capability":"pick","installed":1}
-curl -sS -X POST localhost:8080/tasks/expire-leases        # 200 {"freed":0}
-curl -sS -X POST localhost:8080/tasks/sweep-cpt-misses     # 200 {"reported":0}
+curl -sS -X POST -H "Idempotency-Key: $(uuidgen)" localhost:8080/task-lease-expirations        # 200 {"freed":0}
+curl -sS -X POST -H "Idempotency-Key: $(uuidgen)" localhost:8080/cpt-miss-sweeps     # 200 {"reported":0}
 ```
 
 Errors are RFC 7807 problems. From the same run, a second `claim-next` with
 nothing left to claim:
 
 ```json
-{"type":"https://errors.fulfillment-execution.warehouse-systems.dev/no-claimable-task","title":"No claimable task for station capabilities","status":409,"detail":"usecases: no claimable task for station capabilities","instance":"/stations/station-03/claim-next"}
+{"type":"https://errors.fulfillment-execution.warehouse-systems.dev/no-claimable-task","title":"No claimable task for station capabilities","status":409,"detail":"usecases: no claimable task for station capabilities","instance":"/stations/station-03/task-claims"}
 ```
 
 Completing from the wrong station gave `409 task-not-owner`, completing twice

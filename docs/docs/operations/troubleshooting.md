@@ -39,7 +39,7 @@ no `412`.
 | --- | --- | --- | --- |
 | `400 invalid-request` | Malformed JSON, or a required field missing from the DTO. | `detail`. | Fix the request body against the [API Reference](../api-reference/index.md). |
 | `400 idempotency-key-required` | `POST /tasks` without an `Idempotency-Key` header **while `DATABASE_URL` is set** (the middleware is not wired in memory mode). | Request headers. | Send a unique `Idempotency-Key` per new task ([ADR-0028](../adr/0028-idempotency-key-middleware.md)). |
-| `422 idempotency-key-reused` | The same `Idempotency-Key` was used before with a different body (SHA-256 of the body differs). | `idempotency_keys` row for the key. | Use a new key for a genuinely different request. The same key with the **same** body is not an error: the stored response is replayed. |
+| `409 idempotency-key-reused` | The same `Idempotency-Key` was used before with a different method, path or body (SHA-256 of the body differs). Distinguish it from a business 409 by the problem `type`. | `idempotency_keys` row for the key. | Use a new key for a genuinely different request. The same key with the **same** body is not an error: the stored response is replayed. |
 | `404 station-not-found` | `claim-next`, check-in or check-out for a station that was never registered, or the process restarted in memory mode and lost it. | `GET /capacity/{capability}` counts registered stations. | `POST /stations` (re-registering is idempotent and updates capabilities). |
 | `404 task-not-found` / `404 package-not-found` | Unknown id; in memory mode, a restart. | The id; `GET /tasks?orderRef=` or `GET /packages?orderRef=`. | Use an existing id. |
 | `409 no-claimable-task` | No Pending (or lease-expired) task of that type whose required capabilities the station has. | `GET /queues/{taskType}/depth`; the task's `requiredCapabilities` vs the station's. | Release work, or register the station with the missing capability. |
@@ -76,7 +76,7 @@ no `412`.
 | Downstream contexts never see `TaskCompleted` / `TaskCPTMissed` / `PackageManifested` | `EVENT_PUBLISHER=log`; or the relay is not running (it runs only in `cmd/execution`); or rows fail to send. | INFO `event publisher configured` (`publisher`, `mode`); `outbox_events` rows with `published_at IS NULL` and `last_error`. | Set `EVENT_PUBLISHER=kafka`; make sure the api Deployment runs; fix the broker. |
 | One event never arrives while later ones (even for the same task) do | The row hit the outbox attempt cap ([ADR-0042](../adr/0042-outbox-relay-attempt-cap.md)) and is excluded from claims. | ERROR `outbox relay: row reached the attempt cap ...`; `SELECT id, attempts, last_error FROM outbox_events WHERE published_at IS NULL AND attempts >= 20;` | Fix the cause in `last_error`, then `UPDATE outbox_events SET attempts = 0 WHERE id = ...;`. Raise `OUTBOX_MAX_ATTEMPTS` (or set `0`) if broker outages trip it. |
 | The same `TaskCPTMissed` arrives every 5 minutes | By design: the sweep re-publishes for every still-open overdue task on every pass, each with a new event id. | – | Consumers dedupe on their own business key. |
-| `associate_id` missing on `TaskCompleted` | The station had no checked-in occupant at completion time (robots never check in). | `POST /stations/{stationId}/check-in` history. | Check the associate in. |
+| `associate_id` missing on `TaskCompleted` | The station had no checked-in occupant at completion time (robots never check in). | `POST /stations/{stationId}/check-ins` history. | Check the associate in. |
 
 ## Dependencies and analytics
 

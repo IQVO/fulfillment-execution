@@ -215,7 +215,7 @@ without raising `LeaseExpired`. The re-promise policy lives in
 | Sticky | Kind | Code evidence |
 | --- | --- | --- |
 | Station operator, Packer, Rebin associate, SLAM line | Actor | REST callers of `router.go` |
-| External scheduler | Actor | callers of `POST /tasks/expire-leases`, `POST /tasks/sweep-cpt-misses` |
+| External scheduler | Actor | callers of `POST /task-lease-expirations`, `POST /cpt-miss-sweeps` |
 | `CreateTask`, `CheckInStation`, `ClaimNext`, `RenewLease`, `CompleteTask`, `ArriveAtRebin`, `SealPackage`, `RunSlam`, `ExpireLeases`, `SweepCPTMisses` | Command | `internal/application/usecases/*.go` |
 | `Task`, `Station`, `Package`, `OrderConsolidation` | Aggregate | `internal/domain/{task,station,package,consolidation}` |
 | `WorkReleased` | Domain event (inbound) | `com.warehouse.wes.work-planning.workunit.WorkReleased`, `internal/adapters/inbound/kafka/consumer.go` |

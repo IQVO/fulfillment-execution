@@ -8,10 +8,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/claudioed/fulfillment-execution/internal/adapters/inbound/http/page"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
-	pack "github.com/claudioed/fulfillment-execution/internal/domain/package"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
-	"github.com/claudioed/fulfillment-execution/internal/domain/station"
 	"github.com/claudioed/fulfillment-execution/internal/domain/task"
 )
 
@@ -22,7 +21,7 @@ type Handlers struct {
 	RenewLease   *usecases.RenewLease
 	CompleteTask *usecases.CompleteTask
 	// ConfirmPickScan and CompleteCaseBreak back POST /tasks/{id}/scans and
-	// POST /tasks/{id}/break-case (ADR 0054).
+	// POST /tasks/{id}/case-breaks (ADR 0054).
 	ConfirmPickScan      *usecases.ConfirmPickScan
 	CompleteCaseBreak    *usecases.CompleteCaseBreak
 	SealPackage          *usecases.SealPackage
@@ -77,43 +76,6 @@ func toTaskResponse(t *task.Task) taskResponse {
 	return resp
 }
 
-func toPackageResponse(p *pack.Package) packageResponse {
-	resp := ordinaryPackageResponse(p)
-	if oc := p.OwnContainer(); oc != nil {
-		resp.ShipInOwnContainer = true
-		resp.ContainerSource = string(oc.Source)
-		resp.Container = &containerResponse{
-			Gtin: oc.GTIN, LengthMm: oc.Dims.LengthMM, WidthMm: oc.Dims.WidthMM, HeightMm: oc.Dims.HeightMM, WeightG: oc.Dims.WeightG,
-		}
-	}
-	return resp
-}
-
-func ordinaryPackageResponse(p *pack.Package) packageResponse {
-	return packageResponse{
-		Id:                string(p.Id()),
-		OrderRef:          string(p.OrderRef()),
-		Status:            string(p.Status()),
-		ScannedContents:   p.ScannedContents(),
-		FragileHandling:   p.FragileHandling(),
-		GiftWrapRequested: p.GiftWrapRequested(),
-		SortLane:          p.SortLane(),
-	}
-}
-
-func toStationResponse(s *station.Station) stationResponse {
-	caps := make([]string, 0, len(s.Capabilities()))
-	for c := range s.Capabilities() {
-		caps = append(caps, string(c))
-	}
-	return stationResponse{
-		Id:           string(s.Id()),
-		Capabilities: caps,
-		Occupied:     s.IsOccupied(),
-		LocationCode: s.LocationCode(),
-	}
-}
-
 // PostTask handles POST /tasks.
 func (h *Handlers) PostTask(w http.ResponseWriter, r *http.Request) {
 	var req createTaskRequest
@@ -123,6 +85,10 @@ func (h *Handlers) PostTask(w http.ResponseWriter, r *http.Request) {
 	}
 	if msg := req.validate(); msg != "" {
 		writeBadRequestNoInstance(w, msg)
+		return
+	}
+	if req.CPT.IsZero() {
+		writeZeroDeadline(w, "cpt")
 		return
 	}
 
@@ -135,7 +101,7 @@ func (h *Handlers) PostTask(w http.ResponseWriter, r *http.Request) {
 	// fragile, it has exactly one ingestion path (WorkReleased.data.gift_wrap
 	// via the Kafka consumer — see ADR-0011), so a direct HTTP POST /tasks
 	// caller always gets false here; the taskResponse field is read-only.
-	t, err := h.CreateTask.Execute(r.Context(), task.Type(req.Type), shared.NewCPT(req.CPT), shared.OrderRef(req.OrderRef), shared.NewCapabilitySet(caps...), req.Fragile, false)
+	t, err := h.CreateTask.Execute(r.Context(), task.Type(req.Type), shared.NewCPT(*req.CPT), shared.OrderRef(req.OrderRef), shared.NewCapabilitySet(caps...), req.Fragile, false)
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -143,7 +109,7 @@ func (h *Handlers) PostTask(w http.ResponseWriter, r *http.Request) {
 	writeCreated(w, "/tasks/"+string(t.Id()), toTaskResponse(t))
 }
 
-// PostClaimNext handles POST /stations/{stationId}/claim-next.
+// PostClaimNext handles POST /stations/{stationId}/task-claims.
 func (h *Handlers) PostClaimNext(w http.ResponseWriter, r *http.Request) {
 	stationId := chi.URLParam(r, "stationId")
 	var req claimNextRequest
@@ -164,7 +130,7 @@ func (h *Handlers) PostClaimNext(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toTaskResponse(t))
 }
 
-// PostRenewLease handles POST /tasks/{id}/renew-lease.
+// PostRenewLease handles POST /tasks/{id}/lease-renewals.
 func (h *Handlers) PostRenewLease(w http.ResponseWriter, r *http.Request) {
 	taskId := chi.URLParam(r, "id")
 	var req renewLeaseRequest
@@ -184,7 +150,7 @@ func (h *Handlers) PostRenewLease(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// PostCompleteTask handles POST /tasks/{id}/complete.
+// PostCompleteTask handles POST /tasks/{id}/completions.
 func (h *Handlers) PostCompleteTask(w http.ResponseWriter, r *http.Request) {
 	taskId := chi.URLParam(r, "id")
 	var req completeTaskRequest
@@ -228,7 +194,7 @@ func (h *Handlers) PostPickScan(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// PostBreakCase handles POST /tasks/{id}/break-case: it completes a
+// PostBreakCase handles POST /tasks/{id}/case-breaks: it completes a
 // BREAK_CASE task by asking inventory-storage to break the sealed case.
 func (h *Handlers) PostBreakCase(w http.ResponseWriter, r *http.Request) {
 	taskId := chi.URLParam(r, "id")
@@ -246,93 +212,6 @@ func (h *Handlers) PostBreakCase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// PostSealPackage handles POST /tasks/{id}/seal-package.
-func (h *Handlers) PostSealPackage(w http.ResponseWriter, r *http.Request) {
-	taskId := chi.URLParam(r, "id")
-	var req sealPackageRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeBadRequest(w, r, "invalid request body")
-		return
-	}
-	if msg := req.validate(); msg != "" {
-		writeBadRequest(w, r, msg)
-		return
-	}
-
-	var (
-		p   *pack.Package
-		err error
-	)
-	if req.ShipInOwnContainer {
-		p, err = h.SealPackage.ExecuteInOwnContainer(r.Context(), shared.TaskId(taskId), shared.StationId(req.StationId), req.Contents, *req.LineQuantity)
-	} else {
-		p, err = h.SealPackage.Execute(r.Context(), shared.TaskId(taskId), shared.StationId(req.StationId), req.Contents)
-	}
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	writeCreated(w, "/packages/"+string(p.Id()), toPackageResponse(p))
-}
-
-// PostRunSlam handles POST /packages/{id}/slam.
-func (h *Handlers) PostRunSlam(w http.ResponseWriter, r *http.Request) {
-	packageId := chi.URLParam(r, "id")
-	var req runSlamRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeBadRequest(w, r, "invalid request body")
-		return
-	}
-	if msg := req.validate(); msg != "" {
-		writeBadRequest(w, r, msg)
-		return
-	}
-
-	if err := h.RunSlam.Execute(r.Context(), shared.PackageId(packageId), req.ActualWeight, req.ExpectedWeight); err != nil {
-		writeError(w, r, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// GetPackageHandler handles GET /packages/{id} (ADR-0033): the read side of
-// the Package aggregate, returning the same Package shape seal-package's
-// 201 returns. This is how a caller learns the SLAM outcome — LABELED vs
-// DIVERTED — after POST /packages/{id}/slam's outcome-agnostic 204. An
-// unknown id is 404 package-not-found.
-func (h *Handlers) GetPackageHandler(w http.ResponseWriter, r *http.Request) {
-	packageId := chi.URLParam(r, "id")
-	p, err := h.GetPackage.Execute(r.Context(), shared.PackageId(packageId))
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, toPackageResponse(p))
-}
-
-// GetPackagesHandler handles GET /packages?orderRef=<ref> (ADR-0033),
-// mirroring GetTasksHandler: orderRef is required (400 invalid-request if
-// missing or empty) and an unknown orderRef returns an empty array.
-func (h *Handlers) GetPackagesHandler(w http.ResponseWriter, r *http.Request) {
-	orderRef := r.URL.Query().Get("orderRef")
-	if orderRef == "" {
-		writeBadRequest(w, r, "orderRef is required")
-		return
-	}
-
-	packages, err := h.GetPackagesByOrderRef.Execute(r.Context(), shared.OrderRef(orderRef))
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	resp := make([]packageResponse, 0, len(packages))
-	for _, p := range packages {
-		resp = append(resp, toPackageResponse(p))
-	}
-	writeJSON(w, http.StatusOK, resp)
 }
 
 // GetQueueDepthHandler handles GET /queues/{taskType}/depth.
@@ -363,19 +242,24 @@ func (h *Handlers) GetInstalledCapacityHandler(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, installedCapacityResponse{Capability: capability, Installed: installed})
 }
 
-// GetTasksHandler handles GET /tasks?orderRef=<ref>. It requires the
-// orderRef query parameter (400 if missing) and returns every task
-// recorded for that order — normally one PICK/PACK/SLAM leg each, more if
-// a leg was retried after a lease expired — as a JSON array. An unknown
-// orderRef is not an error: it returns an empty array.
+// GetTasksHandler handles GET /tasks?orderRef=<ref>&limit=&cursor=. It
+// requires the orderRef query parameter (400 if missing) and returns one
+// keyset page ({items,nextCursor}, ordered by id) of the tasks recorded for
+// that order — normally one PICK/PACK/SLAM leg each, more if a leg was
+// retried after a lease expired. An unknown orderRef is not an error: it
+// returns an empty page.
 func (h *Handlers) GetTasksHandler(w http.ResponseWriter, r *http.Request) {
+	limit, after, ok := pageParams(w, r, "orderRef")
+	if !ok {
+		return
+	}
 	orderRef := r.URL.Query().Get("orderRef")
 	if orderRef == "" {
 		writeBadRequest(w, r, "orderRef is required")
 		return
 	}
 
-	tasks, err := h.GetTasksByOrderRef.Execute(r.Context(), shared.OrderRef(orderRef))
+	tasks, err := h.GetTasksByOrderRef.ExecutePage(r.Context(), shared.OrderRef(orderRef), shared.TaskId(afterID(after)), page.FetchSize(limit))
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -385,10 +269,10 @@ func (h *Handlers) GetTasksHandler(w http.ResponseWriter, r *http.Request) {
 	for _, t := range tasks {
 		resp = append(resp, toTaskResponse(t))
 	}
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, page.Of(resp, limit, func(t taskResponse) page.Position { return idPosition(t.Id) }))
 }
 
-// PostExpireLeases handles POST /tasks/expire-leases.
+// PostExpireLeases handles POST /task-lease-expirations.
 func (h *Handlers) PostExpireLeases(w http.ResponseWriter, r *http.Request) {
 	freed, err := h.ExpireLeases.Execute(r.Context())
 	if err != nil {
@@ -398,7 +282,7 @@ func (h *Handlers) PostExpireLeases(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, expireLeasesResponse{Freed: freed})
 }
 
-// PostSweepCPTMisses handles POST /tasks/sweep-cpt-misses: the Clock-driven
+// PostSweepCPTMisses handles POST /cpt-miss-sweeps: the Clock-driven
 // sweep that detects tasks still open past their CPT and raises
 // TaskCPTMissed for each (ADR-0025). Mirrors PostExpireLeases's own
 // externally-triggered convention exactly — a collection-level action on
@@ -412,108 +296,19 @@ func (h *Handlers) PostSweepCPTMisses(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sweepCPTMissesResponse{Reported: reported})
 }
 
-// PostRegisterStation handles POST /stations.
-func (h *Handlers) PostRegisterStation(w http.ResponseWriter, r *http.Request) {
-	var req registerStationRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeBadRequestNoInstance(w, "invalid request body")
-		return
-	}
-	if msg := req.validate(); msg != "" {
-		writeBadRequestNoInstance(w, msg)
-		return
-	}
-
-	s, err := h.RegisterStation.Execute(r.Context(), req.StationId, req.Capabilities, req.LocationCode)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	writeCreated(w, "/stations/"+string(s.Id()), toStationResponse(s))
-}
-
 // GetHealthz handles GET /healthz.
 func (h *Handlers) GetHealthz(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
-}
-
-// PostCheckInStation handles POST /stations/{stationId}/check-in.
-func (h *Handlers) PostCheckInStation(w http.ResponseWriter, r *http.Request) {
-	stationId := chi.URLParam(r, "stationId")
-	var req checkInStationRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeBadRequest(w, r, "invalid request body")
-		return
-	}
-	if msg := req.validate(); msg != "" {
-		writeBadRequest(w, r, msg)
-		return
-	}
-
-	s, err := h.CheckInStation.Execute(r.Context(), shared.StationId(stationId), station.OccupantId(req.OccupantId))
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, toStationResponse(s))
-}
-
-// PostCheckOutStation handles POST /stations/{stationId}/check-out.
-func (h *Handlers) PostCheckOutStation(w http.ResponseWriter, r *http.Request) {
-	stationId := chi.URLParam(r, "stationId")
-
-	s, err := h.CheckOutStation.Execute(r.Context(), shared.StationId(stationId))
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, toStationResponse(s))
-}
-
-// PostArriveAtRebin handles POST /rebin/arrivals: one required line of an
-// order has reached the Rebin path. Once every required line for the
-// order has arrived, this creates the order's PACK task — see
-// usecases.ArriveAtRebin.
-func (h *Handlers) PostArriveAtRebin(w http.ResponseWriter, r *http.Request) {
-	var req arriveAtRebinRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeBadRequestNoInstance(w, "invalid request body")
-		return
-	}
-	if msg := req.validate(); msg != "" {
-		writeBadRequestNoInstance(w, msg)
-		return
-	}
-
-	caps := make([]shared.Capability, len(req.PackRequiredCapabilities))
-	for i, c := range req.PackRequiredCapabilities {
-		caps[i] = shared.Capability(c)
-	}
-
-	err := h.ArriveAtRebin.Execute(
-		r.Context(),
-		shared.OrderRef(req.OrderRef),
-		req.LineId,
-		req.RequiredLineIds,
-		shared.NewCPT(req.PackCPT),
-		shared.NewCapabilitySet(caps...),
-		req.PackFragile,
-		req.PackGiftWrap,
-	)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 // PostWorkRequest handles POST /paths/{pathId}/work-requests (ADR-0058): the
 // PULL side of the execution/planning seam. Execution asks the Work Planning
 // agent, over A2A, to admit the next unit for the path; the authoritative
 // fact still arrives as the WorkReleased CloudEvent through the existing
-// consumer — this answer is the delegation acknowledgement. The handler is
-// intentionally NOT behind the idempotency middleware: each call asks for
-// exactly one more unit, and repeating the ask is a legitimate second pull.
+// consumer — this answer is the delegation acknowledgement. Each call asks
+// for exactly one more unit, so the route is behind the idempotency
+// middleware: a retry of ONE logical pull (same Idempotency-Key) replays the
+// answer, while a legitimate second pull mints a new key.
 func (h *Handlers) PostWorkRequest(w http.ResponseWriter, r *http.Request) {
 	pathId := chi.URLParam(r, "pathId")
 	released, err := h.RequestNextWork.Execute(r.Context(), usecases.RequestNextWorkRequest{PathId: pathId})

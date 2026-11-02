@@ -172,14 +172,14 @@ one branch that already means "SLAM passed," inside the same
 
 Verified before deciding: this repo has **no background ticker/cron
 loop** for `ExpireLeases` in `cmd/execution/main.go` — it is invoked
-externally via `POST /tasks/expire-leases`
+externally via `POST /task-lease-expirations`
 (`internal/adapters/inbound/http/router.go` /`handlers.go`), presumably
 by an operator/cron/harness hitting the REST endpoint. `SweepCPTMisses`
-is wired the identical way: `POST /tasks/sweep-cpt-misses`, same
+is wired the identical way: `POST /cpt-miss-sweeps`, same
 collection-level-action-on-`tasks` convention, same `{"<count>": n}`
 response shape (`{"reported": n}` vs. `ExpireLeases`'s `{"freed": n}`),
 registered in `apis/openapi.yaml` right next to
-`/tasks/expire-leases`. No ticker was invented for this ADR; matching
+`/task-lease-expirations`. No ticker was invented for this ADR; matching
 the repo's real existing convention was preferred over introducing a
 second dispatch mechanism.
 
@@ -255,7 +255,7 @@ of a promise recompute.
   ADR 0014 explicitly designs `RepromiseOrder`) would over-react.
 - `SweepCPTMisses` has no ticker of its own — like `ExpireLeases`, its
   cadence is whatever external caller invokes
-  `POST /tasks/sweep-cpt-misses`, on whatever schedule that caller
+  `POST /cpt-miss-sweeps`, on whatever schedule that caller
   chooses. This ADR does not add one; it was out of scope (matching the
   existing convention, not inventing a new one, per §6).
 - Two more branches for a future reader of `internal/adapters/outbound/kafka/publisher.go`'s

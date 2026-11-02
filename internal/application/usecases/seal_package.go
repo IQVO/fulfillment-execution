@@ -14,7 +14,7 @@ import (
 // seals them into a Package, referenced by the Pack task it is working.
 //
 // Execute is idempotent on taskId (REST_AUDIT.md's flagged gap): a retried
-// POST /tasks/{id}/seal-package for a task that already has a sealed
+// POST /tasks/{id}/package-seals for a task that already has a sealed
 // Package returns that existing Package rather than creating a second one.
 // taskId is the natural dedupe key here — this endpoint is task-scoped
 // (exactly one Package is ever sealed per Pack task in this domain), it is

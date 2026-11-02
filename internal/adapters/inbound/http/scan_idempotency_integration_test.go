@@ -159,17 +159,17 @@ func TestScanIdempotency_DifferentKeys_BothCount(t *testing.T) {
 	}
 }
 
-// The same key with a different body is the repo's existing conflict: 422
-// idempotency-key-reused, and nothing is counted.
-func TestScanIdempotency_SameKeyDifferentBody_Is422AndCountsNothing(t *testing.T) {
+// The same key with a different body is 409 idempotency-key-reused (REST
+// guideline 2.3), and nothing is counted.
+func TestScanIdempotency_SameKeyDifferentBody_Is409AndCountsNothing(t *testing.T) {
 	f := newScanFixture(t, 10)
 
 	if rec := f.scan("pick-1", "scan-key-1", scanBody(1)); rec.Code != http.StatusOK {
 		t.Fatalf("first scan = %d (%s)", rec.Code, rec.Body.String())
 	}
 	rec := f.scan("pick-1", "scan-key-1", scanBody(3))
-	if rec.Code != http.StatusUnprocessableEntity || problemType(t, rec) != "idempotency-key-reused" {
-		t.Fatalf("conflicting reuse = %d %s, want 422 idempotency-key-reused", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusConflict || problemType(t, rec) != "idempotency-key-reused" {
+		t.Fatalf("conflicting reuse = %d %s, want 409 idempotency-key-reused", rec.Code, rec.Body.String())
 	}
 	if got := f.picked(t); got != 1 {
 		t.Fatalf("pickedEaches = %d, want 1", got)
@@ -178,15 +178,15 @@ func TestScanIdempotency_SameKeyDifferentBody_Is422AndCountsNothing(t *testing.T
 
 // A key is not a retry on another task: the body carries no task id, so the
 // path is part of the request identity.
-func TestScanIdempotency_SameKeyOtherTask_Is422(t *testing.T) {
+func TestScanIdempotency_SameKeyOtherTask_Is409(t *testing.T) {
 	f := newScanFixture(t, 10)
 
 	if rec := f.scan("pick-1", "scan-key-1", scanBody(1)); rec.Code != http.StatusOK {
 		t.Fatalf("first scan = %d (%s)", rec.Code, rec.Body.String())
 	}
 	rec := f.scan("pick-2", "scan-key-1", scanBody(1))
-	if rec.Code != http.StatusUnprocessableEntity || problemType(t, rec) != "idempotency-key-reused" {
-		t.Fatalf("same key on another task = %d %s, want 422 idempotency-key-reused", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusConflict || problemType(t, rec) != "idempotency-key-reused" {
+		t.Fatalf("same key on another task = %d %s, want 409 idempotency-key-reused", rec.Code, rec.Body.String())
 	}
 }
 

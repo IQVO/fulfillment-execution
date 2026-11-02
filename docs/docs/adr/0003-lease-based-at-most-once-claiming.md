@@ -84,7 +84,7 @@ automatically returned to the pool on expiry.**
 - Default duration **5 minutes** (`usecases.DefaultLeaseDuration`), overridable
   per use case at the composition root.
 - **Renewal is a first-class operation**, not an escape hatch:
-  `POST /tasks/{id}/renew-lease`, owner-only, extending the expiry from *now*.
+  `POST /tasks/{id}/lease-renewals`, owner-only, extending the expiry from *now*.
   This is how legitimately long work is handled — rather than by picking one
   timeout long enough for the worst case.
 - **Only the owner may renew or complete.** Anyone else gets
@@ -94,7 +94,7 @@ automatically returned to the pool on expiry.**
     *before* checking whether the task is already claimed; `RenewLease` and
     `Complete` check `lease.expired(now)` and reject with `ErrNotClaimed`. A
     stale claim therefore cannot block a fresh claim even if no sweep has run.
-  - **Eagerly, via a sweep.** `POST /tasks/expire-leases` runs the
+  - **Eagerly, via a sweep.** `POST /task-lease-expirations` runs the
     `ExpireLeases` use case over every `Claimed` task, frees the lapsed ones,
     publishes `LeaseExpired` for each, and returns the count freed. This is
     what makes freed work *visible* in the queue-depth read model rather than
@@ -152,7 +152,7 @@ by a failing-path test rather than left to code review.
   station is genuinely still working when its lease lapses, another station can
   claim the same task. The lease bounds the *system's* view, not the physical
   world. Renewal is the mitigation, and the residual risk is accepted.
-- **The sweep needs a caller.** `POST /tasks/expire-leases` is exposed as an
+- **The sweep needs a caller.** `POST /task-lease-expirations` is exposed as an
   endpoint but nothing schedules it inside this service — an external scheduler
   (cron, a Kubernetes `CronJob`) has to invoke it. Lazy evaluation means
   correctness does not depend on that, but *visibility* in the queue-depth read

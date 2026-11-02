@@ -222,7 +222,7 @@ func (w *world) aTaskForOrder(taskType, orderRef string, cptMinutes int, capabil
 // --- When steps ------------------------------------------------------------
 
 func (w *world) stationCallsClaimNext(stationId, taskType string) error {
-	if err := w.do(http.MethodPost, "/stations/"+stationId+"/claim-next", map[string]any{
+	if err := w.do(http.MethodPost, "/stations/"+stationId+"/task-claims", map[string]any{
 		"taskType": taskType,
 	}); err != nil {
 		return err
@@ -256,27 +256,27 @@ func (w *world) theClockAdvancesBy(minutes int) error {
 }
 
 func (w *world) stationRenewsTheLease(stationId string) error {
-	return w.do(http.MethodPost, "/tasks/"+w.claimedTaskId+"/renew-lease", map[string]any{
+	return w.do(http.MethodPost, "/tasks/"+w.claimedTaskId+"/lease-renewals", map[string]any{
 		"stationId": stationId,
 	})
 }
 
 func (w *world) theLeaseExpirySweepRuns() error {
-	return w.do(http.MethodPost, "/tasks/expire-leases", nil)
+	return w.do(http.MethodPost, "/task-lease-expirations", nil)
 }
 
 func (w *world) theCPTMissedSweepRuns() error {
-	return w.do(http.MethodPost, "/tasks/sweep-cpt-misses", nil)
+	return w.do(http.MethodPost, "/cpt-miss-sweeps", nil)
 }
 
 func (w *world) stationCompletesTheClaimedTask(stationId string) error {
-	return w.do(http.MethodPost, "/tasks/"+w.claimedTaskId+"/complete", map[string]any{
+	return w.do(http.MethodPost, "/tasks/"+w.claimedTaskId+"/completions", map[string]any{
 		"stationId": stationId,
 	})
 }
 
 func (w *world) stationSealsAPackage(stationId, contents string) error {
-	if err := w.do(http.MethodPost, "/tasks/"+w.claimedTaskId+"/seal-package", map[string]any{
+	if err := w.do(http.MethodPost, "/tasks/"+w.claimedTaskId+"/package-seals", map[string]any{
 		"stationId": stationId,
 		"contents":  splitList(contents),
 	}); err != nil {
@@ -296,7 +296,7 @@ func (w *world) stationSealsAPackage(stationId, contents string) error {
 }
 
 func (w *world) theSlamWeighCheckRuns(actual, expected float64) error {
-	return w.do(http.MethodPost, "/packages/"+w.packageId+"/slam", map[string]any{
+	return w.do(http.MethodPost, "/packages/"+w.packageId+"/slam-runs", map[string]any{
 		"actualWeight":   actual,
 		"expectedWeight": expected,
 	})
@@ -327,7 +327,7 @@ func (w *world) packagesAreLookedUpWithoutAnOrderRef() error {
 }
 
 func (w *world) workerChecksInAtStation(occupantId, stationId string) error {
-	return w.do(http.MethodPost, "/stations/"+stationId+"/check-in", map[string]any{
+	return w.do(http.MethodPost, "/stations/"+stationId+"/check-ins", map[string]any{
 		"occupantId": occupantId,
 	})
 }
@@ -343,7 +343,7 @@ func (w *world) workerHasCheckedInAtStation(occupantId, stationId string) error 
 }
 
 func (w *world) stationChecksOut(stationId string) error {
-	return w.do(http.MethodPost, "/stations/"+stationId+"/check-out", nil)
+	return w.do(http.MethodPost, "/stations/"+stationId+"/check-outs", nil)
 }
 
 func (w *world) stationTriesToRenewTheLeaseOnTheTaskForOrder(stationId, orderRef string) error {
@@ -351,7 +351,7 @@ func (w *world) stationTriesToRenewTheLeaseOnTheTaskForOrder(stationId, orderRef
 	if !ok {
 		return fmt.Errorf("no task recorded for order %q", orderRef)
 	}
-	return w.do(http.MethodPost, "/tasks/"+taskId+"/renew-lease", map[string]any{
+	return w.do(http.MethodPost, "/tasks/"+taskId+"/lease-renewals", map[string]any{
 		"stationId": stationId,
 	})
 }
@@ -502,13 +502,16 @@ func (w *world) theSealedPackageHoldsContents(contents string) error {
 }
 
 func (w *world) theLookupReturnsTasksForOrder(expected int, orderRef string) error {
-	var tasks []struct {
-		Id       string `json:"id"`
-		OrderRef string `json:"orderRef"`
+	var page struct {
+		Items []struct {
+			Id       string `json:"id"`
+			OrderRef string `json:"orderRef"`
+		} `json:"items"`
 	}
-	if err := w.decodeLast(&tasks); err != nil {
+	if err := w.decodeLast(&page); err != nil {
 		return err
 	}
+	tasks := page.Items
 	if len(tasks) != expected {
 		return fmt.Errorf("expected %d task(s) for order %q, got %d: %s", expected, orderRef, len(tasks), w.body)
 	}
@@ -543,13 +546,16 @@ func (w *world) thePackageReadsBackWith(status, orderRef string) error {
 }
 
 func (w *world) thePackageLookupReturns(expected int, orderRef string) error {
-	var packages []struct {
-		Id       string `json:"id"`
-		OrderRef string `json:"orderRef"`
+	var page struct {
+		Items []struct {
+			Id       string `json:"id"`
+			OrderRef string `json:"orderRef"`
+		} `json:"items"`
 	}
-	if err := w.decodeLast(&packages); err != nil {
+	if err := w.decodeLast(&page); err != nil {
 		return err
 	}
+	packages := page.Items
 	if len(packages) != expected {
 		return fmt.Errorf("expected %d package(s) for order %q, got %d: %s", expected, orderRef, len(packages), w.body)
 	}

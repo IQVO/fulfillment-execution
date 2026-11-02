@@ -1,4 +1,5 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
+import { fetchAllPages } from "../api";
 import { FULFILLMENT_API_BASE } from "../config";
 import type { QueueDepth, Task, TaskType } from "../types";
 import { Card, StatusPill, DataTable, useFetch } from "@warehouse/ui-kit";
@@ -28,6 +29,32 @@ const buttonStyle = {
   cursor: "pointer",
 } as const;
 
+/** Loads a whole {items,nextCursor} collection, following nextCursor until it is absent. */
+function useAllPages<T>(url: string | null) {
+  const [data, setData] = useState<T[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+  useEffect(() => {
+    if (!url) {
+      setData(null);
+      return;
+    }
+    const controller = new AbortController();
+    setLoading(true);
+    setError(null);
+    fetchAllPages<T>(url, fetch, controller.signal)
+      .then(setData)
+      .catch((e: unknown) => {
+        if (!controller.signal.aborted) setError(e instanceof Error ? e : new Error(String(e)));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
+  }, [url]);
+  return { data, loading, error };
+}
+
 /**
  * Fulfillment queue-depth dashboard + task-by-orderRef lookup. Both
  * sections are wired to real, live REST endpoints (see
@@ -55,8 +82,7 @@ export function FulfillmentScreen() {
   const tasksUrl = orderRef
     ? `${FULFILLMENT_API_BASE}/tasks?orderRef=${encodeURIComponent(orderRef)}`
     : null;
-  const { data: tasks, loading: tasksLoading, error: tasksError } =
-    useFetch<Task[]>(tasksUrl);
+  const { data: tasks, loading: tasksLoading, error: tasksError } = useAllPages<Task>(tasksUrl);
 
   function onDepthSubmit(e: FormEvent) {
     e.preventDefault();

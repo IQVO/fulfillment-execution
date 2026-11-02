@@ -175,15 +175,15 @@ completions and missed CPTs back to planning, labour and order management.
 | `process-path-management` (opt-in) | `ProcessPathCreated` / `ProcessPathUpdated` / `ProcessPathDeactivated` | Event | Kafka `warehouse.process-path-management.events`, `com.warehouse.wes.process-path-management.processpath.*` (only with `PATH_CATALOGUE_SOURCE=kafka`) | Conformist on a Published Language |
 | Station client / console | Create task | Command | REST `POST /tasks` (`Idempotency-Key` with Postgres) | OHS |
 | Station client / console | Register station | Command | REST `POST /stations` | OHS |
-| Station client | Claim next task | Command | REST `POST /stations/{stationId}/claim-next` | OHS |
-| Station client | Check in / check out | Command | REST `POST /stations/{stationId}/check-in`, `POST /stations/{stationId}/check-out` | OHS |
-| Station client | Renew lease | Command | REST `POST /tasks/{id}/renew-lease` | OHS |
-| Station client | Complete task | Command | REST `POST /tasks/{id}/complete` | OHS |
-| Pack station | Seal package | Command | REST `POST /tasks/{id}/seal-package` | OHS |
-| SLAM station | Run SLAM weigh-check | Command | REST `POST /packages/{id}/slam` | OHS |
+| Station client | Claim next task | Command | REST `POST /stations/{stationId}/task-claims` | OHS |
+| Station client | Check in / check out | Command | REST `POST /stations/{stationId}/check-ins`, `POST /stations/{stationId}/check-outs` | OHS |
+| Station client | Renew lease | Command | REST `POST /tasks/{id}/lease-renewals` | OHS |
+| Station client | Complete task | Command | REST `POST /tasks/{id}/completions` | OHS |
+| Pack station | Seal package | Command | REST `POST /tasks/{id}/package-seals` | OHS |
+| SLAM station | Run SLAM weigh-check | Command | REST `POST /packages/{id}/slam-runs` | OHS |
 | Rebin station | Record arrival at Rebin | Command | REST `POST /rebin/arrivals` | OHS |
-| Scheduler (external) | Expire leases | Command | REST `POST /tasks/expire-leases` | OHS |
-| Scheduler (external) | Sweep CPT misses | Command | REST `POST /tasks/sweep-cpt-misses` | OHS |
+| Scheduler (external) | Expire leases | Command | REST `POST /task-lease-expirations` | OHS |
+| Scheduler (external) | Sweep CPT misses | Command | REST `POST /cpt-miss-sweeps` | OHS |
 | `warehouse-ops-agent` / console BFF | Tasks for an order | Query | REST `GET /tasks?orderRef=` | OHS |
 | SLAM client / console | Package by id, packages for an order | Query | REST `GET /packages/{id}`, `GET /packages?orderRef=` | OHS |
 | Any client | Queue depth | Query | REST `GET /queues/{taskType}/depth` | OHS |
@@ -249,8 +249,8 @@ Top terms:
 
 - `wes-work-planning` releases work at the right rate; this context does not
   throttle intake.
-- An external scheduler calls `POST /tasks/expire-leases` and
-  `POST /tasks/sweep-cpt-misses`; no code in this repository schedules them.
+- An external scheduler calls `POST /task-lease-expirations` and
+  `POST /cpt-miss-sweeps`; no code in this repository schedules them.
   The Helm chart ships `CronJob`s for both, on by default (`sweeps.enabled`;
   every minute / every 5 minutes; [ADR-0037](../adr/0037-sweeps-scheduled-by-cronjob-default-on.md)).
 - `WorkReleased.data.work_unit_id` is a stable correlation key, reused as

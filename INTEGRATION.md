@@ -184,7 +184,7 @@ This is unrelated to Kafka/Tasks 7-8. It fills a pre-existing gap found while
 smoke-testing the pull-dispatch path end-to-end: the `Station` aggregate and
 `ports.StationRepo` already exist and are fully exercised by unit tests, but
 there is no way to create a Station over HTTP — so `POST
-/stations/{stationId}/claim-next` always fails with "station not found" against
+/stations/{stationId}/task-claims` always fails with "station not found" against
 a freshly-started server, and the pull-dispatch flow cannot be smoke-tested via
 HTTP alone. Fix: add the missing use case + endpoint, matching every existing
 convention in this codebase. Strictly additive — do not touch the `Station`
@@ -256,7 +256,7 @@ one alongside them.
 - REAL smoke test, no shortcuts: with the compiled binary running (in-memory
   adapters are fine, no Postgres/Kafka needed for this task), `POST /stations`
   to register a station with `["pick"]` capabilities, `POST /tasks` to create a
-  Pick task, then `POST /stations/{stationId}/claim-next` and confirm it
+  Pick task, then `POST /stations/{stationId}/task-claims` and confirm it
   actually returns the claimed task (200, not the previous `station not found`
   error) — this is the exact gap that prompted this task, so proving it closes
   is the actual bar for done, not just green tests.

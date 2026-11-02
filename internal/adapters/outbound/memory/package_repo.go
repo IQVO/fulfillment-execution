@@ -57,6 +57,18 @@ func (r *PackageRepo) FindByTaskId(_ context.Context, taskId shared.TaskId) (*pa
 	return nil, nil
 }
 
+// FindPageByOrderRef mirrors the Postgres keyset page: id > afterId, by id.
+func (r *PackageRepo) FindPageByOrderRef(ctx context.Context, orderRef shared.OrderRef, afterId shared.PackageId, limit int) ([]*pack.Package, error) {
+	all, _ := r.FindByOrderRef(ctx, orderRef)
+	page := make([]*pack.Package, 0)
+	for _, p := range all {
+		if p.Id() > afterId && len(page) < limit {
+			page = append(page, p)
+		}
+	}
+	return page, nil
+}
+
 // FindByOrderRef returns every stored package whose OrderRef() matches,
 // sorted by id so the result is deterministic (the postgres adapter
 // orders by id too). Linear scan, like FindByTaskId — this repo only backs

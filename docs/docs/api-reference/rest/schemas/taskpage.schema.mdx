@@ -1,0 +1,32 @@
+---
+id: taskpage
+title: "TaskPage"
+description: ""
+sidebar_label: "TaskPage"
+hide_title: true
+hide_table_of_contents: true
+schema: true
+sample: {"items":[{"id":"20260101T120000.000000000","type":"PICK","status":"PENDING","cpt":"2026-01-01T18:00:00Z","orderRef":"order-42","requiredCapabilities":["pick"],"fragile":false,"giftWrap":false,"leaseStationId":"station-1","leaseExpiry":"2026-01-01T12:05:00Z","relocation":{"planId":"plan-7","moveSeq":3,"kind":"Vacate","sku":"SKU-1","fromBin":"WH1-FWD-A01-01-03-A","toBin":"WH1-FWD-A01-01-02-A","ref":"plan-7:3","executed":{"quantity":12,"fromBin":"WH1-FWD-A01-01-03-A","toBin":"WH1-RSV-B02-01-01-A"}},"replenishment":{"requestId":"req-9","sku":"SKU-1","fromBin":"WH1-RSV-AMB-B02-03-02-C","toBin":"WH1-FWD-AMB-A01-01-01-A","quantity":24,"priority":"URGENT","executed":{"quantity":20,"fromBin":"WH1-RSV-AMB-B02-03-02-C","toBin":"WH1-FWD-AMB-A01-01-01-A"}}}],"nextCursor":"string"}
+custom_edit_url: null
+---
+
+import Schema from "@theme/Schema";
+import Heading from "@theme/Heading";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"TaskPage"}
+>
+</Heading>
+
+
+
+
+
+<Schema
+  {...require("./taskpage.Schema.json")}
+>
+  
+</Schema>
+            

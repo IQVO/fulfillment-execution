@@ -19,19 +19,19 @@ One file each in `internal/application/usecases/`.
 | # | Use case | Signature (abridged) | Raises | Endpoint |
 | --- | --- | --- | --- | --- |
 | 1 | `CreateTask` | `Execute(ctx, taskType, cpt, orderRef, required, fragile, giftWrap) (*Task, error)`; `ExecuteRelocation(ctx, cpt, orderRef, required, RelocationMove)` for RELOCATE work; `ExecuteReplenishment(ctx, cpt, orderRef, required, ReplenishmentMove)` for REPLENISH work ([ADR-0050](../adr/0050-replenish-tasks-execute-pick-face-replenishment.md)) | `TaskCreated` | `POST /tasks` (behind the `Idempotency-Key` middleware when Postgres is wired, ADR-0028; RELOCATE and REPLENISH are not creatable there); also the `WorkReleased` consumer and `ArriveAtRebin` |
-| 2 | `ClaimNext` | `Execute(ctx, stationId, taskType) (*Task, error)` | `TaskClaimed` | `POST /stations/{stationId}/claim-next` |
-| 3 | `RenewLease` | `Execute(ctx, taskId, stationId) error` | — | `POST /tasks/{id}/renew-lease` |
-| 4 | `CompleteTask` | `Execute(ctx, taskId, stationId) error`; `ExecuteWith(ctx, taskId, stationId, RelocationConfirmation) error` for a RELOCATE task ([ADR-0047](../adr/0047-relocate-tasks-execute-slot-plan-moves.md)) or a REPLENISH task ([ADR-0050](../adr/0050-replenish-tasks-execute-pick-face-replenishment.md)) | `TaskCompleted` (a RELOCATE task's carries the executed move: `sku`, `from_bin`, `to_bin`, `quantity`, `relocation_ref`; a REPLENISH task's the same with `request_ref`) | `POST /tasks/{id}/complete` (optional `quantity`, `fromBin`, `toBin`); MCP `complete_task` (same optional inputs) |
-| 5 | `SealPackage` | `Execute(ctx, taskId, stationId, contents) (*Package, error)` | `PackageSealed` | `POST /tasks/{id}/seal-package` |
-| 6 | `RunSlam` | `Execute(ctx, packageId, actualWeight, expectedWeight) error` | `LabelApplied` + `PackageManifested` **or** `WeightDiscrepancyDetected` + `PackageDiverted` | `POST /packages/{id}/slam` |
+| 2 | `ClaimNext` | `Execute(ctx, stationId, taskType) (*Task, error)` | `TaskClaimed` | `POST /stations/{stationId}/task-claims` |
+| 3 | `RenewLease` | `Execute(ctx, taskId, stationId) error` | — | `POST /tasks/{id}/lease-renewals` |
+| 4 | `CompleteTask` | `Execute(ctx, taskId, stationId) error`; `ExecuteWith(ctx, taskId, stationId, RelocationConfirmation) error` for a RELOCATE task ([ADR-0047](../adr/0047-relocate-tasks-execute-slot-plan-moves.md)) or a REPLENISH task ([ADR-0050](../adr/0050-replenish-tasks-execute-pick-face-replenishment.md)) | `TaskCompleted` (a RELOCATE task's carries the executed move: `sku`, `from_bin`, `to_bin`, `quantity`, `relocation_ref`; a REPLENISH task's the same with `request_ref`) | `POST /tasks/{id}/completions` (optional `quantity`, `fromBin`, `toBin`); MCP `complete_task` (same optional inputs) |
+| 5 | `SealPackage` | `Execute(ctx, taskId, stationId, contents) (*Package, error)` | `PackageSealed` | `POST /tasks/{id}/package-seals` |
+| 6 | `RunSlam` | `Execute(ctx, packageId, actualWeight, expectedWeight) error` | `LabelApplied` + `PackageManifested` **or** `WeightDiscrepancyDetected` + `PackageDiverted` | `POST /packages/{id}/slam-runs` |
 | 7 | `GetQueueDepth` | `Execute(ctx, taskType) (int, error)` | — | `GET /queues/{taskType}/depth`; MCP `get_queue_status` and the `queue://fulfillment/...` resources |
-| 8 | `ExpireLeases` | `Execute(ctx) (int, error)` | `LeaseExpired` per task freed | `POST /tasks/expire-leases` |
+| 8 | `ExpireLeases` | `Execute(ctx) (int, error)` | `LeaseExpired` per task freed | `POST /task-lease-expirations` |
 | 9 | `RegisterStation` | `Execute(ctx, stationId, capabilities, locationCode) (*Station, error)` | — | `POST /stations` |
-| 10 | `CheckInStation` | `Execute(ctx, stationId, occupant) (*Station, error)` | — | `POST /stations/{stationId}/check-in` |
-| 11 | `CheckOutStation` | `Execute(ctx, stationId) (*Station, error)` | — | `POST /stations/{stationId}/check-out` |
+| 10 | `CheckInStation` | `Execute(ctx, stationId, occupant) (*Station, error)` | — | `POST /stations/{stationId}/check-ins` |
+| 11 | `CheckOutStation` | `Execute(ctx, stationId) (*Station, error)` | — | `POST /stations/{stationId}/check-outs` |
 | 12 | `GetTasksByOrderRef` | `Execute(ctx, orderRef) ([]*Task, error)` | — | `GET /tasks?orderRef=` |
 | 13 | `GetInstalledCapacity` | `Execute(ctx, capability) (int, error)` | — | `GET /capacity/{capability}` |
-| 14 | `SweepCPTMisses` | `Execute(ctx) (int, error)` | `TaskCPTMissed` per overdue open task | `POST /tasks/sweep-cpt-misses` |
+| 14 | `SweepCPTMisses` | `Execute(ctx) (int, error)` | `TaskCPTMissed` per overdue open task | `POST /cpt-miss-sweeps` |
 | 15 | `ArriveAtRebin` | `Execute(ctx, orderRef, lineId, requiredLineIds, packCPT, packRequired, packFragile, packGiftWrap) error` | `ItemArrivedAtRebin`; on completion also `TaskCreated` (via `CreateTask`) + `OrderConsolidated` | `POST /rebin/arrivals` |
 | 16 | `GetPackage` | `Execute(ctx, packageId) (*Package, error)` | — | `GET /packages/{id}` ([ADR-0033](../adr/0033-package-read-model.md)) |
 | 17 | `GetPackagesByOrderRef` | `Execute(ctx, orderRef) ([]*Package, error)` | — | `GET /packages?orderRef=` ([ADR-0033](../adr/0033-package-read-model.md)) |
@@ -270,7 +270,7 @@ sequenceDiagram
     participant T as task.Task
     participant P as ports.EventPublisher
 
-    S->>H: POST /stations/station-03/claim-next
+    S->>H: POST /stations/station-03/task-claims
     H->>H: decode + validate DTO
     H->>U: Execute(ctx, station-03, PICK)
     U->>SR: FindById(station-03)

@@ -43,7 +43,7 @@ func TestRejectNUL(t *testing.T) {
 		{"escaped backslash then u0000 is not a NUL", "/tasks", `{"orderRef":"a\\u0000b"}`, http.StatusNoContent, "", true},
 		{"three backslashes then u0000 is a NUL", "/tasks", `{"orderRef":"a\\\u0000b"}`, http.StatusBadRequest, "malformed-request-body", false},
 		{"a later escape after an escaped backslash", "/tasks", `{"a":"\\u0000","b":"\u0000"}`, http.StatusBadRequest, "malformed-request-body", false},
-		{"encoded NUL in the path", "/tasks/a%00b/complete", "", http.StatusNotFound, "resource-not-found", false},
+		{"encoded NUL in the path", "/tasks/a%00b/completions", "", http.StatusNotFound, "resource-not-found", false},
 		{"encoded NUL in the query", "/tasks?orderRef=a%00b", "", http.StatusBadRequest, "invalid-request", false},
 		{"clean query passes", "/tasks?orderRef=a%2500b", "", http.StatusNoContent, "", true},
 	}

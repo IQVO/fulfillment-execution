@@ -48,7 +48,7 @@ read-only: it does not free the task (unlike `Complete`/`RenewLease`), because
 `internal/adapters/inbound/http/errors.go` is unchanged: both errors were
 already mapped to `409` and have their own problem-catalog entry, so
 `statusFor` / `problemCatalog` stay one-for-one. The OpenAPI `409` text for
-`POST /tasks/{id}/seal-package` describes both cases and the generated API
+`POST /tasks/{id}/package-seals` describes both cases and the generated API
 reference was regenerated.
 
 ## Consequences

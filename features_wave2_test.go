@@ -203,11 +203,13 @@ func (w *world) tasksFor(orderRef string) ([]taskView, error) {
 	if status != http.StatusOK {
 		return nil, fmt.Errorf("looking up tasks for %q: expected 200, got %d: %s", orderRef, status, body)
 	}
-	var tasks []taskView
-	if err := json.Unmarshal(body, &tasks); err != nil {
+	var page struct {
+		Items []taskView `json:"items"`
+	}
+	if err := json.Unmarshal(body, &page); err != nil {
 		return nil, fmt.Errorf("decode tasks %q: %w", string(body), err)
 	}
-	return tasks, nil
+	return page.Items, nil
 }
 
 func (w *world) onlyTask(orderRef, taskType string) (taskView, error) {

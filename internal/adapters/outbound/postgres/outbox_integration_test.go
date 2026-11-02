@@ -563,7 +563,7 @@ func TestOutbox_RunSlam_LabelAppliedAndPackageManifestedRoundTripTogether(t *tes
 }
 
 // 7. SealPackage retry-safety against a REAL Postgres round-trip: a
-// retried POST /tasks/{id}/seal-package for the same task must return the
+// retried POST /tasks/{id}/package-seals for the same task must return the
 // original Package and must NOT insert a second row — proving migration
 // 0011's task_id column, its partial unique index, and package_repo.go's
 // ON CONFLICT / FindByTaskId actually work against a real database, not

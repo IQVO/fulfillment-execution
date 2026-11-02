@@ -63,7 +63,7 @@ and the log lines below.
 
 | Span name | Kind | Where | Notes |
 | --- | --- | --- | --- |
-| `<METHOD> <route pattern>`, for example `POST /tasks/{id}/complete` | server | every chi router (otelchi with `WithChiRoutes` and the method in the name) | Low-cardinality: the route pattern, not the raw path. |
+| `<METHOD> <route pattern>`, for example `POST /tasks/{id}/completions` | server | every chi router (otelchi with `WithChiRoutes` and the method in the name) | Low-cardinality: the route pattern, not the raw path. |
 | `kafka.consume warehouse.work-planning.events` | consumer | `WorkReleased` consumer | Parent is the producer's span from the message headers, so a release in wes-work-planning and the task created here share one trace. The span covers all in-process retries. Attributes `messaging.system=kafka`, `messaging.destination.name`, `messaging.operation.name=process`. |
 | `kafka.consume warehouse.product-master.events` | consumer | `ProductClassified` consumer | Same attributes. |
 | `kafka.consume warehouse.fulfillment.analytics` | consumer | projector | Same attributes. |
@@ -73,7 +73,7 @@ and the log lines below.
 
 The outbox relay, the process-path catalogue consumer and the sweeps'
 CronJob pods create no spans of their own (the sweep requests are traced
-server-side as `POST /tasks/expire-leases` and `POST /tasks/sweep-cpt-misses`).
+server-side as `POST /task-lease-expirations` and `POST /cpt-miss-sweeps`).
 
 **Trace continuity across the outbox (gap fix D27).** Both encoders inject
 the W3C `traceparent`/`tracestate` of the writing use case's context into the
@@ -102,7 +102,7 @@ The request logger writes one `http request` line per request on
 `5xx` logs at `ERROR`, everything else at `INFO`. Example from a local run:
 
 ```json
-{"time":"2026-10-12T14:04:12.358153-03:00","level":"INFO","msg":"http request","method":"POST","path":"/tasks/20261012T170412.355825000/complete","status":204,"duration_ms":0,"bytes":0,"request_id":"claudioeds-MacBook-Pro.local/YYHwzrf60N-000010","trace_id":"cb33b6f3f5af6bc4e8d63e56024c25f7","span_id":"81fb421a6c10c93e"}
+{"time":"2026-10-12T14:04:12.358153-03:00","level":"INFO","msg":"http request","method":"POST","path":"/tasks/20261012T170412.355825000/completions","status":204,"duration_ms":0,"bytes":0,"request_id":"claudioeds-MacBook-Pro.local/YYHwzrf60N-000010","trace_id":"cb33b6f3f5af6bc4e8d63e56024c25f7","span_id":"81fb421a6c10c93e"}
 ```
 
 Messages worth searching for or alerting on:

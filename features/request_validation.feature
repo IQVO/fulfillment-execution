@@ -3,15 +3,15 @@
 # Derived from:
 #   - apis/openapi.yaml: POST /tasks ("type" in the TaskType enum, "cpt",
 #     "orderRef", at least one "requiredCapabilities"), POST /stations
-#     (stationId, at least one capability), POST /stations/{id}/check-in
-#     (occupantId), POST /tasks/{id}/renew-lease and /complete (stationId),
-#     POST /tasks/{id}/seal-package (stationId) -- a missing required field
+#     (stationId, at least one capability), POST /stations/{id}/check-ins
+#     (occupantId), POST /tasks/{id}/lease-renewals and /completions (stationId),
+#     POST /tasks/{id}/package-seals (stationId) -- a missing required field
 #     or an unreadable body is 400 invalid-request, an RFC 7807 problem
 #   - POST /stations 201 with a Location of /stations/{id}; locationCode is
 #     omitted entirely (never defaulted to "") when the station has none
 #   - GET /queues/{taskType}/depth and /capacity/{capability}: read-only
-#     projections; POST /tasks/expire-leases -> {"freed": n} and
-#     POST /tasks/sweep-cpt-misses -> {"reported": n}
+#     projections; POST /task-lease-expirations -> {"freed": n} and
+#     POST /cpt-miss-sweeps -> {"reported": n}
 #   - /readyz (graceful shutdown): 200 {"status":"ready"} while serving, 503
 #     {"status":"not_ready"} once shutdown begins; /healthz never flips
 
@@ -90,7 +90,7 @@ Feature: Rejecting malformed requests and reporting health
   @bdd
   Scenario Outline: A check-in needs an occupant
     Given a Station "pick-01" is registered with capabilities "pick"
-    When a POST is sent to "/stations/pick-01/check-in" with the JSON body <body>
+    When a POST is sent to "/stations/pick-01/check-ins" with the JSON body <body>
     Then the response status is 400
     And the response is a Problem Details document of type "invalid-request"
     When worker "worker-1" checks in at Station "pick-01"
@@ -105,7 +105,7 @@ Feature: Rejecting malformed requests and reporting health
 
   @bdd
   Scenario: Checking in at a station that was never registered is not found
-    When a POST is sent to "/stations/ghost/check-in" with the JSON body {"occupantId":"worker-1"}
+    When a POST is sent to "/stations/ghost/check-ins" with the JSON body {"occupantId":"worker-1"}
     Then the response status is 404
     And the response is a Problem Details document of type "station-not-found"
 
@@ -116,17 +116,17 @@ Feature: Rejecting malformed requests and reporting health
     And the response is a Problem Details document of type "invalid-request"
 
     Examples:
-      | action       | body                  |
-      | renew-lease  | {}                    |
-      | renew-lease  | {"stationId":""}      |
-      | complete     | {}                    |
-      | complete     | {"stationId":""}      |
-      | seal-package | {"contents":["sku-1"]} |
-      | seal-package | {"stationId":"","contents":["sku-1"]} |
+      | action        | body                  |
+      | lease-renewals | {}                    |
+      | lease-renewals | {"stationId":""}      |
+      | completions  | {}                    |
+      | completions  | {"stationId":""}      |
+      | package-seals | {"contents":["sku-1"]} |
+      | package-seals | {"stationId":"","contents":["sku-1"]} |
 
   @bdd
   Scenario: A claim request with an unreadable body is rejected
-    When a POST is sent to "/stations/pick-01/claim-next" with the JSON body {"taskType":
+    When a POST is sent to "/stations/pick-01/task-claims" with the JSON body {"taskType":
     Then the response status is 400
     And the response is a Problem Details document of type "invalid-request"
 
@@ -159,10 +159,10 @@ Feature: Rejecting malformed requests and reporting health
 
   @bdd
   Scenario: The sweeps report what they did as a count
-    When a POST is sent to "/tasks/expire-leases" without a body
+    When a POST is sent to "/task-lease-expirations" without a body
     Then the response status is 200
     And the response field "freed" is the number 0
-    When a POST is sent to "/tasks/sweep-cpt-misses" without a body
+    When a POST is sent to "/cpt-miss-sweeps" without a body
     Then the response status is 200
     And the response field "reported" is the number 0
 
