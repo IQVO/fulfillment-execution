@@ -15,28 +15,29 @@ paths:
 - POST /tasks                                 -> CreateTask
 - GET  /tasks?orderRef=                       -> GetTasksByOrderRef
 - POST /stations                              -> RegisterStation (optional `locationCode`, ADR-0024)
-- POST /stations/{stationId}/claim-next       -> ClaimNext
-- POST /stations/{stationId}/check-in         -> CheckInStation
-- POST /stations/{stationId}/check-out        -> CheckOutStation
-- POST /tasks/{id}/renew-lease                -> RenewLease
-- POST /tasks/{id}/complete                   -> CompleteTask
-- POST /tasks/{id}/seal-package                -> SealPackage. 409 `task-not-claimed` when the
-  lease is missing or EXPIRED (same error as complete/renew-lease), 409
+- POST /stations/{stationId}/task-claims       -> ClaimNext (pull dispatch; keyed)
+- POST /stations/{stationId}/check-ins         -> CheckInStation (keyed)
+- POST /stations/{stationId}/check-outs        -> CheckOutStation (keyed)
+- POST /tasks/{id}/lease-renewals              -> RenewLease (keyed)
+- POST /tasks/{id}/completions                -> CompleteTask (keyed)
+- POST /tasks/{id}/seal-runs                   -> SealPackage (keyed). 409 `task-not-claimed` when the
+  lease is missing or EXPIRED (same error as completions/lease-renewals), 409
   `task-not-owner` when ANOTHER station holds an active lease (ADR-0038).
 - GET  /packages/{id}                         -> GetPackage (ADR-0033). 200 `PackageResponse`
   (same DTO/schema as seal-package's 201); 404 `package-not-found`. Read
   `status` here to learn the SLAM outcome (LABELED vs DIVERTED).
-- GET  /packages?orderRef=                    -> GetPackagesByOrderRef (ADR-0033). 200 array of
-  `PackageResponse` ordered by id (empty when none); 400 `invalid-request`
-  on missing/empty `orderRef` — same contract as `GET /tasks?orderRef=`.
-- POST /packages/{id}/slam                    -> RunSlam (204 in BOTH outcomes — label applied
+- GET  /packages?orderRef=                    -> GetPackagesByOrderRef (ADR-0033). 200
+  `{items,nextCursor}` of `PackageResponse` ordered by id (empty when none);
+  400 `invalid-request` on missing/empty `orderRef` — same contract as
+  `GET /tasks?orderRef=`.
+- POST /packages/{id}/slam-runs               -> RunSlam (keyed; 204 in BOTH outcomes — label applied
   or diverted; deliberately unchanged, see ADR-0033)
 - GET  /queues/{taskType}/depth               -> GetQueueDepth
 - GET  /capacity/{capability}                 -> GetInstalledCapacity (ADR-0018)
-- POST /tasks/expire-leases                   -> ExpireLeases
-- POST /tasks/sweep-cpt-misses                 -> SweepCPTMisses (ADR-0025)
+- POST /tasks/lease-expirations                -> ExpireLeases (keyed)
+- POST /tasks/cpt-miss-sweeps                 -> SweepCPTMisses (ADR-0025; keyed)
   Both sweeps are driven by chart CronJobs, ON by default (`sweeps.enabled`,
-  ADR-0037): expire-leases every minute, CPT sweep every 5 minutes, both
+  ADR-0037): lease-expirations every minute, CPT sweep every 5 minutes, both
   configurable, `concurrencyPolicy: Forbid`. There is deliberately no in-process
   ticker (ADR-0003/0025). `TaskCPTMissed` volume scales with the CPT cadence.
 - POST /rebin/arrivals                        -> ArriveAtRebin (ADR-0016; tag `Rebin`,
@@ -74,7 +75,7 @@ from any order id directly. Callers needing "every task for order X" must
 first resolve that order's WorkUnit ids via wes-work-planning's
 `GET /work-units?reference=`, then call this endpoint once per WorkUnit (the
 console-bff does exactly this). Returns every task for that WorkUnit id
-including retried legs, array-shaped, side-effect-free.
+including retried legs, `{items,nextCursor}`-shaped, side-effect-free.
 
 ## CORS (ADR-0013)
 
@@ -193,3 +194,8 @@ from one outbox table with an in-process relay — this repo is the fleet's
 REFERENCE implementation for the outbox pattern (see
 `process-path-management`'s PR #7 for the original, and the fleet skill's
 `transactional-outbox-rollout.md` for the multi-service rollout brief).
+
+Fleet REST guideline (ADR-0060): every POST above is idempotent — send a
+fresh `Idempotency-Key` per logical request; a replayed answer carries
+`Idempotency-Replayed: true`; reusing a key with a different request is 409
+`idempotency-key-reused` (never 422).
