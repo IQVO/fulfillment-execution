@@ -1,1 +1,1 @@
-{"schema":{"type":"object","properties":{"taskType":{"type":"string","example":"PICK"},"depth":{"type":"integer","format":"int32","description":"Count of currently Pending tasks of this type.","example":3}},"title":"QueueDepthResponse"},"schemaType":"response"}
+{"schema":{"type":"object","required":["taskType","depth"],"properties":{"taskType":{"type":"string","example":"PICK"},"depth":{"type":"integer","format":"int32","description":"Count of currently Pending tasks of this type.","example":3}},"title":"QueueDepthResponse"},"schemaType":"response"}

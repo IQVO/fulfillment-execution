@@ -107,6 +107,7 @@ rejected.
 | `warehouse.fulfillment.analytics` | published, consumed by this service's own projector | Analytics events ([ADR-0012](../adr/0012-analytical-data-product.md)) |
 | `warehouse.work-planning.events` | consumed | `WorkReleased` from wes-work-planning |
 | `warehouse.process-path-management.events` | consumed (when `PATH_CATALOGUE_SOURCE=kafka`) | `ProcessPath*` catalogue events |
+| `warehouse.product-master.events` | consumed | `ProductPackLevelDeclared` / `ProductPackLevelRetired` (always on, group `PACK_VIEW_CONSUMER_GROUP`, [ADR-0054](../adr/0054-case-and-each-pick-scans-and-break-case-task.md)) and `ProductClassified` (when `PRODUCT_CLASSIFICATION_MODE=kafka`, group `PRODUCT_CLASSIFICATION_CONSUMER_GROUP`, [ADR-0039](../adr/0039-product-classification-local-copy.md)) from product-master |
 | `warehouse.task-interleaving.events` | consumed (when `TASK_INTERLEAVING_MODE=kafka`) | `InterleavingHintIssued` from task-interleaving ([ADR-0051](../adr/0051-interleaving-hints-advise-claimnext.md)) |
 
 Server: `kafka.warehouse-systems.internal:9092`, protocol `kafka`, configured
@@ -123,6 +124,7 @@ per service via `KAFKA_BROKERS`.
 | `com.warehouse.wes.fulfillment-execution.package.PackageManifested` | `package_id`, `order_ref` | order-management |
 | `com.warehouse.wes.fulfillment-execution.package.PackageDiverted` | `package_id` | exception-management (planned) ([ADR-0053](../adr/0053-promote-package-exception-facts-to-integration-topic.md)) |
 | `com.warehouse.wes.fulfillment-execution.package.WeightDiscrepancyDetected` | `package_id`, `expected_g`, `actual_g` | exception-management (planned) ([ADR-0053](../adr/0053-promote-package-exception-facts-to-integration-topic.md)) |
+| `com.warehouse.wes.fulfillment-execution.transfer.TransferPicked` / `TransferDispatched` / `TransferArrived` | `transfer_ref`, `demand_id`?, `work_unit_id`, `task_id`, `work_kind`, `site_id`?, `sku`?, `quantity`? (key and `subject` = the completing task id) | network-inventory-planning's transfer saga |
 
 ### `TaskCompleted` and the `work_unit_id` enrichment
 
@@ -193,6 +195,8 @@ and are not published on either topic.
 | --- | --- | --- | --- |
 | `wes-work-planning` | `warehouse.work-planning.events` | `com.warehouse.wes.work-planning.workunit.WorkReleased` | Creates a `Task` via the `CreateTask` use case |
 | `process-path-management` | `warehouse.process-path-management.events` | `com.warehouse.wes.process-path-management.processpath.ProcessPathCreated` / `ProcessPathUpdated` / `ProcessPathDeactivated` | Maintains the in-memory process-path catalogue |
+| `product-master` | `warehouse.product-master.events` | `com.warehouse.wms.product-master.product.ProductPackLevelDeclared` / `ProductPackLevelRetired` | Version-guarded upsert of the local PackView that resolves a scanned GTIN ([ADR-0054](../adr/0054-case-and-each-pick-scans-and-break-case-task.md)); always on |
+| `product-master` | `warehouse.product-master.events` | `com.warehouse.wms.product-master.product.ProductClassified` | Version-guarded upsert of the local classification copy read by `SealPackage` ([ADR-0039](../adr/0039-product-classification-local-copy.md)); only with `PRODUCT_CLASSIFICATION_MODE=kafka` |
 | `task-interleaving` | `warehouse.task-interleaving.events` | `com.warehouse.wes.task-interleaving.stationtrip.InterleavingHintIssued` | Supersedes the station's row of `interleaving_hints`; `ClaimNext` reads it as an advisory tie-break inside one priority band ([ADR-0051](../adr/0051-interleaving-hints-advise-claimnext.md)) |
 
 Consumers dispatch on the **full** `type` string — never a short name, never a
