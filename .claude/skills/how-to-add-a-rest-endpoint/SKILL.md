@@ -79,7 +79,7 @@ In `internal/adapters/inbound/http/`:
    — see `claimNextRequest`/`taskResponse`). DTOs live ONLY in the
    adapter layer — domain types never carry JSON tags.
 2. `router.go` — add the route
-   (`r.Post("/stations/{stationId}/claim-next", h.PostClaimNext)`).
+   (`r.Post("/stations/{stationId}/task-claims", h.PostClaimNext)`).
 3. `handlers.go` — add the handler function:
    - decode + validate the request (`json.NewDecoder(r.Body).Decode`,
      then `req.validate()`), converting to domain value objects
