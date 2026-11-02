@@ -10,7 +10,7 @@ this order — domain first, adapter last — never the reverse; writing the
 HTTP handler before the domain invariant it enforces produces handlers
 that validate nothing and use cases that get bypassed.
 
-This walks the exact path `POST /stations/{stationId}/claim-next` took
+This walks the exact path `POST /stations/{stationId}/task-claims` took
 (`internal/application/usecases/claim_next.go` +
 `internal/adapters/inbound/http/handlers.go`'s `PostClaimNext`) as the
 concrete worked example — read those two files alongside this guide.
@@ -79,7 +79,7 @@ In `internal/adapters/inbound/http/`:
    — see `claimNextRequest`/`taskResponse`). DTOs live ONLY in the
    adapter layer — domain types never carry JSON tags.
 2. `router.go` — add the route
-   (`r.Post("/stations/{stationId}/claim-next", h.PostClaimNext)`).
+   (`r.Post("/stations/{stationId}/task-claims", h.PostClaimNext)`).
 3. `handlers.go` — add the handler function:
    - decode + validate the request (`json.NewDecoder(r.Body).Decode`,
      then `req.validate()`), converting to domain value objects
@@ -104,7 +104,7 @@ path, capability mismatch → 409, double-claim → 409).
 
 Add the path to `apis/openapi.yaml` (request/response schemas, the RFC
 7807 problem-detail response for each error case — see the existing
-`/stations/{stationId}/claim-next` entry for the shape).
+`/stations/{stationId}/task-claims` entry for the shape).
 
 Regenerate the Docusaurus REST reference — this repo's `docs-api-drift`
 CI job fails the PR if you skip this:

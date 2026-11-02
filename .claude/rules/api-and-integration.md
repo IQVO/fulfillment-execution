@@ -15,26 +15,26 @@ paths:
 - POST /tasks                                 -> CreateTask
 - GET  /tasks?orderRef=                       -> GetTasksByOrderRef
 - POST /stations                              -> RegisterStation (optional `locationCode`, ADR-0024)
-- POST /stations/{stationId}/claim-next       -> ClaimNext
-- POST /stations/{stationId}/check-in         -> CheckInStation
-- POST /stations/{stationId}/check-out        -> CheckOutStation
-- POST /tasks/{id}/renew-lease                -> RenewLease
-- POST /tasks/{id}/complete                   -> CompleteTask
-- POST /tasks/{id}/seal-package                -> SealPackage. 409 `task-not-claimed` when the
+- POST /stations/{stationId}/task-claims       -> ClaimNext
+- POST /stations/{stationId}/check-ins         -> CheckInStation
+- POST /stations/{stationId}/check-outs        -> CheckOutStation
+- POST /tasks/{id}/lease-renewals                -> RenewLease
+- POST /tasks/{id}/completions                   -> CompleteTask
+- POST /tasks/{id}/package-seals                -> SealPackage. 409 `task-not-claimed` when the
   lease is missing or EXPIRED (same error as complete/renew-lease), 409
   `task-not-owner` when ANOTHER station holds an active lease (ADR-0038).
 - GET  /packages/{id}                         -> GetPackage (ADR-0033). 200 `PackageResponse`
   (same DTO/schema as seal-package's 201); 404 `package-not-found`. Read
   `status` here to learn the SLAM outcome (LABELED vs DIVERTED).
-- GET  /packages?orderRef=                    -> GetPackagesByOrderRef (ADR-0033). 200 array of
-  `PackageResponse` ordered by id (empty when none); 400 `invalid-request`
+- GET  /packages?orderRef=                    -> GetPackagesByOrderRef (ADR-0033). 200 page `{items,nextCursor}` of
+  `PackageResponse` ordered by id (`items` empty when none; `cursor` / `limit`); 400 `invalid-request`
   on missing/empty `orderRef` — same contract as `GET /tasks?orderRef=`.
-- POST /packages/{id}/slam                    -> RunSlam (204 in BOTH outcomes — label applied
+- POST /packages/{id}/slam-runs                    -> RunSlam (204 in BOTH outcomes — label applied
   or diverted; deliberately unchanged, see ADR-0033)
 - GET  /queues/{taskType}/depth               -> GetQueueDepth
 - GET  /capacity/{capability}                 -> GetInstalledCapacity (ADR-0018)
-- POST /tasks/expire-leases                   -> ExpireLeases
-- POST /tasks/sweep-cpt-misses                 -> SweepCPTMisses (ADR-0025)
+- POST /task-lease-expirations                   -> ExpireLeases
+- POST /cpt-miss-sweeps                 -> SweepCPTMisses (ADR-0025)
   Both sweeps are driven by chart CronJobs, ON by default (`sweeps.enabled`,
   ADR-0037): expire-leases every minute, CPT sweep every 5 minutes, both
   configurable, `concurrencyPolicy: Forbid`. There is deliberately no in-process
