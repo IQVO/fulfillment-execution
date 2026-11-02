@@ -99,7 +99,7 @@ paths:
         - name: granularity
           in: query
           required: false
-          description: Bucket resolution. Only hourly buckets are modelled; any other value is a 400.
+          description: Bucket resolution. Only hourly buckets are modelled; an empty value means the default `hour`, any other value is a 400 (`granularity must be 'hour'`).
           schema:
             type: string
             enum: [hour]
