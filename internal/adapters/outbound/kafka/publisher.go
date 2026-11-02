@@ -25,14 +25,9 @@ package kafka
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	kafkago "github.com/segmentio/kafka-go"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/codes"
-	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
-	"go.opentelemetry.io/otel/trace"
 
 	"github.com/claudioed/fulfillment-execution/internal/adapters/kafka/cloudevents"
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
@@ -296,31 +291,7 @@ func inIntegrationContract(e shared.DomainEvent) bool {
 // injected traceparent names the publish span itself (the consumer hangs
 // off the publish, not its caller) and a broker error is recorded on it.
 func (p *Publisher) publishOne(ctx context.Context, e shared.DomainEvent) error {
-	ctx, span := otel.Tracer(observability.InstrumentationName).Start(ctx,
-		"kafka.publish "+Topic,
-		trace.WithSpanKind(trace.SpanKindProducer),
-		trace.WithAttributes(
-			semconv.MessagingSystemKafka,
-			semconv.MessagingDestinationName(Topic),
-			semconv.MessagingOperationName("publish"),
-		),
-	)
-	defer span.End()
-
-	encoded, err := p.Encode(ctx, e)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return err
-	}
-	for _, enc := range encoded {
-		if err := p.Writer.WriteMessages(ctx, enc.message()); err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
-			return fmt.Errorf("kafka: publish %s: %w", enc.EventType, err)
-		}
-	}
-	return nil
+	return publishOneTo(ctx, Topic, "", p.Writer, p.Encode, e)
 }
 
 // associateId resolves the occupant checked into stationId at publish

@@ -7,10 +7,6 @@ import (
 	"time"
 
 	kafkago "github.com/segmentio/kafka-go"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/codes"
-	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
-	"go.opentelemetry.io/otel/trace"
 
 	"github.com/claudioed/fulfillment-execution/internal/adapters/kafka/cloudevents"
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
@@ -24,6 +20,14 @@ import (
 // contract and the analytical read-model stream evolve independently
 // (ADR-0012).
 const AnalyticsTopic = "warehouse.fulfillment.analytics"
+
+// Analytics report attribute keys (goconst: one wire key, one constant).
+const (
+	attrTaskID    = "task_id"
+	attrTaskType  = "task_type"
+	attrStationID = "station_id"
+	attrPackageID = "package_id"
+)
 
 // analyticsSchemaVersion is the dataschema version
 // (urn:warehouse:fulfillment-execution:analytics:<Event>:v1) stamped onto
@@ -148,31 +152,7 @@ func inAnalyticsContract(e shared.DomainEvent) bool {
 // injected traceparent names the publish span itself and a broker error
 // is recorded on it.
 func (p *AnalyticsPublisher) publishOne(ctx context.Context, e shared.DomainEvent) error {
-	ctx, span := otel.Tracer(observability.InstrumentationName).Start(ctx,
-		"kafka.publish "+AnalyticsTopic,
-		trace.WithSpanKind(trace.SpanKindProducer),
-		trace.WithAttributes(
-			semconv.MessagingSystemKafka,
-			semconv.MessagingDestinationName(AnalyticsTopic),
-			semconv.MessagingOperationName("publish"),
-		),
-	)
-	defer span.End()
-
-	encoded, err := p.Encode(ctx, e)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return err
-	}
-	for _, enc := range encoded {
-		if err := p.Writer.WriteMessages(ctx, enc.message()); err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
-			return fmt.Errorf("kafka: publish %s analytics event: %w", enc.EventType, err)
-		}
-	}
-	return nil
+	return publishOneTo(ctx, AnalyticsTopic, " analytics event", p.Writer, p.Encode, e)
 }
 
 // taskType looks up the process path of the task with id, returning "" when
@@ -311,25 +291,25 @@ func (p *AnalyticsPublisher) marshalData(ctx context.Context, e shared.DomainEve
 	switch ev := e.(type) {
 	case shared.TaskCreated:
 		return entityTask, "TaskCreated", string(ev.TaskId), mustMarshal(map[string]any{
-			"task_id":   string(ev.TaskId),
-			"task_type": p.taskType(ctx, ev.TaskId),
+			attrTaskID:   string(ev.TaskId),
+			attrTaskType: p.taskType(ctx, ev.TaskId),
 		}), true
 	case shared.TaskClaimed:
 		return entityTask, "TaskClaimed", string(ev.TaskId), mustMarshal(map[string]any{
-			"task_id":    string(ev.TaskId),
-			"task_type":  p.taskType(ctx, ev.TaskId),
-			"station_id": string(ev.StationId),
+			attrTaskID:    string(ev.TaskId),
+			attrTaskType:  p.taskType(ctx, ev.TaskId),
+			attrStationID: string(ev.StationId),
 		}), true
 	case shared.LeaseExpired:
 		return entityTask, "LeaseExpired", string(ev.TaskId), mustMarshal(map[string]any{
-			"task_id":   string(ev.TaskId),
-			"task_type": p.taskType(ctx, ev.TaskId),
+			attrTaskID:   string(ev.TaskId),
+			attrTaskType: p.taskType(ctx, ev.TaskId),
 		}), true
 	case shared.TaskCompleted:
 		data := map[string]any{
-			"task_id":    string(ev.TaskId),
-			"task_type":  p.taskType(ctx, ev.TaskId),
-			"station_id": string(ev.StationId),
+			attrTaskID:    string(ev.TaskId),
+			attrTaskType:  p.taskType(ctx, ev.TaskId),
+			attrStationID: string(ev.StationId),
 		}
 		// order_ref is optional: omitted when the task has none (audit
 		// decision 17), so existing payloads stay byte-identical.
@@ -344,11 +324,11 @@ func (p *AnalyticsPublisher) marshalData(ctx context.Context, e shared.DomainEve
 		return entityTask, "TaskCompleted", string(ev.TaskId), mustMarshal(data), true
 	case shared.ItemPicked:
 		return entityTask, "ItemPicked", string(ev.TaskId), mustMarshal(map[string]any{
-			"task_id":   string(ev.TaskId),
-			"task_type": p.taskType(ctx, ev.TaskId),
+			attrTaskID:   string(ev.TaskId),
+			attrTaskType: p.taskType(ctx, ev.TaskId),
 		}), true
 	case shared.PackageSealed:
-		data := map[string]any{"package_id": string(ev.PackageId)}
+		data := map[string]any{attrPackageID: string(ev.PackageId)}
 		// Optional and additive (ADR 0056): present only when the package
 		// ships in its own container, so the ordinary payload is unchanged.
 		if c := ev.OwnContainer; c != nil {
@@ -362,27 +342,27 @@ func (p *AnalyticsPublisher) marshalData(ctx context.Context, e shared.DomainEve
 		return entityPackage, "PackageSealed", string(ev.PackageId), mustMarshal(data), true
 	case shared.WeightDiscrepancyDetected:
 		return entityPackage, "WeightDiscrepancyDetected", string(ev.PackageId), mustMarshal(map[string]any{
-			"package_id": string(ev.PackageId),
-			"expected_g": ev.ExpectedWeight,
-			"actual_g":   ev.ActualWeight,
+			attrPackageID: string(ev.PackageId),
+			"expected_g":  ev.ExpectedWeight,
+			"actual_g":    ev.ActualWeight,
 		}), true
 	case shared.LabelApplied:
 		return entityPackage, "LabelApplied", string(ev.PackageId), mustMarshal(map[string]any{
-			"package_id": string(ev.PackageId),
+			attrPackageID: string(ev.PackageId),
 		}), true
 	case shared.PackageDiverted:
 		return entityPackage, "PackageDiverted", string(ev.PackageId), mustMarshal(map[string]any{
-			"package_id": string(ev.PackageId),
+			attrPackageID: string(ev.PackageId),
 		}), true
 	case shared.PackageManifested:
 		taskType, stationId, onTime, resolved := p.onTimeToCPTFields(ctx, ev.OrderRef, ev.OccurredAt())
 		return entityPackage, "PackageManifested", string(ev.PackageId), mustMarshal(map[string]any{
-			"package_id": string(ev.PackageId),
-			"order_ref":  string(ev.OrderRef),
-			"task_type":  taskType,
-			"station_id": stationId,
-			"on_time":    onTime,
-			"resolved":   resolved,
+			attrPackageID: string(ev.PackageId),
+			"order_ref":   string(ev.OrderRef),
+			attrTaskType:  taskType,
+			attrStationID: stationId,
+			"on_time":     onTime,
+			"resolved":    resolved,
 		}), true
 	default:
 		return "", "", "", nil, false

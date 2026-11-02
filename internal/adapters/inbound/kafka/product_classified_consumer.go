@@ -9,15 +9,10 @@ import (
 
 	"github.com/cenkalti/backoff/v4"
 	kafkago "github.com/segmentio/kafka-go"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/codes"
-	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
-	"go.opentelemetry.io/otel/trace"
 
 	"github.com/claudioed/fulfillment-execution/internal/adapters/kafka/cloudevents"
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
-	"github.com/claudioed/fulfillment-execution/internal/observability"
 )
 
 // ProductMasterTopic is product-master's integration topic (its AsyncAPI,
@@ -57,15 +52,6 @@ type ProductClassifiedData struct {
 	Version              int64    `json:"version"`
 }
 
-// MessageFetchCommitter is the slice of *kafkago.Reader the
-// ProductClassified consumer uses: explicit fetch, explicit commit after
-// the effect committed (at-least-once). An interface so the loop is
-// unit-testable without a broker.
-type MessageFetchCommitter interface {
-	FetchMessage(ctx context.Context) (kafkago.Message, error)
-	CommitMessages(ctx context.Context, msgs ...kafkago.Message) error
-}
-
 // ProductClassifiedConsumer keeps the local classification copy (ADR-0039)
 // current from product-master's ProductClassified events.
 //
@@ -76,7 +62,7 @@ type MessageFetchCommitter interface {
 // ProductClassified with an invalid payload, is WARN-logged and committed
 // past; any other type is ignored and committed past.
 type ProductClassifiedConsumer struct {
-	reader MessageFetchCommitter
+	reader fetchCommitReader
 	closer interface{ Close() error }
 	topic  string
 	apply  *usecases.ApplyProductClassified
@@ -108,8 +94,8 @@ func NewProductClassifiedConsumer(brokers []string, topic, groupID string, apply
 }
 
 // NewProductClassifiedConsumerFromReader builds the consumer over any
-// MessageFetchCommitter (unit tests pass a fake).
-func NewProductClassifiedConsumerFromReader(reader MessageFetchCommitter, topic string, apply *usecases.ApplyProductClassified, logger *slog.Logger) *ProductClassifiedConsumer {
+// fetchCommitReader (unit tests pass a fake).
+func NewProductClassifiedConsumerFromReader(reader fetchCommitReader, topic string, apply *usecases.ApplyProductClassified, logger *slog.Logger) *ProductClassifiedConsumer {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -218,40 +204,11 @@ func (c *ProductClassifiedConsumer) handleUntilDone(ctx context.Context, msg kaf
 // done with (applied, stale, duplicate, ignored type, or skipped as
 // invalid) and an error only for a transient failure worth retrying.
 func (c *ProductClassifiedConsumer) Handle(ctx context.Context, msg kafkago.Message) error {
-	ctx = observability.ExtractKafkaTrace(ctx, msg.Headers)
-	ctx, span := otel.Tracer(observability.InstrumentationName).Start(ctx,
-		"kafka.consume "+msg.Topic,
-		trace.WithSpanKind(trace.SpanKindConsumer),
-		trace.WithAttributes(
-			semconv.MessagingSystemKafka,
-			semconv.MessagingDestinationName(msg.Topic),
-			semconv.MessagingOperationName("process"),
-		),
-	)
-	defer span.End()
-
-	req, ok, err := decodeProductClassified(msg.Value)
-	switch {
-	case errors.Is(err, cloudevents.ErrNotCloudEvent):
-		c.logger.WarnContext(ctx, "skipping kafka message that is not a valid CloudEvent",
-			"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset, "error", err)
-		return nil
-	case errors.Is(err, ErrInvalidProductClassified):
-		c.logger.WarnContext(ctx, "skipping ProductClassified with an invalid payload",
-			"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset, "error", err)
-		return nil
-	case err != nil:
-		return err
-	case !ok:
-		return nil
-	}
-
-	if err := c.apply.Execute(ctx, req); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("kafka: apply ProductClassified %s: %w", req.EventId, err)
-	}
-	return nil
+	return handleConsumedEvent(ctx, msg, c.logger, decodeProductClassified,
+		ErrInvalidProductClassified, "skipping ProductClassified with an invalid payload",
+		"ProductClassified",
+		func(req usecases.ProductClassifiedRequest) string { return req.EventId },
+		c.apply.Execute)
 }
 
 // decodeProductClassified decodes raw as a CloudEvents 1.0 event. ok=false
@@ -267,7 +224,7 @@ func decodeProductClassified(raw []byte) (usecases.ProductClassifiedRequest, boo
 	}
 	var data ProductClassifiedData
 	if err := e.DataAs(&data); err != nil {
-		return usecases.ProductClassifiedRequest{}, false, fmt.Errorf("%w: event %s: %v", ErrInvalidProductClassified, e.ID(), err)
+		return usecases.ProductClassifiedRequest{}, false, fmt.Errorf("%w: event %s: %w", ErrInvalidProductClassified, e.ID(), err)
 	}
 	if data.SKU == "" {
 		return usecases.ProductClassifiedRequest{}, false, fmt.Errorf("%w: event %s: empty sku", ErrInvalidProductClassified, e.ID())

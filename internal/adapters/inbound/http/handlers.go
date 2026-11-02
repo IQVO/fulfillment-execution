@@ -3,6 +3,7 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
@@ -204,7 +205,7 @@ func (h *Handlers) PostBreakCase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.StationId == "" {
-		writeBadRequest(w, r, "stationId is required")
+		writeBadRequest(w, r, stationIDRequired)
 		return
 	}
 	if err := h.CompleteCaseBreak.Execute(r.Context(), shared.TaskId(taskId), shared.StationId(req.StationId)); err != nil {
@@ -249,27 +250,12 @@ func (h *Handlers) GetInstalledCapacityHandler(w http.ResponseWriter, r *http.Re
 // retried after a lease expired. An unknown orderRef is not an error: it
 // returns an empty page.
 func (h *Handlers) GetTasksHandler(w http.ResponseWriter, r *http.Request) {
-	limit, after, ok := pageParams(w, r, "orderRef")
-	if !ok {
-		return
-	}
-	orderRef := r.URL.Query().Get("orderRef")
-	if orderRef == "" {
-		writeBadRequest(w, r, "orderRef is required")
-		return
-	}
-
-	tasks, err := h.GetTasksByOrderRef.ExecutePage(r.Context(), shared.OrderRef(orderRef), shared.TaskId(afterID(after)), page.FetchSize(limit))
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	resp := make([]taskResponse, 0, len(tasks))
-	for _, t := range tasks {
-		resp = append(resp, toTaskResponse(t))
-	}
-	writeJSON(w, http.StatusOK, page.Of(resp, limit, func(t taskResponse) page.Position { return idPosition(t.Id) }))
+	writeOrderRefPage(w, r,
+		func(ctx context.Context, orderRef shared.OrderRef, after string, limit int) ([]*task.Task, error) {
+			return h.GetTasksByOrderRef.ExecutePage(ctx, orderRef, shared.TaskId(after), limit)
+		},
+		toTaskResponse,
+		func(t taskResponse) page.Position { return idPosition(t.Id) })
 }
 
 // PostExpireLeases handles POST /task-lease-expirations.

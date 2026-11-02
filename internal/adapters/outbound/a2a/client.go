@@ -92,7 +92,7 @@ func (c *Client) ReleaseNextWork(ctx context.Context, pathId string) (ports.Rele
 	}))
 	resp, err := client.SendMessage(ctx, &a2a.SendMessageRequest{Message: msg})
 	if err != nil {
-		return ports.ReleasedWork{}, fmt.Errorf("%w: SendMessage: %v", ports.ErrWorkPlanningUnreachable, err)
+		return ports.ReleasedWork{}, fmt.Errorf("%w: SendMessage: %w", ports.ErrWorkPlanningUnreachable, err)
 	}
 	agentMsg, ok := resp.(*a2a.Message)
 	if !ok {
@@ -107,11 +107,11 @@ func (c *Client) ReleaseNextWork(ctx context.Context, pathId string) (ports.Rele
 	}
 	raw, err := json.Marshal(data.Value)
 	if err != nil {
-		return ports.ReleasedWork{}, fmt.Errorf("%w: decoding answer: %v", ports.ErrWorkPlanningUnreachable, err)
+		return ports.ReleasedWork{}, fmt.Errorf("%w: decoding answer: %w", ports.ErrWorkPlanningUnreachable, err)
 	}
 	var env agentEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
-		return ports.ReleasedWork{}, fmt.Errorf("%w: answer is not the skill envelope: %v", ports.ErrWorkPlanningUnreachable, err)
+		return ports.ReleasedWork{}, fmt.Errorf("%w: answer is not the skill envelope: %w", ports.ErrWorkPlanningUnreachable, err)
 	}
 	if env.Problem != nil {
 		return ports.ReleasedWork{}, mapProblem(env.Problem)
@@ -152,11 +152,11 @@ func (c *Client) resolve(ctx context.Context) (*a2aclient.Client, error) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+wellKnownPath, nil)
 	if err != nil {
-		return nil, fmt.Errorf("%w: building card request: %v", ports.ErrWorkPlanningUnreachable, err)
+		return nil, fmt.Errorf("%w: building card request: %w", ports.ErrWorkPlanningUnreachable, err)
 	}
 	res, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%w: fetching agent card: %v", ports.ErrWorkPlanningUnreachable, err)
+		return nil, fmt.Errorf("%w: fetching agent card: %w", ports.ErrWorkPlanningUnreachable, err)
 	}
 	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
@@ -164,15 +164,15 @@ func (c *Client) resolve(ctx context.Context) (*a2aclient.Client, error) {
 	}
 	body, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if err != nil {
-		return nil, fmt.Errorf("%w: reading agent card: %v", ports.ErrWorkPlanningUnreachable, err)
+		return nil, fmt.Errorf("%w: reading agent card: %w", ports.ErrWorkPlanningUnreachable, err)
 	}
 	var card a2a.AgentCard
 	if err := json.Unmarshal(body, &card); err != nil {
-		return nil, fmt.Errorf("%w: agent card is not valid JSON: %v", ports.ErrWorkPlanningUnreachable, err)
+		return nil, fmt.Errorf("%w: agent card is not valid JSON: %w", ports.ErrWorkPlanningUnreachable, err)
 	}
 	client, err := a2aclient.NewFromCard(ctx, &card)
 	if err != nil {
-		return nil, fmt.Errorf("%w: building client from card: %v", ports.ErrWorkPlanningUnreachable, err)
+		return nil, fmt.Errorf("%w: building client from card: %w", ports.ErrWorkPlanningUnreachable, err)
 	}
 	c.client = client
 	return client, nil

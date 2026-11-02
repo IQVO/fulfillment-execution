@@ -43,6 +43,7 @@ import (
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/system"
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
+	pack "github.com/claudioed/fulfillment-execution/internal/domain/package"
 	"github.com/claudioed/fulfillment-execution/internal/observability"
 )
 
@@ -66,6 +67,13 @@ func run(ctx context.Context) error {
 	// Misconfiguration is refused before anything is opened or bound.
 	cfg, err := loadBootConfig(os.Getenv)
 	if err != nil {
+		return err
+	}
+
+	// Fail fast on a hand-transcription slip in the DOT segregation matrix
+	// (was a package init in internal/domain/package; the composition root
+	// now owns the check explicitly).
+	if err := pack.ValidateSegregationMatrix(); err != nil {
 		return err
 	}
 
@@ -114,25 +122,14 @@ func run(ctx context.Context) error {
 	// the flip and stop routing new traffic during the drain window.
 	readiness := newReadiness(storage.pool.Ping, cfg.kafkaBrokers)
 
-	classification, err := buildClassification(cfg.classification, storage, cfg.kafkaBrokers, logger)
+	wired, closeLookups, err := lookupSources(cfg, storage, logger)
 	if err != nil {
 		return err
 	}
-	defer classification.close() // after its loop stopped (LIFO), before the pool
-	packView, err := buildPackView(cfg.packViewGroup, storage, cfg.kafkaBrokers, logger)
-	if err != nil {
-		return err
-	}
-	defer packView.close() // after its loop stopped (LIFO), before the pool
-	interleaving, err := buildInterleaving(cfg.interleaving, storage, cfg.kafkaBrokers, logger)
-	if err != nil {
-		return err
-	}
-	defer interleaving.close()
-	lookups := buildOutboundLookups(classification.lookup, packView.lookup, cfg.inventoryStorageURL, logger)
+	defer closeLookups() // LIFO: interleaving, pack view, classification, before the pool
 
 	createTask := &usecases.CreateTask{Tasks: storage.taskRepo, Publisher: publisher, Clock: clock, NewId: newTaskId, UnitOfWork: storage.uow}
-	srv := newHTTPServer(storage, publisher, clock, metrics, lookups, interleaving.lookup, createTask, readiness, logger, getenv("HTTP_ADDR", ":8080"), buildWorkPlanningClient(logger, os.Getenv("WORK_PLANNING_A2A_URL")))
+	srv := newHTTPServer(storage, publisher, clock, metrics, wired.lookups, wired.interleaving.lookup, createTask, readiness, logger, getenv("HTTP_ADDR", ":8080"), buildWorkPlanningClient(logger, os.Getenv("WORK_PLANNING_A2A_URL")))
 
 	// ApplyWorkReleased wraps the same CreateTask the HTTP surface uses,
 	// plus the processed-events claim, inside ONE UnitOfWork — the
@@ -156,7 +153,7 @@ func run(ctx context.Context) error {
 		return err
 	}
 	workReleasedDone := startWorkReleasedConsumer(consumer, consumerCtx, logger, cfg.kafkaBrokers)
-	lc := startLookupConsumers(consumerCtx, logger, classification, interleaving, packView)
+	lc := startLookupConsumers(consumerCtx, logger, wired.classification, wired.interleaving, wired.packView)
 
 	// The outbox relay (ADR 0020) runs alongside the HTTP server in the
 	// same process, draining outbox_events onto both Kafka topics. It is
@@ -173,6 +170,46 @@ func run(ctx context.Context) error {
 		namedDone{"pack level consumer", lc.packView},
 		namedDone{"process-path catalogue consumer", catalogue.done},
 	)
+}
+
+// lookupSources wires the three optional Kafka-sourced lookup adapters —
+// classification, pack view, interleaving — and the outbound lookups they
+// feed. close is LIFO (interleaving, pack view, classification), matching
+// the per-adapter defers this extraction replaces; on error every source
+// built so far is closed before returning (extracted from run for the
+// 80-line function budget).
+func lookupSources(cfg bootConfig, storage storageAdapters, logger *slog.Logger) (lookupWirings, func(), error) {
+	classification, err := buildClassification(cfg.classification, storage, cfg.kafkaBrokers, logger)
+	if err != nil {
+		return lookupWirings{}, nil, err
+	}
+	packView, err := buildPackView(cfg.packViewGroup, storage, cfg.kafkaBrokers, logger)
+	if err != nil {
+		classification.close()
+		return lookupWirings{}, nil, err
+	}
+	interleaving, err := buildInterleaving(cfg.interleaving, storage, cfg.kafkaBrokers, logger)
+	if err != nil {
+		packView.close()
+		classification.close()
+		return lookupWirings{}, nil, err
+	}
+	lookups := buildOutboundLookups(classification.lookup, packView.lookup, cfg.inventoryStorageURL, logger)
+	close := func() {
+		interleaving.close()
+		packView.close()       // after its loop stopped (LIFO), before the pool
+		classification.close() // after its loop stopped (LIFO), before the pool
+	}
+	return lookupWirings{classification: classification, packView: packView, interleaving: interleaving, lookups: lookups}, close, nil
+}
+
+// lookupWirings bundles what lookupSources builds, so run can hand the
+// pieces to the HTTP server and the lookup consumers.
+type lookupWirings struct {
+	classification classificationWiring
+	packView       packViewWiring
+	interleaving   interleavingWiring
+	lookups        outboundLookups
 }
 
 // newReadiness builds the /readyz gate: the drain gate plus a Postgres ping

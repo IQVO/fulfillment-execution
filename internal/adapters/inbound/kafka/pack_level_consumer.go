@@ -10,17 +10,12 @@ import (
 
 	"github.com/cenkalti/backoff/v4"
 	kafkago "github.com/segmentio/kafka-go"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/codes"
-	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
-	"go.opentelemetry.io/otel/trace"
 
 	"github.com/claudioed/fulfillment-execution/internal/adapters/kafka/cloudevents"
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared/gs1"
 	"github.com/claudioed/fulfillment-execution/internal/domain/task"
-	"github.com/claudioed/fulfillment-execution/internal/observability"
 )
 
 // The FULL CloudEvents types product-master publishes its pack-level facts
@@ -102,7 +97,7 @@ type ProductPackLevelRetiredData struct {
 // valid CloudEvent, or a pack-level event with an invalid payload, is
 // WARN-logged and committed past; any other type is ignored and committed past.
 type PackLevelConsumer struct {
-	reader MessageFetchCommitter
+	reader fetchCommitReader
 	closer interface{ Close() error }
 	topic  string
 	apply  *usecases.ApplyPackLevel
@@ -134,8 +129,8 @@ func NewPackLevelConsumer(brokers []string, topic, groupID string, apply *usecas
 }
 
 // NewPackLevelConsumerFromReader builds the consumer over any
-// MessageFetchCommitter (unit tests pass a fake).
-func NewPackLevelConsumerFromReader(reader MessageFetchCommitter, topic string, apply *usecases.ApplyPackLevel, logger *slog.Logger) *PackLevelConsumer {
+// fetchCommitReader (unit tests pass a fake).
+func NewPackLevelConsumerFromReader(reader fetchCommitReader, topic string, apply *usecases.ApplyPackLevel, logger *slog.Logger) *PackLevelConsumer {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -252,40 +247,11 @@ func (c *PackLevelConsumer) handleUntilDone(ctx context.Context, msg kafkago.Mes
 // done with (applied, stale, duplicate, ignored type, or skipped as
 // invalid) and an error only for a transient failure worth retrying.
 func (c *PackLevelConsumer) Handle(ctx context.Context, msg kafkago.Message) error {
-	ctx = observability.ExtractKafkaTrace(ctx, msg.Headers)
-	ctx, span := otel.Tracer(observability.InstrumentationName).Start(ctx,
-		"kafka.consume "+msg.Topic,
-		trace.WithSpanKind(trace.SpanKindConsumer),
-		trace.WithAttributes(
-			semconv.MessagingSystemKafka,
-			semconv.MessagingDestinationName(msg.Topic),
-			semconv.MessagingOperationName("process"),
-		),
-	)
-	defer span.End()
-
-	req, ok, err := decodePackLevel(msg.Value)
-	switch {
-	case errors.Is(err, cloudevents.ErrNotCloudEvent):
-		c.logger.WarnContext(ctx, "skipping kafka message that is not a valid CloudEvent",
-			"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset, "error", err)
-		return nil
-	case errors.Is(err, ErrInvalidPackLevel):
-		c.logger.WarnContext(ctx, "skipping a pack-level event with an invalid payload",
-			"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset, "error", err)
-		return nil
-	case err != nil:
-		return err
-	case !ok:
-		return nil
-	}
-
-	if err := c.apply.Execute(ctx, req); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("kafka: apply pack level %s: %w", req.EventId, err)
-	}
-	return nil
+	return handleConsumedEvent(ctx, msg, c.logger, decodePackLevel,
+		ErrInvalidPackLevel, "skipping a pack-level event with an invalid payload",
+		"pack level",
+		func(req usecases.PackLevelRequest) string { return req.EventId },
+		c.apply.Execute)
 }
 
 // decodePackLevel decodes raw as a CloudEvents 1.0 event. ok=false (nil
@@ -300,22 +266,22 @@ func decodePackLevel(raw []byte) (usecases.PackLevelRequest, bool, error) {
 	case TypeProductPackLevelDeclared:
 		var data ProductPackLevelDeclaredData
 		if err := e.DataAs(&data); err != nil {
-			return usecases.PackLevelRequest{}, false, fmt.Errorf("%w: event %s: %v", ErrInvalidPackLevel, e.ID(), err)
+			return usecases.PackLevelRequest{}, false, fmt.Errorf("%w: event %s: %w", ErrInvalidPackLevel, e.ID(), err)
 		}
 		rec, err := declaredRecord(data)
 		if err != nil {
-			return usecases.PackLevelRequest{}, false, fmt.Errorf("%w: event %s: %v", ErrInvalidPackLevel, e.ID(), err)
+			return usecases.PackLevelRequest{}, false, fmt.Errorf("%w: event %s: %w", ErrInvalidPackLevel, e.ID(), err)
 		}
 		return usecases.PackLevelRequest{EventId: e.ID(), Record: rec}, true, nil
 	case TypeProductPackLevelRetired:
 		var data ProductPackLevelRetiredData
 		if err := e.DataAs(&data); err != nil {
-			return usecases.PackLevelRequest{}, false, fmt.Errorf("%w: event %s: %v", ErrInvalidPackLevel, e.ID(), err)
+			return usecases.PackLevelRequest{}, false, fmt.Errorf("%w: event %s: %w", ErrInvalidPackLevel, e.ID(), err)
 		}
 		g, err := gs1.ParseGTIN(data.GTIN)
 		switch {
 		case err != nil:
-			return usecases.PackLevelRequest{}, false, fmt.Errorf("%w: event %s: gtin: %v", ErrInvalidPackLevel, e.ID(), err)
+			return usecases.PackLevelRequest{}, false, fmt.Errorf("%w: event %s: gtin: %w", ErrInvalidPackLevel, e.ID(), err)
 		case data.Version < 1:
 			return usecases.PackLevelRequest{}, false, fmt.Errorf("%w: event %s: version %d < 1", ErrInvalidPackLevel, e.ID(), data.Version)
 		case data.EffectiveTo.IsZero():
