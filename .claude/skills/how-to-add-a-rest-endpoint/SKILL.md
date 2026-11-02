@@ -19,7 +19,7 @@ concrete worked example — read those two files alongside this guide.
 
 Check `internal/domain/<aggregate>/` for the rule this endpoint enforces.
 A REST endpoint should almost never contain business logic itself — it
-decodes a request, calls a use case, encodes the result. `claim-next`'s
+decodes a request, calls a use case, encodes the result. `task-claims`'s
 real invariant lives on `task.Task.Claim` (at-most-once assignment via a
 lease, capability-match rejection) — the handler and use case never
 reimplement that check, they just call it. If the operation needs a new
@@ -97,7 +97,7 @@ In `internal/adapters/inbound/http/`:
 
 Write at least one httptest per endpoint: one success path, one error
 path (validation failure AND/OR the domain-rule failure, whichever this
-endpoint can produce) — see `handlers_test.go`'s claim-next cases (happy
+endpoint can produce) — see `handlers_test.go`'s task-claims cases (happy
 path, capability mismatch → 409, double-claim → 409).
 
 ## 4. Contract: update OpenAPI, then regenerate docs
