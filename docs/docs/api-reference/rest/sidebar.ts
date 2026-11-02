@@ -318,6 +318,12 @@ const sidebar: SidebarsConfig = {
         },
         {
           type: "doc",
+          id: "api-reference/rest/schemas/breakcaserequest",
+          label: "BreakCaseRequest",
+          className: "schema",
+        },
+        {
+          type: "doc",
           id: "api-reference/rest/schemas/sealpackagerequest",
           label: "SealPackageRequest",
           className: "schema",

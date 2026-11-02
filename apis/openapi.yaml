@@ -43,7 +43,7 @@ info:
     url: https://github.com/claudioed/fulfillment-execution
 servers:
   - url: http://localhost:8080
-    description: Local development (in-memory adapters unless DATABASE_URL is set)
+    description: Local development (cmd/execution requires DATABASE_URL and KAFKA_BROKERS; Postgres is the only runtime)
 
 tags:
   - name: Work Planning Delegation
@@ -169,6 +169,7 @@ paths:
                 orderRef: order-42
                 requiredCapabilities: [pick]
                 fragile: false
+                giftWrap: false
         "400":
           description: >
             The `Idempotency-Key` header is missing
@@ -195,7 +196,7 @@ paths:
                     type: https://errors.fulfillment-execution.warehouse-systems.dev/invalid-request
                     title: The request is malformed or missing a required field
                     status: 400
-                    detail: type must be one of PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL, DISPATCH, ARRIVAL
+                    detail: type must be one of PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL
         "409":
           $ref: "#/components/responses/IdempotencyKeyReused"
         "422":
@@ -413,6 +414,7 @@ paths:
                 orderRef: order-42
                 requiredCapabilities: [pick]
                 fragile: false
+                giftWrap: false
                 leaseStationId: station-1
                 leaseExpiry: "2026-01-01T12:05:00Z"
         "400":
@@ -507,7 +509,7 @@ paths:
                 title: Station not found
                 status: 404
                 detail: "usecases: station not found"
-                instance: /stations/station-1/check-in
+                instance: /stations/station-1/check-ins
         "409":
           description: The station already has an occupant checked in. The same `Idempotency-Key` reused with a different method, path or body is also a 409, problem type `idempotency-key-reused`.
           content:
@@ -519,7 +521,7 @@ paths:
                 title: Station is already occupied
                 status: 409
                 detail: "station: already occupied"
-                instance: /stations/station-1/check-in
+                instance: /stations/station-1/check-ins
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -569,7 +571,7 @@ paths:
                 title: Station not found
                 status: 404
                 detail: "usecases: station not found"
-                instance: /stations/station-1/check-out
+                instance: /stations/station-1/check-outs
         "409":
           description: The station has no occupant checked in. The same `Idempotency-Key` reused with a different method, path or body is also a 409, problem type `idempotency-key-reused`.
           content:
@@ -581,7 +583,7 @@ paths:
                 title: Station is not occupied
                 status: 409
                 detail: "station: not occupied"
-                instance: /stations/station-1/check-out
+                instance: /stations/station-1/check-outs
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -725,11 +727,15 @@ paths:
                 title: Task not found
                 status: 404
                 detail: "usecases: task not found"
-                instance: /tasks/20260101T120000.000000000/complete
+                instance: /tasks/20260101T120000.000000000/completions
         "409":
           description: >
             The task was already completed (double-complete, rejected), has
             no active claim, or `stationId` does not own the active claim.
+            Also `pick-incomplete` (a PICK task whose confirmed scans do not
+            add up to the planned eaches) and `case-break-completion-required`
+            (a BREAK_CASE task, which completes only through
+            `POST /tasks/{id}/case-breaks`).
             The same `Idempotency-Key` reused with a different method, path or body is also a 409, problem type `idempotency-key-reused`.
           content:
             application/problem+json:
@@ -740,7 +746,7 @@ paths:
                 title: Task already completed
                 status: 409
                 detail: "task: already completed"
-                instance: /tasks/20260101T120000.000000000/complete
+                instance: /tasks/20260101T120000.000000000/completions
         "422":
           description: >
             The RELOCATE confirmation is missing or does not fit the planned
@@ -763,7 +769,7 @@ paths:
                 title: A RELOCATE task completes only with the confirmed quantity and the bins the move left open
                 status: 422
                 detail: "task: a RELOCATE task completes only with the confirmed quantity and the bins the move left open"
-                instance: /tasks/20260101T120000.000000000/complete
+                instance: /tasks/20260101T120000.000000000/completions
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -970,7 +976,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/CompleteTaskRequest"
+              $ref: "#/components/schemas/BreakCaseRequest"
             example:
               stationId: station-1
       responses:
@@ -1130,6 +1136,7 @@ paths:
                     status: SEALED
                     scannedContents: [sku-1, sku-2]
                     fragileHandling: false
+                    giftWrapRequested: false
                     sortLane: STANDARD
                 shipInOwnContainer:
                   summary: Sealed in its own case
@@ -1431,31 +1438,33 @@ paths:
                 title: Package not found
                 status: 404
                 detail: "usecases: package not found"
-                instance: /packages/20260101T120200.000000000/slam
+                instance: /packages/20260101T120200.000000000/slam-runs
         "409":
-          description: The package already had a label applied or was already diverted. The same `Idempotency-Key` reused with a different method, path or body is also a 409, problem type `idempotency-key-reused`.
+          description: >
+            The package already had a label applied or was already diverted
+            (`package-already-processed`), or it has not been sealed yet and
+            is still Open (`package-not-sealed`). The same `Idempotency-Key`
+            reused with a different method, path or body is also a 409,
+            problem type `idempotency-key-reused`.
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
-              example:
-                type: https://errors.fulfillment-execution.warehouse-systems.dev/package-already-processed
-                title: Package SLAM already processed
-                status: 409
-                detail: "package: SLAM already processed"
-                instance: /packages/20260101T120200.000000000/slam
-        "422":
-          description: The package has not been sealed yet (still Open).
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/Problem"
-              example:
-                type: https://errors.fulfillment-execution.warehouse-systems.dev/package-not-sealed
-                title: Package must be sealed before SLAM
-                status: 422
-                detail: "package: must be sealed before SLAM"
-                instance: /packages/20260101T120200.000000000/slam
+              examples:
+                alreadyProcessed:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/package-already-processed
+                    title: Package SLAM already processed
+                    status: 409
+                    detail: "package: SLAM already processed"
+                    instance: /packages/20260101T120200.000000000/slam-runs
+                notSealed:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/package-not-sealed
+                    title: Package must be sealed before SLAM
+                    status: 409
+                    detail: "package: must be sealed before SLAM"
+                    instance: /packages/20260101T120200.000000000/slam-runs
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1543,9 +1552,10 @@ paths:
         authoritative fact still arrives as the `WorkReleased` CloudEvent on
         Kafka through the existing consumer — the 200 body is only the
         delegation acknowledgement. Each call asks for exactly one unit, so
-        the endpoint is deliberately NOT idempotent and NOT behind the
-        idempotency middleware: repeating the request is a legitimate second
-        pull. Answers 503 when this deployment has no
+        the route is behind the idempotency middleware (ADR-0058, ADR-0060):
+        a retry of ONE logical pull (same `Idempotency-Key`, same path)
+        replays the stored answer with `Idempotency-Replayed: true`, while a
+        legitimate second pull sends a new key. Answers 503 when this deployment has no
         `WORK_PLANNING_A2A_URL` configured, and 502 when the planning agent
         is unreachable or answers off-contract.
       parameters:
@@ -1721,9 +1731,10 @@ paths:
         its first arrival, creating the PACK task immediately.
 
 
-        No response body on success. Not guarded by an `Idempotency-Key`
-        header (ADR-0028): the natural (`orderRef`, `lineId`) key already
-        makes retries safe.
+        No response body on success. Like every POST it requires an
+        `Idempotency-Key` header (ADR-0028, ADR-0060): a retry with the same
+        key and body replays the stored `204`; the natural (`orderRef`,
+        `lineId`) key additionally makes a re-send with a new key a no-op.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -2176,6 +2187,7 @@ components:
 
     TaskResponse:
       type: object
+      required: [id, type, status, cpt, orderRef, requiredCapabilities, fragile, giftWrap]
       properties:
         id:
           type: string
@@ -2215,14 +2227,12 @@ components:
           example: false
         leaseStationId:
           type: string
-          nullable: true
-          description: The station currently holding the active claim, if any.
+          description: The station currently holding the active claim; omitted (never null) when the task is not claimed.
           example: station-1
         leaseExpiry:
           type: string
           format: date-time
-          nullable: true
-          description: When the active claim's lease expires, if any.
+          description: When the active claim's lease expires; omitted (never null) when the task is not claimed.
           example: "2026-01-01T12:05:00Z"
         relocation:
           $ref: "#/components/schemas/TaskRelocation"
@@ -2256,7 +2266,6 @@ components:
     PickScanRequest:
       type: object
       required: [stationId, gtin]
-      additionalProperties: false
       properties:
         stationId:
           type: string
@@ -2264,7 +2273,7 @@ components:
         gtin:
           type: string
           pattern: '^([0-9]{8}|[0-9]{12,14})$'
-          description: The scanned GTIN (8, 12, 13 or 14 digits). A bad check digit or a variable-measure indicator is a 404 `invalid-scanned-gtin`.
+          description: The scanned GTIN (8, 12, 13 or 14 digits). The handler only rejects a blank value (400); a value that is not a valid GTIN (wrong shape, bad check digit or a variable-measure indicator) is a 409 `invalid-scanned-gtin`.
         count:
           type: integer
           format: int32
@@ -2331,6 +2340,21 @@ components:
       example:
         stationId: station-1
 
+    BreakCaseRequest:
+      type: object
+      required: [stationId]
+      properties:
+        stationId:
+          type: string
+          minLength: 1
+          description: >
+            Must match the station that currently owns the active claim.
+            Must be non-empty: the API treats "" as a missing field and
+            rejects it with 400.
+          example: station-1
+      example:
+        stationId: station-1
+
     SealPackageRequest:
       type: object
       required: [stationId]
@@ -2382,6 +2406,7 @@ components:
 
     PackageResponse:
       type: object
+      required: [id, orderRef, status, scannedContents, fragileHandling, giftWrapRequested, sortLane]
       properties:
         id:
           type: string
@@ -2498,6 +2523,7 @@ components:
 
     QueueDepthResponse:
       type: object
+      required: [taskType, depth]
       properties:
         taskType:
           type: string
@@ -2510,6 +2536,7 @@ components:
 
     InstalledCapacityResponse:
       type: object
+      required: [capability, installed]
       properties:
         capability:
           type: string
@@ -2544,6 +2571,7 @@ components:
 
     ExpireLeasesResponse:
       type: object
+      required: [freed]
       properties:
         freed:
           type: integer
@@ -2553,6 +2581,7 @@ components:
 
     SweepCPTMissesResponse:
       type: object
+      required: [reported]
       properties:
         reported:
           type: integer
@@ -2601,6 +2630,7 @@ components:
 
     StationResponse:
       type: object
+      required: [id, capabilities, occupied]
       properties:
         id:
           type: string
@@ -2748,8 +2778,9 @@ components:
       description: >
         The `Idempotency-Key` header is missing (`idempotency-key-required`)
         or not 1-128 printable ASCII characters (`idempotency-key-invalid`) on
-        a POST, or the request body is malformed JSON, a required field is missing or
-        empty, or a field value is invalid (e.g. a task type outside the
+        a POST, or the request body could not be read or contains a NUL
+        character (`malformed-request-body`), or the request body is malformed
+        JSON, a required field is missing or empty, or a field value is invalid (e.g. a task type outside the
         TaskType enum).
       content:
         application/problem+json:
@@ -2760,14 +2791,15 @@ components:
             title: The request is malformed or missing a required field
             status: 400
             detail: stationId is required
-            instance: /tasks/20260101T120000.000000000/complete
+            instance: /tasks/20260101T120000.000000000/completions
 
     BadRequestNoInstance:
       description: >
         The `Idempotency-Key` header is missing (`idempotency-key-required`)
         or not 1-128 printable ASCII characters (`idempotency-key-invalid`) on
-        a POST, or the request body is malformed JSON, a required field is missing or
-        empty, or a field value is invalid (e.g. a task type outside the
+        a POST, or the request body could not be read or contains a NUL
+        character (`malformed-request-body`), or the request body is malformed
+        JSON, a required field is missing or empty, or a field value is invalid (e.g. a task type outside the
         TaskType enum). `instance` is omitted: this is a bare
         collection-create endpoint with no path segment identifying a
         specific resource.
