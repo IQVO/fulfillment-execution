@@ -442,8 +442,8 @@ also requires an `Idempotency-Key` header (missing: `400`
 replayed with `Idempotency-Replayed: true` —
 [ADR-0028](docs/docs/adr/0028-idempotency-key-middleware.md),
 [ADR-0060](docs/docs/adr/0060-adopt-the-fleet-rest-api-guideline.md)). So does
-EVERY other `POST` of the service; the in-memory mode does not wire the
-middleware. `requiredCapabilities` may include `hazmat` — see
+EVERY other `POST` of the service (including `POST /rebin/arrivals` and
+`POST /paths/{pathId}/work-requests`); there is no in-memory mode. `requiredCapabilities` may include `hazmat` — see
 [Integration](#integration) below and `docs/docs/adr/0009-fragile-and-hazmat-handling-flags.md`
 for why that needs no special handling beyond the value itself.
 
@@ -679,8 +679,8 @@ existing generic capability-set mechanism in `Task.Claim` / `RegisterStation`
 ### Idempotency
 
 Kafka delivery is at-least-once. Before calling `CreateTask`, the consumer
-tries to record the event's CloudEvents `id` in a `processed_events` table
-(Postgres) or an in-memory set (no `DATABASE_URL`); if the id is already
+tries to record the event's CloudEvents `id` in the `processed_events` table
+(Postgres); if the id is already
 present, the message is skipped (and still acked/committed) instead of
 creating a duplicate Task. See
 `internal/adapters/inbound/kafka/consumer_test.go` —

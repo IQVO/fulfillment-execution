@@ -127,7 +127,7 @@ func (d Deps) diagnoseStuckTasks(ctx context.Context, in diagnoseInput) (diagnos
 		if lease == nil {
 			continue
 		}
-		reason := ""
+		var reason string
 		switch {
 		case !lease.Expiry.After(now):
 			reason = "lease already expired; task will return to the pool on the next sweep"

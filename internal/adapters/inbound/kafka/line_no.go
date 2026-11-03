@@ -2,6 +2,7 @@ package kafka
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -57,6 +58,6 @@ func (l lineNo) Int() int {
 }
 
 func isRangeError(err error) bool {
-	ne, ok := err.(*strconv.NumError)
-	return ok && ne.Err == strconv.ErrRange
+	var ne *strconv.NumError
+	return errors.As(err, &ne) && errors.Is(ne.Err, strconv.ErrRange)
 }

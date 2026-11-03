@@ -1,1 +1,1 @@
-{"schema":{"type":"object","properties":{"reported":{"type":"integer","format":"int32","description":"Count of tasks reported as CPT-missed (TaskCPTMissed raised) by this sweep pass.","example":1}},"title":"SweepCPTMissesResponse"},"schemaType":"response"}
+{"schema":{"type":"object","required":["reported"],"properties":{"reported":{"type":"integer","format":"int32","description":"Count of tasks reported as CPT-missed (TaskCPTMissed raised) by this sweep pass.","example":1}},"title":"SweepCPTMissesResponse"},"schemaType":"response"}

@@ -17,6 +17,20 @@ linters:
     - cyclop
     - funlen
     - nestif
+    # --- delta candidates under test (2026-11-02 best-practices brief;
+    # mnd is excluded from the fleet rollout) ---
+    - dupl
+    - goconst
+    - gochecknoinits
+    - errorlint
+    - errname
+    - unparam
+    - wastedassign
+    - noctx
+    - rowserrcheck
+    - sqlclosecheck
+    - iface
+    - nolintlint
   settings:
     cyclop:
       max-complexity: 15
@@ -30,6 +44,13 @@ linters:
       statements: 50
     nestif:
       min-complexity: 5
+    dupl:
+      threshold: 150
+    goconst:
+      min-len: 3
+      min-occurrences: 3
+    errcheck:
+      check-type-assertions: true
     # File-length budget (fleet rule, 2026-10-31): at most 300 lines of CODE per
     # production Go file; comments and blank lines are not counted, so documentation
     # is never penalised. revive is deliberately NOT listed under `enable:`, so the
@@ -55,6 +76,10 @@ linters:
           - gosec
           - funlen
           - gocyclo
+          - dupl
+          - goconst
+          - noctx
+          - unparam
       - path: ^web/
         linters:
           - gocyclo

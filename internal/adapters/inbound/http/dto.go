@@ -166,9 +166,13 @@ type renewLeaseRequest struct {
 	StationId string `json:"stationId"`
 }
 
+// stationIDRequired is the shared validation detail for a missing
+// stationId (goconst: one wire-contract string, one constant).
+const stationIDRequired = "stationId is required"
+
 func (r renewLeaseRequest) validate() string {
 	if r.StationId == "" {
-		return "stationId is required"
+		return stationIDRequired
 	}
 	return ""
 }
@@ -190,7 +194,7 @@ type completeTaskRequest struct {
 func (r completeTaskRequest) validate() string {
 	switch {
 	case r.StationId == "":
-		return "stationId is required"
+		return stationIDRequired
 	case r.Quantity != nil && *r.Quantity < 1:
 		return "quantity must be at least 1"
 	case r.FromBin != nil && isBlankPerContract(*r.FromBin):
@@ -268,7 +272,7 @@ type pickScanRequest struct {
 func (r pickScanRequest) validate() string {
 	switch {
 	case r.StationId == "":
-		return "stationId is required"
+		return stationIDRequired
 	case strings.TrimSpace(r.GTIN) == "":
 		return "gtin is required"
 	case r.Count != nil && *r.Count < 1:

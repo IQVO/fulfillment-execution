@@ -83,6 +83,10 @@ func (d Deps) now() time.Time {
 	return time.Now()
 }
 
+// mediaTypeJSON is the JSON content type the agent card and skills
+// exchange (goconst: one wire string, one constant).
+const mediaTypeJSON = "application/json"
+
 // Card builds this agent's Agent Card (ADR-0059). The surface is two curated,
 // goal-shaped skills - not one skill per endpoint, the same curation
 // discipline ADR-0008 applied to MCP tools. backlog_status composes the three
@@ -104,8 +108,8 @@ func Card(cfg Config) *a2a.AgentCard {
 		SupportedInterfaces: []*a2a.AgentInterface{
 			a2a.NewAgentInterface(cfg.AgentURL, a2a.TransportProtocolJSONRPC),
 		},
-		DefaultInputModes:  []string{"application/json", "text/plain"},
-		DefaultOutputModes: []string{"application/json", "text/plain"},
+		DefaultInputModes:  []string{mediaTypeJSON, "text/plain"},
+		DefaultOutputModes: []string{mediaTypeJSON, "text/plain"},
 		Capabilities:       a2a.AgentCapabilities{Streaming: false},
 		Skills: []a2a.AgentSkill{
 			{
@@ -113,7 +117,7 @@ func Card(cfg Config) *a2a.AgentCard {
 				Name:        "Backlog status for a process path",
 				Description: "Composed read for one process-path queue (PICK, PACK, SLAM, RELOCATE, REPLENISH or BREAK_CASE): the number of Pending tasks, how many tasks a station could claim now with the highest-priority (earliest-CPT) one, and the claimed tasks of that path whose lease has already expired or expires within withinSeconds (default 0 = only already expired). Changes nothing.",
 				Tags:        []string{"fulfillment", "backlog", "read"},
-				InputModes:  []string{"application/json"},
+				InputModes:  []string{mediaTypeJSON},
 				Examples: []string{
 					`{"skill":"backlog_status","arguments":{"processPath":"PICK"}}`,
 					`{"skill":"backlog_status","arguments":{"processPath":"PACK","withinSeconds":300}}`,
@@ -124,7 +128,7 @@ func Card(cfg Config) *a2a.AgentCard {
 				Name:        "Complete a claimed task",
 				Description: "Completes a claimed task on behalf of the station that holds its active claim, exactly as the REST and MCP surfaces do, and publishes TaskCompleted through the transactional outbox. Rejected (as a problem answer, nothing written) when the task is unknown, not claimed, already completed, or the station does not own the claim. A RELOCATE task also needs the operator's counted quantity and the scanned fromBin (Assign) or toBin (Vacate) the move left open; a REPLENISH task needs the counted quantity (bins are optional scans that must equal the planned ones); never invent these values. NOT idempotent: a second call on the same task is rejected as already completed.",
 				Tags:        []string{"fulfillment", "task", "write"},
-				InputModes:  []string{"application/json"},
+				InputModes:  []string{mediaTypeJSON},
 				Examples: []string{
 					`{"skill":"complete_task","arguments":{"taskId":"task-1","stationId":"station-1"}}`,
 					`{"skill":"complete_task","arguments":{"taskId":"task-2","stationId":"station-1","quantity":4,"fromBin":"A-01-01"}}`,

@@ -92,20 +92,20 @@ var segregationMatrix = [10][10]bool{
 	9: {0: false, 1: true, 2: false, 3: false, 4: false, 5: false, 6: false, 7: false, 8: false, 9: false},
 }
 
-func init() {
-	// Verify at package-init time that the matrix is symmetric, so a
-	// transcription slip fails loudly (any go build/test/run of this
-	// package panics immediately) rather than silently producing an
-	// asymmetric rule.
-	if err := CheckSegregationSymmetry(&segregationMatrix); err != nil {
-		panic(err.Error())
-	}
+// ValidateSegregationMatrix verifies that the matrix is symmetric, so a
+// transcription slip fails loudly at wiring time rather than silently
+// producing an asymmetric rule. It used to run in a package init; the
+// composition root (cmd/execution) now calls it explicitly during boot
+// (fleet gochecknoinits: wiring belongs to the composition root).
+func ValidateSegregationMatrix() error {
+	return CheckSegregationSymmetry(&segregationMatrix)
 }
 
 // CheckSegregationSymmetry returns an error naming the first asymmetric
-// pair in m, or nil when m is symmetric over classes 1..9. It is the init-time
-// self-check above, extracted so the check itself can be exercised (an
-// init-only loop cannot be tested, so a broken loop would go unnoticed).
+// pair in m, or nil when m is symmetric over classes 1..9. It backs
+// ValidateSegregationMatrix, extracted so the check itself can be
+// exercised (a wiring-only loop cannot be tested, so a broken loop would
+// go unnoticed).
 func CheckSegregationSymmetry(m *[10][10]bool) error {
 	for i := 1; i <= 9; i++ {
 		for j := 1; j <= 9; j++ {
