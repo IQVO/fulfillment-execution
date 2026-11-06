@@ -179,12 +179,12 @@ func TestGolden_Integration_PackageManifested_Correlation(t *testing.T) {
 	}`)
 }
 
-// ADR 0061 rebin path: when no correlated task carries a sourceOrderId
-// (tasks created before the stamp, or a SLAM leg that never got one), the
-// package's orderRef IS the bare order id by caller convention — a
-// trailing "-line-N" work-unit suffix is stripped defensively, and a bare
-// id passes through unchanged. No SLAM task means no cpt either
-// (omit-when-unknown).
+// ADR 0061 rebin path: when the correlated tasks carry no sourceOrderId
+// (a PACK task created before the ArriveAtRebin stamp, e.g. at deploy
+// time), the package's orderRef IS the bare order id by caller convention
+// — a trailing "-line-N" work-unit suffix is stripped defensively, and a
+// bare id passes through unchanged. No SLAM task among them means no cpt
+// either (omit-when-unknown).
 func TestGolden_Integration_PackageManifested_RebinFallback(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -195,8 +195,12 @@ func TestGolden_Integration_PackageManifested_RebinFallback(t *testing.T) {
 		{"bare order id passes through", "order-9", "order-9"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			tasks := memory.NewTaskRepo()
+			pack := task.New("pack-9", task.Pack, shared.NewCPT(goldenAt.Add(time.Hour)), shared.OrderRef(tc.orderRef), shared.NewCapabilitySet(), false, false)
+			_ = tasks.Save(context.Background(), pack)
+
 			w := &fakeWriter{}
-			p := outboundkafka.NewPublisherWithWriter(w, nil, nil, goldenID1)
+			p := outboundkafka.NewPublisherWithWriter(w, tasks, nil, goldenID1)
 			if err := p.Publish(context.Background(), shared.NewPackageManifestedWithWeight("pkg-1029", shared.OrderRef(tc.orderRef), 980, goldenAt)); err != nil {
 				t.Fatalf("Publish: %v", err)
 			}

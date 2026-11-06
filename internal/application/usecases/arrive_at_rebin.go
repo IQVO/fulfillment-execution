@@ -101,7 +101,15 @@ func (uc *ArriveAtRebin) Execute(
 		if !oc.IsComplete() {
 			return nil
 		}
-		if _, err := uc.CreateTask.Execute(ctx, task.Pack, packCPT, orderRef, packRequired, packFragile, packGiftWrap); err != nil {
+		// The PACK task is created via ExecuteRelease so it carries the
+		// order's id as its sourceOrderId (ADR 0061): on this rebin path
+		// the posted orderRef IS the bare order-management OrderId by
+		// caller convention, so stamping it makes the release path
+		// (ApplyWorkReleased stamps WorkReleased.ref) and the rebin path
+		// agree on Task.SourceOrderId — which PackageManifested's
+		// source_order_id resolves from. No source line: the task is
+		// order-level, not per-line.
+		if _, err := uc.CreateTask.ExecuteRelease(ctx, task.Pack, packCPT, orderRef, packRequired, packFragile, packGiftWrap, string(orderRef), 0, nil); err != nil {
 			return err
 		}
 		return uc.Publisher.Publish(ctx, shared.NewOrderConsolidated(orderRef, now))
