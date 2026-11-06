@@ -10,7 +10,8 @@
 // for ReservationRevoked. It also enriches TaskCompleted with the
 // completing associate's identity, the task's duration, and the task's own
 // type (PICK/PACK/SLAM/REBIN), resolved via a StationRepo lookup, the
-// Task's ClaimedAt timestamp, and the already-loaded Task's Type()
+// Task's DurationBase timestamp (the per-stop work start inside a work
+// batch, else the claim — ADR 0064), and the already-loaded Task's Type()
 // respectively (see ADR-0014, ADR-0023) — inputs the labor-performance
 // bounded context needs and that this service is the sole owner of.
 // Since ADR 0061, PackageManifested is enriched the same best-effort way
@@ -58,9 +59,10 @@ const (
 // labor-performance-relevant facts resolved at publish time (ADR-0014,
 // ADR-0023): AssociateId (the occupant of the claiming station, if any —
 // empty for a station with no checked-in occupant, e.g. a robot),
-// DurationSeconds (elapsed time between the task's claim and its
-// completion), and TaskType (this service's own task.Type — PICK, PACK,
-// SLAM, or REBIN — read directly off the already-loaded Task, no new
+// DurationSeconds (elapsed work time between the task's DurationBase —
+// the per-stop work start inside a work batch, else its claim (ADR 0064) —
+// and its completion), and TaskType (this service's own task.Type — PICK,
+// PACK, SLAM, or REBIN — read directly off the already-loaded Task, no new
 // lookup needed). OrderRef (optional, omitted when empty) is the upstream
 // ORDER the task's work was released for (Task.SourceOrderId, from
 // WorkReleased.ref) — NOT work_unit_id, which for order work is the

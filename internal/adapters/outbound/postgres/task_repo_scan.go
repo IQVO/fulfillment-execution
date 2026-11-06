@@ -36,8 +36,9 @@ func scanTask(row rowScanner) (*task.Task, error) {
 	var relocation relocationColumns
 	var replenishment replenishmentColumns
 	var pick pickColumns
+	var workStartedAt *time.Time
 	dest := append(append(append([]any{&id, &taskType, &status, &cpt, &orderRef, &requiredCapabilities, &leaseStationId, &leaseExpiry, &fragile, &giftWrap, &claimedAt, &transferRef, &demandId, &workKind, &siteId, &sku, &quantity, &sourceOrderId, &sourceLineNo},
-		relocation.dest()...), replenishment.dest()...), pick.dest()...)
+		relocation.dest()...), replenishment.dest()...), append(pick.dest(), &workStartedAt)...)
 	if err := row.Scan(dest...); err != nil {
 		return nil, err
 	}
@@ -91,7 +92,7 @@ func scanTask(row rowScanner) (*task.Task, error) {
 	if sourceLineNo != nil {
 		t.WithSourceLineNo(*sourceLineNo)
 	}
-	return t.WithRelocation(move, result).WithReplenishment(replMove, replResult).WithPickPlan(pickPlan, pickedEaches).WithCaseBreak(caseBreak), nil
+	return t.WithRelocation(move, result).WithReplenishment(replMove, replResult).WithPickPlan(pickPlan, pickedEaches).WithCaseBreak(caseBreak).WithWorkStartedAt(workStartedAt), nil
 }
 
 // scanTransferDetails rebuilds the nullable transfer-correlation block

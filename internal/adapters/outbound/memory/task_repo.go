@@ -196,5 +196,5 @@ func cloneTask(t *task.Task) *task.Task {
 	}
 	return task.RehydrateTransfer(t.Id(), t.Type(), t.Status(), t.CPT(), t.OrderRef(), t.RequiredCapabilities(), lease, t.Fragile(), t.GiftWrap(), claimedAt, transfer).WithSourceOrderId(t.SourceOrderId()).WithSourceLineNo(t.SourceLineNo()).
 		WithRelocation(t.Relocation(), t.RelocationResult()).WithReplenishment(t.Replenishment(), t.ReplenishmentResult()).
-		WithPickPlan(t.PickPlan(), t.PickedEaches()).WithCaseBreak(t.CaseBreak())
+		WithPickPlan(t.PickPlan(), t.PickedEaches()).WithCaseBreak(t.CaseBreak()).WithWorkStartedAt(t.WorkStartedAt())
 }
