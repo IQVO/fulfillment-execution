@@ -58,22 +58,26 @@ var (
 
 // PickPlan is what a PICK task asks for, stamped at release time
 // (WorkReleased.data.pick): the SKU, the quantity in EACHES, the unit the
-// operator scans and, optionally, the pick-face bin the stock is taken from.
+// operator scans and, optionally, the site the pick is worked at and the
+// pick-face bin the stock is taken from. The site and the bin are
+// omit-when-unknown (ADR 0062): a plan missing either carries no placement,
+// so the task is not announced to the open-task pool.
 type PickPlan struct {
 	SKU      string
 	Quantity int
 	Unit     PickUnit
+	SiteId   string
 	FromBin  string
 }
 
-// NewPickPlan validates and builds a plan. Every string is trimmed; fromBin
-// is optional.
-func NewPickPlan(sku string, quantity int, unit, fromBin string) (PickPlan, error) {
+// NewPickPlan validates and builds a plan. Every string is trimmed; siteId
+// and fromBin are optional.
+func NewPickPlan(sku string, quantity int, unit, siteId, fromBin string) (PickPlan, error) {
 	u := PickUnit(strings.TrimSpace(unit))
 	if u != PickUnitEach && u != PickUnitCase {
 		return PickPlan{}, fmt.Errorf("%w: %q", ErrUnknownPickUnit, unit)
 	}
-	p := PickPlan{SKU: strings.TrimSpace(sku), Quantity: quantity, Unit: u, FromBin: strings.TrimSpace(fromBin)}
+	p := PickPlan{SKU: strings.TrimSpace(sku), Quantity: quantity, Unit: u, SiteId: strings.TrimSpace(siteId), FromBin: strings.TrimSpace(fromBin)}
 	if p.SKU == "" {
 		return PickPlan{}, fmt.Errorf("%w: sku is required", ErrInvalidPickPlan)
 	}

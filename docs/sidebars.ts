@@ -184,6 +184,7 @@ const sidebars: SidebarsConfig = {
         'adr/0059-a2a-inbound-adapter',
         'adr/0060-adopt-the-fleet-rest-api-guideline',
         'adr/0061-package-manifested-carries-ship-correlation',
+        'adr/0062-pick-tasks-are-announced-to-the-open-task-pool',
       ],
     },
   ],

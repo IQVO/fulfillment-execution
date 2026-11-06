@@ -468,11 +468,14 @@ components:
         new `available_at`). Never raised on an idempotent replay or a rejected command. Published
         on `warehouse.fulfillment.events`, keyed by task id. Consumed by task-interleaving (its local
         copy of the open-task pool). A task whose location this service cannot determine is NOT announced
-        (the consumer rejects an event without `site_id` and `from_location`): today only RELOCATE and
-        REPLENISH tasks carry bins, so only they are announced (ADR-0049, ADR-0050). A REPLENISH task
-        knows both bins, so it is announced with the source bin first and the destination (pick face) bin
-        last. A PICK / PACK / SLAM / REBIN / transfer task
-        has no location in this service.'
+        (the consumer rejects an event without `site_id` and `from_location`): RELOCATE and REPLENISH
+        tasks carry bins, so they are announced (ADR-0049, ADR-0050), and a PICK task whose plan carries
+        both the site and the pick face (`WorkReleased.data.pick.site_id` + `from_bin`, the producer''s
+        additive omit-when-unknown contract) is announced too (ADR-0062): a pick missing either is NOT
+        announced, exactly like a move whose bins carry no site. A REPLENISH task knows both bins, so it
+        is announced with the source bin first and the destination (pick face) bin last. A PICK task is
+        announced with the pick face as both ends of the trip (the station it ends at is not known at
+        announce time). A PACK / SLAM / REBIN / transfer task has no location in this service.'
       contentType: application/cloudevents+json
       tags:
       - name: task
@@ -528,17 +531,20 @@ components:
                   type: string
                   description: The site the task is worked at - the first segment of the bin's facility-layout
                     LocationCode (`site-area-zone-aisle-bay-level-position`), derived from the task's own
-                    bins, never looked up in another context.
+                    bins, never looked up in another context. For a PICK (ADR-0062) it is the site of the
+                    release's pick plan (`WorkReleased.data.pick.site_id`), never derived from the bin.
                 from_location:
                   type: string
                   description: Where the operator must go first. RELOCATE - the source bin (for an Assign move,
                     whose source the operator scans at completion, the destination bin). REPLENISH - the
-                    source (reserve) bin.
+                    source (reserve) bin. PICK - the planned pick face (the plan's `from_bin`, ADR-0062).
                 to_location:
                   type: string
                   description: Where the operator ends. RELOCATE - the destination bin (for a Vacate move,
                     whose destination the operator scans at completion, the source bin). REPLENISH - the
-                    destination (pick face) bin.
+                    destination (pick face) bin. PICK - the pick face again (the station the operator ends
+                    at is not known at announce time, so the one known point stands for both ends of the
+                    trip, exactly like the one known bin of a RELOCATE Assign or Vacate, ADR-0062).
                 required_capabilities:
                   type: array
                   description: The capabilities claimNext matches a station against, sorted; an empty array
@@ -1895,9 +1901,16 @@ components:
                       - EACH
                       - CASE
                       description: The unit the operator scans.
+                    site_id:
+                      type: string
+                      description: 'Optional site the pick is worked at (ADR 0062; additive,
+                        omit-when-unknown: the producer stamps it whenever it knows one). Together
+                        with from_bin it is what makes the released PICK announcable to the
+                        open-task pool: a pick missing either is not announced and completes
+                        exactly as before.'
                     from_bin:
                       type: string
-                      description: Optional source bin.
+                      description: Optional source bin (the pick face).
                 case_break:
                   type: object
                   description: Present ONLY on work released on the BREAK_CASE path (ADR 0054; additive,

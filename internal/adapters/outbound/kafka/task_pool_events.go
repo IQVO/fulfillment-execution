@@ -45,8 +45,9 @@ type TaskClaimedData struct {
 // encodeTaskAvailable builds the TaskAvailable integration message for a task
 // that just entered the pool. The payload is resolved from the task row (so
 // inside the use case's transaction it sees the just-saved row): type,
-// capabilities, CPT, placement. A task with no determinable placement (every
-// type except RELOCATE today, ADR 0049) or that cannot be found yields no
+// capabilities, CPT, placement. A task with no determinable placement (a
+// move whose bins carry no site, or a PICK whose plan carries no site or no
+// pick face — omit-when-unknown, ADR 0062) or that cannot be found yields no
 // message: the consumer rejects an event without a site and a from_location,
 // so announcing it would only add a poison message.
 func (p *Publisher) encodeTaskAvailable(ctx context.Context, ev shared.TaskAvailable) ([]Encoded, error) {

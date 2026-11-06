@@ -114,10 +114,15 @@ type WorkReleasedData struct {
 
 // WorkReleasedPick is WorkReleased.data.pick (ADR 0054). quantity is in
 // eaches (the ledger unit) whatever the unit; from_bin is optional.
+// site_id (ADR 0062) is the optional site the pick is worked at, published
+// by the producer whenever it knows one (omit-when-unknown); site_id and
+// from_bin together are what makes the released PICK announcable to the
+// open-task pool.
 type WorkReleasedPick struct {
 	SKU      string `json:"sku"`
 	Quantity *int   `json:"quantity"`
 	Unit     string `json:"unit"`
+	SiteId   string `json:"site_id,omitempty"`
 	FromBin  string `json:"from_bin,omitempty"`
 }
 

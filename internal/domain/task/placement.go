@@ -21,14 +21,18 @@ type Placement struct {
 // determinable, in which case the task cannot be announced to the location-
 // aware consumers (TaskAvailable is not raised on the wire).
 //
-// Today only RELOCATE and REPLENISH tasks carry locations: their planned
-// bins. An Assign leaves the source open and a Vacate the destination (the
+// RELOCATE and REPLENISH tasks carry locations through their planned bins.
+// An Assign leaves the source open and a Vacate the destination (the
 // operator scans them at completion), so the one known bin stands for both
 // ends of the trip. A REPLENISH task knows both bins (ADR 0050): source bin
 // first, destination bin last. The site is the site segment of that bin's
-// facility-layout LocationCode. No other task type carries a location, so
-// none has a placement.
+// facility-layout LocationCode. A PICK task carries a location only through
+// its plan's site and pick face (ADR 0062), both of which must be known.
+// No other task type carries a location, so none has a placement.
 func (t *Task) Placement() (Placement, bool) {
+	if t.pickPlan != nil {
+		return t.pickPlacement()
+	}
 	from, to, ok := t.plannedBins()
 	if !ok {
 		return Placement{}, false
@@ -47,6 +51,22 @@ func (t *Task) Placement() (Placement, bool) {
 		return Placement{}, false
 	}
 	return Placement{SiteId: site, FromLocation: from, ToLocation: to}, true
+}
+
+// pickPlacement is the placement of a PICK task that carries a pick plan
+// (ADR 0062): the plan's own site and pick face. Both must be known — a
+// pick missing either is NOT announced (omit-when-unknown, like a RELOCATE
+// whose bins carry no site), because the pool consumer rejects an event
+// without a site and a from_location. The bin of a pick plan is not
+// required to be a facility-layout LocationCode, so the site is the plan's
+// site_id, never derived from the bin. The station the operator ends at is
+// not known at announce time, so the pick face stands for both ends of the
+// trip, exactly like the one known bin of a RELOCATE Assign or Vacate.
+func (t *Task) pickPlacement() (Placement, bool) {
+	if t.pickPlan.SiteId == "" || t.pickPlan.FromBin == "" {
+		return Placement{}, false
+	}
+	return Placement{SiteId: t.pickPlan.SiteId, FromLocation: t.pickPlan.FromBin, ToLocation: t.pickPlan.FromBin}, true
 }
 
 // plannedBins returns the planned source and destination bins of a RELOCATE
