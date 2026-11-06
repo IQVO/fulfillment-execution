@@ -1,3 +1,11 @@
+---
+id: 0061-package-manifested-carries-ship-correlation
+slug: /adr/0061-package-manifested-carries-ship-correlation
+title: 61. PackageManifested carries the correlation ship-confirm needs
+sidebar_label: "61. PackageManifested ship correlation"
+description: "ADR 0061 — PackageManifested gains additive omitempty site_id, source_order_id, cpt and weight_g so outbound-shipping can correlate every manifested package to its order, cutoff and weight; ArriveAtRebin stamps the rebin PACK task's source order so both package paths agree."
+---
+
 # 0061. PackageManifested carries the correlation ship-confirm needs
 
 ## Status
