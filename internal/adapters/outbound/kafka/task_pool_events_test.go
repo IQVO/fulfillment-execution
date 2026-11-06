@@ -93,6 +93,47 @@ func goldenRelocate(t *testing.T) *task.Task {
 		shared.NewCPT(goldenAt.Add(time.Hour)), shared.NewCapabilitySet("relocate", "forklift"))
 }
 
+// pickPlanTask is a PICK task whose plan carries site and pick face (the
+// pick face deliberately NOT a facility-layout LocationCode: the site of a
+// pick comes from the plan, never from the bin, ADR 0062).
+func pickPlanTask(t *testing.T, id shared.TaskId, site, fromBin string, cpt shared.CPT, caps shared.CapabilitySet) *task.Task {
+	t.Helper()
+	plan, err := task.NewPickPlan("SKU-1", 2, "EACH", site, fromBin)
+	if err != nil {
+		t.Fatalf("NewPickPlan: %v", err)
+	}
+	return task.New(id, task.Pick, cpt, "wu-pk-1", caps, false, false).WithPickPlan(&plan, 0)
+}
+
+// goldenPickTaskAvailable is the exact TaskAvailable of an announced PICK
+// (ADR 0062): the plan's site, the pick face as BOTH ends of the trip (the
+// station the operator ends at is not known at announce time), the pick
+// capability, on the same topic and schema as every other announcement.
+const goldenPickTaskAvailable = `{
+	"specversion":"1.0",
+	"id":"` + goldenID + `",
+	"source":"/warehouse/fulfillment-execution",
+	"type":"` + typeTaskAvailable + `",
+	"subject":"task-pk-1",
+	"time":"2026-09-30T15:00:00Z",
+	"datacontenttype":"application/json",
+	"dataschema":"urn:warehouse:fulfillment-execution:events:TaskAvailable:v1",
+	"data":{"task_id":"task-pk-1","task_type":"PICK","site_id":"WH1",
+	"from_location":"A-01-01","to_location":"A-01-01",
+	"required_capabilities":["pick"],
+	"cpt":"2026-09-30T16:00:00Z","priority_band":"PICK:2026-09-30T16:00:00Z",
+	"available_at":"2026-09-30T15:00:00Z"}
+}`
+
+// An announced PICK produces a well-formed TaskAvailable on the existing
+// topic and schema — byte-exact, like every pool event.
+func TestGolden_Integration_TaskAvailableOfAnAnnouncedPick(t *testing.T) {
+	tk := pickPlanTask(t, "task-pk-1", "WH1", "A-01-01", shared.NewCPT(goldenAt.Add(time.Hour)), shared.NewCapabilitySet("pick"))
+	w, p := poolFixture(t, tk)
+	publishOne(t, w, p, shared.NewTaskAvailable("task-pk-1", goldenAt))
+	assertGolden(t, w.msgs[0], "task-pk-1", goldenPickTaskAvailable)
+}
+
 func TestGolden_Integration_TaskAvailable(t *testing.T) {
 	w, p := poolFixture(t, goldenRelocate(t))
 	publishOne(t, w, p, shared.NewTaskAvailable("task-rel-1", goldenAt))
@@ -171,8 +212,9 @@ func TestGolden_TaskAvailable_OpenSideMoves(t *testing.T) {
 	}
 }
 
-// A task with no location in this service (every type but RELOCATE today,
-// ADR 0049), and a task that cannot be found, publish no TaskAvailable.
+// A task with no determinable placement (a PICK released without a sited
+// plan — no plan, or a plan missing the site or the pick face, ADR 0062),
+// and a task that cannot be found, publish no TaskAvailable.
 func TestPublish_TaskAvailable_NotAnnouncedWithoutPlacement(t *testing.T) {
 	pick := task.New("task-p", task.Pick, shared.NewCPT(goldenAt), "wu-p", shared.NewCapabilitySet("pick"), false, false)
 	w, p := poolFixture(t, pick)
