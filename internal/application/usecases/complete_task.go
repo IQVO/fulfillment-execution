@@ -7,6 +7,7 @@ import (
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
 	"github.com/claudioed/fulfillment-execution/internal/domain/task"
+	"github.com/claudioed/fulfillment-execution/internal/domain/workbatch"
 )
 
 // CompleteTask finishes a task, validating that the calling station owns the
@@ -28,6 +29,13 @@ type CompleteTask struct {
 	// UnitOfWork brackets Save + Publish atomically (ADR 0020); nil runs
 	// them back to back.
 	UnitOfWork ports.UnitOfWork
+	// Batches, when non-nil, keeps a completed task's work batch in step
+	// (ADR 0063): the member completes, the next open member's work clock
+	// starts (the NextStopClock policy, ADR 0064 — duration_seconds stays
+	// per stop), and the last completion completes the batch and raises
+	// WorkBatchCompleted. Nil means this completion runs exactly as
+	// before batching existed — every pre-existing caller and test.
+	Batches ports.WorkBatchRepo
 }
 
 // Execute completes taskId on behalf of stationId, with no confirmation
@@ -59,12 +67,21 @@ func (uc *CompleteTask) ExecuteWith(ctx context.Context, taskId shared.TaskId, s
 	if err := completeAggregate(t, stationId, now, in); err != nil {
 		return err
 	}
+	var extraEvents []shared.DomainEvent
+	if uc.Batches != nil {
+		evts, err := uc.completeBatchMember(ctx, t, now)
+		if err != nil {
+			return err
+		}
+		extraEvents = evts
+	}
 	err = atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
 		if err := uc.Tasks.Save(ctx, t); err != nil {
 			return err
 		}
 		events := []shared.DomainEvent{taskCompletedFor(t, stationId, now)}
 		events = append(events, transferFactFor(t, now)...)
+		events = append(events, extraEvents...)
 		return uc.Publisher.Publish(ctx, events...)
 	})
 	if err != nil {
@@ -74,6 +91,44 @@ func (uc *CompleteTask) ExecuteWith(ctx context.Context, taskId shared.TaskId, s
 		uc.Metrics.TaskCompleted(ctx, t.Type())
 	}
 	return nil
+}
+
+// completeBatchMember applies a completion to the task's open work batch
+// (ADR 0063) and returns the events it raises. A task in no batch, a member
+// that already completed, and a member that left the batch (its lease
+// expired and it returned to the pool — it then completed as an ordinary
+// task) are all no-ops: the task's own completion is unaffected. Completing
+// the last open member completes the batch and raises WorkBatchCompleted;
+// the next open member's work clock starts now (NextStopClock, ADR 0064),
+// so its duration_seconds measures its own stop, not the whole walk.
+func (uc *CompleteTask) completeBatchMember(ctx context.Context, t *task.Task, now time.Time) ([]shared.DomainEvent, error) {
+	b, err := uc.Batches.FindOpenByTaskId(ctx, t.Id())
+	if err != nil || b == nil {
+		return nil, err
+	}
+	if err := b.CompleteMember(t.Id(), now); err != nil {
+		// AlreadyCompleted cannot happen (completion is at-most-once
+		// upstream); Detached and NotInBatch are the batch having moved
+		// on without this member — nothing to record.
+		return nil, nil
+	}
+	if next := b.NextOpenMember(); next != nil {
+		if nt, err := uc.Tasks.FindById(ctx, next.TaskId); err != nil {
+			return nil, err
+		} else if nt != nil {
+			nt.StartWork(now)
+			if err := uc.Tasks.Save(ctx, nt); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := uc.Batches.Save(ctx, b); err != nil {
+		return nil, err
+	}
+	if b.Status() == workbatch.StatusCompleted {
+		return []shared.DomainEvent{shared.NewWorkBatchCompleted(b.Id(), b.StationId(), len(b.Members()), b.WalkSeconds(), b.Version(), now)}, nil
+	}
+	return nil, nil
 }
 
 // completeAggregate routes the completion: a RELOCATE or REPLENISH task

@@ -132,6 +132,72 @@ func NewItemPicked(id TaskId, at time.Time) ItemPicked {
 	return ItemPicked{base: base{Name: "ItemPicked", At: at}, TaskId: id}
 }
 
+// WorkBatchMemberFact is one member of a WorkBatch snapshot as carried by
+// WorkBatchFormed (ADR 0063): the task, its 1-based visit order (D6) and its
+// cart compartment.
+type WorkBatchMemberFact struct {
+	TaskId      TaskId
+	StopSeq     int
+	Compartment int
+}
+
+// WorkBatchFormed is raised when a station's work batch forms at assignment
+// time (ADR 0063): the anchor plus its companions, all inside the anchor's
+// one priority band. Analytics-only consumer for now.
+type WorkBatchFormed struct {
+	base
+	BatchId   BatchId
+	StationId StationId
+	// Cpt is the batch's priority-band instant (the anchor's CPT).
+	Cpt time.Time
+	// Members is the formation snapshot in stop order.
+	Members []WorkBatchMemberFact
+	// Version is the aggregate version at formation (1).
+	Version int64
+}
+
+// NewWorkBatchFormed builds the formation event; at is the formation instant
+// (also published as formed_at).
+func NewWorkBatchFormed(id BatchId, station StationId, cpt time.Time, members []WorkBatchMemberFact, version int64, at time.Time) WorkBatchFormed {
+	return WorkBatchFormed{base: base{Name: "WorkBatchFormed", At: at}, BatchId: id, StationId: station, Cpt: cpt, Members: members, Version: version}
+}
+
+// WorkBatchCompleted is raised when the last open member of a batch
+// completes: the walk is over and walk_seconds is measurable (ADR 0063).
+type WorkBatchCompleted struct {
+	base
+	BatchId     BatchId
+	StationId   StationId
+	MemberCount int
+	WalkSeconds int64
+	// Version is the aggregate version at completion.
+	Version int64
+}
+
+// NewWorkBatchCompleted builds the completion event; at is the last member's
+// completion instant (also published as completed_at).
+func NewWorkBatchCompleted(id BatchId, station StationId, memberCount int, walkSeconds int64, version int64, at time.Time) WorkBatchCompleted {
+	return WorkBatchCompleted{base: base{Name: "WorkBatchCompleted", At: at}, BatchId: id, StationId: station, MemberCount: memberCount, WalkSeconds: walkSeconds, Version: version}
+}
+
+// WorkBatchAbandoned is raised when the last open member of a batch leaves
+// it (lease expired, task returned to the pool) without completing: nothing
+// is waiting on the batch anymore (ADR 0063).
+type WorkBatchAbandoned struct {
+	base
+	BatchId     BatchId
+	StationId   StationId
+	MemberCount int
+	// Version is the aggregate version at abandonment.
+	Version int64
+}
+
+// NewWorkBatchAbandoned builds the abandonment event; at is the last
+// member's detach instant (also published as abandoned_at).
+func NewWorkBatchAbandoned(id BatchId, station StationId, memberCount int, version int64, at time.Time) WorkBatchAbandoned {
+	return WorkBatchAbandoned{base: base{Name: "WorkBatchAbandoned", At: at}, BatchId: id, StationId: station, MemberCount: memberCount, Version: version}
+}
+
 // PackageSealed is raised when a package's contents are scanned and it is sealed.
 //
 // OwnContainer is nil for an ordinary (cartonised) package. When the package

@@ -92,6 +92,11 @@ var (
 	// ErrSegregationConflict: hazard classes on one cart must not conflict
 	// under the segregation matrix.
 	ErrSegregationConflict = errors.New("workbatch: member hazard classes conflict on one cart")
+	// ErrStationHasOpenBatch: a station holds at most one OPEN batch at a
+	// time (model.yaml invariant). Enforced by the forming use case over
+	// the repository, because whether the station already holds one is a
+	// fact about other batches, not about the batch being formed.
+	ErrStationHasOpenBatch = errors.New("workbatch: station already holds an open batch")
 )
 
 // Member is one task of the walk, snapshotted at formation. The pickability
@@ -183,7 +188,7 @@ func Form(id shared.BatchId, stationId shared.StationId, maximum int, cpt time.T
 		members:   sorted,
 		status:    StatusOpen,
 		version:   1,
-		formedAt:  formedAt,
+		formedAt:  walkStart,
 	}, nil
 }
 
