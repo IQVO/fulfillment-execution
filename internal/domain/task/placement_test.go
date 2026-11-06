@@ -54,13 +54,57 @@ func TestPlacement_NoSiteMeansNoPlacement(t *testing.T) {
 	}
 }
 
-// Only a RELOCATE task carries locations today.
+// Only a RELOCATE or REPLENISH task carries locations through its move, and
+// a PICK only through a sited plan (ADR 0062); a bare task of any other type
+// has none.
 func TestPlacement_NonRelocateTasksHaveNone(t *testing.T) {
 	for _, typ := range []task.Type{task.Pick, task.Pack, task.Slam, task.Rebin, task.Dispatch, task.Arrival} {
 		tk := task.New("t1", typ, shared.NewCPT(now), "wu", shared.NewCapabilitySet(), false, false)
 		if p, ok := tk.Placement(); ok {
 			t.Errorf("%s: Placement() = (%+v, true), want none", typ, p)
 		}
+	}
+}
+
+// pickWith is a PICK task carrying a plan with the given site and pick face
+// (either may be empty, the omit-when-unknown release forms).
+func pickWith(t *testing.T, site, fromBin string) *task.Task {
+	t.Helper()
+	plan, err := task.NewPickPlan("SKU-1", 2, "EACH", site, fromBin)
+	if err != nil {
+		t.Fatalf("NewPickPlan: %v", err)
+	}
+	return task.New("p1", task.Pick, shared.NewCPT(now), "wu-p1", shared.NewCapabilitySet("pick"), false, false).WithPickPlan(&plan, 0)
+}
+
+// A PICK whose plan carries both the site and the pick face is announced
+// (ADR 0062): the site is the plan's own site, the pick face is where the
+// operator goes. The station they end at is not known at announce time, so
+// the pick face stands for both ends of the trip, exactly like the one
+// known bin of a RELOCATE Assign or Vacate.
+func TestPlacement_PickWithSiteAndBin(t *testing.T) {
+	p, ok := pickWith(t, "WH1", binFwd).Placement()
+	if !ok || p.SiteId != "WH1" || p.FromLocation != binFwd || p.ToLocation != binFwd {
+		t.Fatalf("Placement() = (%+v, %v), want site WH1 and both ends %s", p, ok, binFwd)
+	}
+}
+
+// Omit-when-unknown, exactly like a RELOCATE whose bins carry no site: a
+// pick without a pick face has no from_location, and the pool consumer
+// rejects such an event — so it is not announced. It can only ever be a
+// batch anchor, never a companion.
+func TestPlacement_PickWithoutBinIsNotAnnounced(t *testing.T) {
+	if p, ok := pickWith(t, "WH1", "").Placement(); ok {
+		t.Fatalf("Placement() = (%+v, true), want none for a pick with no pick face", p)
+	}
+}
+
+// Same rule for the site: a pick face without a site cannot be placed
+// (the bin of a pick plan is not required to be a facility-layout
+// LocationCode, so the site is never derived from it).
+func TestPlacement_PickWithoutSiteIsNotAnnounced(t *testing.T) {
+	if p, ok := pickWith(t, "", binFwd).Placement(); ok {
+		t.Fatalf("Placement() = (%+v, true), want none for a pick with no site", p)
 	}
 }
 

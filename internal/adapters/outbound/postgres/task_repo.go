@@ -47,7 +47,7 @@ func (r *TaskRepo) Save(ctx context.Context, t *task.Task) error {
 		INSERT INTO tasks (`+taskColumns+`)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
 		        $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37,
-		        $38, $39, $40, $41, $42, $43, $44, $45, $46)
+		        $38, $39, $40, $41, $42, $43, $44, $45, $46, $47)
 		ON CONFLICT (id) DO UPDATE SET
 			task_type = EXCLUDED.task_type,
 			status = EXCLUDED.status,
@@ -89,6 +89,7 @@ func (r *TaskRepo) Save(ctx context.Context, t *task.Task) error {
 			pick_quantity = EXCLUDED.pick_quantity,
 			pick_unit = EXCLUDED.pick_unit,
 			pick_from_bin = EXCLUDED.pick_from_bin,
+			pick_site_id = EXCLUDED.pick_site_id,
 			picked_eaches = EXCLUDED.picked_eaches,
 			break_lpn = EXCLUDED.break_lpn,
 			break_sku = EXCLUDED.break_sku,
@@ -105,14 +106,14 @@ func (r *TaskRepo) Save(ctx context.Context, t *task.Task) error {
 // scanTask's order. The relocation_* / relocated_* columns (migration 0019,
 // ADR 0047) and the replenishment_* / replenished_* columns (migration
 // 0020, ADR 0050) and the pick_* / break_* columns (migration 0023, ADR
-// 0054) come last.
+// 0054; pick_site_id added by migration 0025, ADR 0062) come last.
 const taskColumns = `id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at, ` +
 	`transfer_ref, demand_id, work_kind, site_id, sku, quantity, source_order_id, source_line_no, ` +
 	`relocation_plan_id, relocation_move_seq, relocation_kind, relocation_sku, relocation_from_bin, relocation_to_bin, ` +
 	`relocated_quantity, relocated_from_bin, relocated_to_bin, ` +
 	`replenishment_request_id, replenishment_sku, replenishment_from_bin, replenishment_to_bin, replenishment_quantity, replenishment_priority, ` +
 	`replenished_quantity, replenished_from_bin, replenished_to_bin, ` +
-	`pick_sku, pick_quantity, pick_unit, pick_from_bin, picked_eaches, break_lpn, break_sku, break_loose_bin, break_pick_task_id`
+	`pick_sku, pick_quantity, pick_unit, pick_from_bin, pick_site_id, picked_eaches, break_lpn, break_sku, break_loose_bin, break_pick_task_id`
 
 func (r *TaskRepo) FindById(ctx context.Context, id shared.TaskId) (*task.Task, error) {
 	row := querierFrom(ctx, r.pool).QueryRow(ctx, `

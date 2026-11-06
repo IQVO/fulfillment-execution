@@ -51,7 +51,10 @@ func requestOf(env workReleased) (usecases.WorkReleasedRequest, error) {
 // pickPlanOf maps the optional WorkReleased pick object onto a validated
 // task.PickPlan (ADR 0054): nil when absent. A present object that is not a
 // valid plan (blank sku, missing or non-positive quantity, a unit other than
-// EACH or CASE) is a hard error, never a silent default.
+// EACH or CASE) is a hard error, never a silent default. The optional
+// site_id and from_bin (ADR 0062, the producer's pinned additive contract:
+// omit-when-unknown) pass through; a plan missing either simply carries no
+// placement.
 func pickPlanOf(d WorkReleasedData) (*task.PickPlan, error) {
 	p := d.Pick
 	if p == nil {
@@ -60,7 +63,7 @@ func pickPlanOf(d WorkReleasedData) (*task.PickPlan, error) {
 	if p.Quantity == nil {
 		return nil, fmt.Errorf("kafka: pick of work unit %q: %w: quantity is required", d.WorkUnitId, task.ErrInvalidPickPlan)
 	}
-	plan, err := task.NewPickPlan(p.SKU, *p.Quantity, p.Unit, p.FromBin)
+	plan, err := task.NewPickPlan(p.SKU, *p.Quantity, p.Unit, p.SiteId, p.FromBin)
 	if err != nil {
 		return nil, fmt.Errorf("kafka: pick of work unit %q: %w", d.WorkUnitId, err)
 	}
