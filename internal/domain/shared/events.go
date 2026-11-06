@@ -270,14 +270,27 @@ func NewTaskCPTMissed(id TaskId, orderRef OrderRef, taskType string, cpt time.Ti
 // diverted package (weight outside tolerance) was NOT manifested and does
 // not raise this event. OrderRef identifies the affected order for
 // RepromiseOrder to key its recompute on.
+//
+// WeightG is the actual SLAM weigh-check measurement in grams (ADR 0061):
+// the ship-correlation fact outbound-shipping needs on the wire. Zero
+// means "not recorded" and is omitted from the payload.
 type PackageManifested struct {
 	base
 	PackageId PackageId
 	OrderRef  OrderRef
+	WeightG   float64
 }
 
 func NewPackageManifested(id PackageId, orderRef OrderRef, at time.Time) PackageManifested {
-	return PackageManifested{base: base{Name: "PackageManifested", At: at}, PackageId: id, OrderRef: orderRef}
+	return NewPackageManifestedWithWeight(id, orderRef, 0, at)
+}
+
+// NewPackageManifestedWithWeight is NewPackageManifested carrying the
+// actual SLAM weight (grams). RunSlam, the only raiser, passes the
+// measured actualWeight; the plain constructor remains for callers that
+// have no measurement (tests, and pre-ADR-0061 shapes).
+func NewPackageManifestedWithWeight(id PackageId, orderRef OrderRef, weightG float64, at time.Time) PackageManifested {
+	return PackageManifested{base: base{Name: "PackageManifested", At: at}, PackageId: id, OrderRef: orderRef, WeightG: weightG}
 }
 
 // TransferFact is the interface of the three inter-warehouse-transfer

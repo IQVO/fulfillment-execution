@@ -13,9 +13,12 @@
 // Task's ClaimedAt timestamp, and the already-loaded Task's Type()
 // respectively (see ADR-0014, ADR-0023) — inputs the labor-performance
 // bounded context needs and that this service is the sole owner of.
-// TaskCPTMissed and PackageManifested need no repo enrichment: both carry
-// every field their wire payload needs directly on the domain event
-// itself (see ADR-0025); so do PackageDiverted and WeightDiscrepancyDetected,
+// Since ADR 0061, PackageManifested is enriched the same best-effort way
+// with the manifest's ship correlation (source_order_id, cpt), resolved
+// from the order's tasks; its actual weight rides the domain event.
+// TaskCPTMissed still needs no repo enrichment: it carries every field
+// its wire payload needs directly on the domain event itself (see
+// ADR-0025); so do PackageDiverted and WeightDiscrepancyDetected,
 // promoted from the analytics topic for exception-management (ADR 0053).
 //
 // Every message is a CloudEvents 1.0 event in structured content mode
@@ -112,9 +115,32 @@ type TaskCPTMissedData struct {
 // PackageManifestedData is the payload of a published PackageManifested
 // event: a package that passed its SLAM weigh-check. OrderRef is what
 // order-management's RepromiseOrder consumer keys its recompute on.
+//
+// The ship-correlation fields (ADR 0061) are additive and optional —
+// omitted entirely when unknown, never empty strings or a zero weight on
+// the wire, so the pre-ADR-0061 payload bytes are unchanged:
+//
+//   - source_order_id: the order-management OrderId the package ships for.
+//     Resolved from the correlated tasks' Task.SourceOrderId (stamped from
+//     WorkReleased.ref on the release path, and on the rebin-created PACK
+//     task by ArriveAtRebin); when no correlated task carries one, the
+//     package's orderRef is the bare order id by rebin caller convention
+//     and a trailing "-line-N" work-unit suffix is stripped defensively.
+//   - cpt: the manifest's SLAM task's CPT, RFC3339, the same SLAM-leg
+//     correlation as the analytics on-time-to-CPT KPI.
+//   - weight_g: the actual SLAM weigh-check measurement in grams (the
+//     domain event carries it from RunSlam).
+//   - site_id: reserved; no source exists in the order-work chain yet, so
+//     it is omitted until a later wave lands one (see ADR 0061).
 type PackageManifestedData struct {
 	PackageId string `json:"package_id"`
 	OrderRef  string `json:"order_ref"`
+	// Additive ship-correlation fields (ADR 0061). Omitted entirely when
+	// unknown — never empty strings or zero values on the wire.
+	SiteId        string  `json:"site_id,omitempty"`
+	SourceOrderId string  `json:"source_order_id,omitempty"`
+	Cpt           string  `json:"cpt,omitempty"`
+	WeightG       float64 `json:"weight_g,omitempty"`
 }
 
 // PackageDivertedData is the payload of a published PackageDiverted event:
@@ -205,12 +231,16 @@ func NewPublisherWithWriter(w Writer, tasks ports.TaskRepo, stations ports.Stati
 // Encode builds the wire form of every TaskCompleted, TaskCPTMissed, and
 // PackageManifested event in evts — WITHOUT sending it. TaskCompleted's
 // envelope is enriched with the completed Task's OrderRef, the completing
-// associate's identity and the task's duration; TaskCPTMissed and
-// PackageManifested need no enrichment, every field they carry on the wire
-// comes straight off the domain event (see ADR-0025). Other event types
+// associate's identity and the task's duration; since ADR 0061
+// PackageManifested's is enriched with the manifest's ship correlation
+// (source_order_id, cpt) from the order's tasks, while its actual weight
+// rides the domain event; TaskCPTMissed needs no enrichment, every field
+// it carries on the wire comes straight off the domain event (see
+// ADR-0025). Other event types
 // are not part of the integration contract and yield nothing. The repo
-// lookups (TaskCompleted only) happen here, so when Encode runs inside a
-// use case's transaction (the outbox path) they see the just-saved rows.
+// lookups (TaskCompleted and PackageManifested) happen here, so when
+// Encode runs inside a use case's transaction (the outbox path) they see
+// the just-saved rows.
 //
 // The W3C trace context of whatever span is active on ctx is injected
 // into each message's headers, so the consumer's span becomes a child of
@@ -231,7 +261,7 @@ func (p *Publisher) Encode(ctx context.Context, evts ...shared.DomainEvent) ([]E
 		case shared.TaskCPTMissed:
 			encs, err = p.encodeTaskCPTMissed(ev)
 		case shared.PackageManifested:
-			encs, err = p.encodePackageManifested(ev)
+			encs, err = p.encodePackageManifested(ctx, ev)
 		case shared.PackageDiverted:
 			encs, err = p.encodePackageDiverted(ev)
 		case shared.WeightDiscrepancyDetected:

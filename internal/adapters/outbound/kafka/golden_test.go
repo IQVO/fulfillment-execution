@@ -146,6 +146,79 @@ func TestGolden_Integration_PackageManifested(t *testing.T) {
 	}`)
 }
 
+// ADR 0061: a manifest correlated with its order's tasks carries the
+// ship-correlation fields — source_order_id from the SLAM task's
+// Task.SourceOrderId (release path), cpt from that task's CPT (the same
+// SLAM-leg correlation as the analytics on-time-to-CPT KPI), weight_g from
+// the domain event (RunSlam's actual measurement). site_id has no source
+// yet and stays omitted.
+func TestGolden_Integration_PackageManifested_Correlation(t *testing.T) {
+	tasks := memory.NewTaskRepo()
+	cpt := goldenAt.Add(30 * time.Minute)
+	slam := task.New("slam-9", task.Slam, shared.NewCPT(cpt), "order-9", shared.NewCapabilitySet(), false, false).WithSourceOrderId("order-9")
+	if err := slam.Claim("station-09", shared.NewCapabilitySet(), goldenAt.Add(-time.Minute), time.Hour); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	_ = tasks.Save(context.Background(), slam)
+
+	w := &fakeWriter{}
+	p := outboundkafka.NewPublisherWithWriter(w, tasks, nil, goldenID1)
+	if err := p.Publish(context.Background(), shared.NewPackageManifestedWithWeight("pkg-1029", "order-9", 1240.5, goldenAt)); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	assertGolden(t, w.msgs[0], "pkg-1029", `{
+		"specversion":"1.0",
+		"id":"`+goldenID+`",
+		"source":"/warehouse/fulfillment-execution",
+		"type":"com.warehouse.wes.fulfillment-execution.package.PackageManifested",
+		"subject":"pkg-1029",
+		"time":"2026-09-30T15:00:00Z",
+		"datacontenttype":"application/json",
+		"dataschema":"urn:warehouse:fulfillment-execution:events:PackageManifested:v1",
+		"data":{"package_id":"pkg-1029","order_ref":"order-9","source_order_id":"order-9","cpt":"2026-09-30T15:30:00Z","weight_g":1240.5}
+	}`)
+}
+
+// ADR 0061 rebin path: when the correlated tasks carry no sourceOrderId
+// (a PACK task created before the ArriveAtRebin stamp, e.g. at deploy
+// time), the package's orderRef IS the bare order id by caller convention
+// — a trailing "-line-N" work-unit suffix is stripped defensively, and a
+// bare id passes through unchanged. No SLAM task among them means no cpt
+// either (omit-when-unknown).
+func TestGolden_Integration_PackageManifested_RebinFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		orderRef string
+		want     string
+	}{
+		{"work unit shaped ref is stripped to the bare order id", "order-9-line-2", "order-9"},
+		{"bare order id passes through", "order-9", "order-9"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tasks := memory.NewTaskRepo()
+			pack := task.New("pack-9", task.Pack, shared.NewCPT(goldenAt.Add(time.Hour)), shared.OrderRef(tc.orderRef), shared.NewCapabilitySet(), false, false)
+			_ = tasks.Save(context.Background(), pack)
+
+			w := &fakeWriter{}
+			p := outboundkafka.NewPublisherWithWriter(w, tasks, nil, goldenID1)
+			if err := p.Publish(context.Background(), shared.NewPackageManifestedWithWeight("pkg-1029", shared.OrderRef(tc.orderRef), 980, goldenAt)); err != nil {
+				t.Fatalf("Publish: %v", err)
+			}
+			assertGolden(t, w.msgs[0], "pkg-1029", `{
+				"specversion":"1.0",
+				"id":"`+goldenID+`",
+				"source":"/warehouse/fulfillment-execution",
+				"type":"com.warehouse.wes.fulfillment-execution.package.PackageManifested",
+				"subject":"pkg-1029",
+				"time":"2026-09-30T15:00:00Z",
+				"datacontenttype":"application/json",
+				"dataschema":"urn:warehouse:fulfillment-execution:events:PackageManifested:v1",
+				"data":{"package_id":"pkg-1029","order_ref":"`+tc.orderRef+`","source_order_id":"`+tc.want+`","weight_g":980}
+			}`)
+		})
+	}
+}
+
 // goldenAnalyticsCase is one analytics-stream golden: the event, its
 // expected key/subject, entity segment, and exact data payload.
 type goldenAnalyticsCase struct {

@@ -740,6 +740,35 @@ components:
                 order_ref:
                   type: string
                   description: The package's order reference.
+                site_id:
+                  type: string
+                  description: >-
+                    Optional facility-layout siteCode the package ships from (ADR-0061).
+                    No source exists in the order-work chain yet, so this is omitted until
+                    a later wave lands one; never an empty string.
+                source_order_id:
+                  type: string
+                  description: >-
+                    Optional order-management OrderId the package ships for (ADR-0061).
+                    The correlated task's Task.SourceOrderId when stamped (WorkReleased.ref
+                    on release-created work, the posted orderRef on rebin-created PACK
+                    tasks); otherwise the package's order_ref by rebin caller convention,
+                    with a trailing "-line-N" work-unit suffix stripped. Omitted when
+                    unknown.
+                cpt:
+                  type: string
+                  format: date-time
+                  description: >-
+                    Optional RFC3339 Critical Pull Time of the manifest's SLAM task
+                    (ADR-0061) — the same SLAM-leg correlation as the on-time-to-CPT
+                    KPI. Omitted when no SLAM task correlates.
+                weight_g:
+                  type: number
+                  format: double
+                  description: >-
+                    Optional actual SLAM weigh-check measurement in grams (ADR-0061),
+                    the same unit discipline as WeightDiscrepancyDetected.actual_g.
+                    Omitted when not recorded.
       examples:
       - name: packageManifested
         headers:
@@ -757,6 +786,25 @@ components:
           data:
             package_id: pkg-1029
             order_ref: wu-8a1f
+      - name: packageManifestedShipCorrelation
+        headers:
+          content-type: application/cloudevents+json; charset=UTF-8
+          traceparent: 00-8812c36621d214139a08949823716b93-14ddf02dbd8913ba-01
+        payload:
+          specversion: "1.0"
+          id: 6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b
+          source: /warehouse/fulfillment-execution
+          type: com.warehouse.wes.fulfillment-execution.package.PackageManifested
+          subject: pkg-1030
+          time: '2026-09-30T15:00:00Z'
+          datacontenttype: application/json
+          dataschema: urn:warehouse:fulfillment-execution:events:PackageManifested:v1
+          data:
+            package_id: pkg-1030
+            order_ref: order-88421
+            source_order_id: order-88421
+            cpt: '2026-09-30T15:30:00Z'
+            weight_g: 1240.5
     PackageDiverted:
       name: PackageDiverted
       title: PackageDiverted

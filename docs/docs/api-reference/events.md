@@ -121,7 +121,7 @@ per service via `KAFKA_BROKERS`.
 | `com.warehouse.wes.fulfillment-execution.task.TaskClaimed` | `task_id`, `task_type`, `station_id`, `claimed_at` ([ADR-0049](../adr/0049-task-pool-events-task-available-and-task-claimed.md)) | task-interleaving |
 | `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` | `task_id`, `station_id`, `work_unit_id`, `associate_id`, `duration_seconds`, `task_type`, `order_ref`? ([ADR-0040](../adr/0040-task-completed-carries-order-ref.md)), `line_no`? ([ADR-0041](../adr/0041-task-completed-carries-line-no.md)) | wes-work-planning, labor-performance, inventory-storage (pick confirmation) |
 | `com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed` | `task_id`, `order_ref`, `task_type`, `cpt` | order-management |
-| `com.warehouse.wes.fulfillment-execution.package.PackageManifested` | `package_id`, `order_ref` | order-management |
+| `com.warehouse.wes.fulfillment-execution.package.PackageManifested` | `package_id`, `order_ref`, `source_order_id`?, `cpt`?, `weight_g`?, `site_id`? ([ADR-0061](../adr/0061-package-manifested-carries-ship-correlation.md)) | order-management |
 | `com.warehouse.wes.fulfillment-execution.package.PackageDiverted` | `package_id` | exception-management (planned) ([ADR-0053](../adr/0053-promote-package-exception-facts-to-integration-topic.md)) |
 | `com.warehouse.wes.fulfillment-execution.package.WeightDiscrepancyDetected` | `package_id`, `expected_g`, `actual_g` | exception-management (planned) ([ADR-0053](../adr/0053-promote-package-exception-facts-to-integration-topic.md)) |
 | `com.warehouse.wes.fulfillment-execution.transfer.TransferPicked` / `TransferDispatched` / `TransferArrived` | `transfer_ref`, `demand_id`?, `work_unit_id`, `task_id`, `work_kind`, `site_id`?, `sku`?, `quantity`? (key and `subject` = the completing task id) | network-inventory-planning's transfer saga |
@@ -142,8 +142,12 @@ ADR-0023), omitted when unavailable.
 These two events are the fulfillment-execution half of order-management
 ADR 0014 §5's promise feedback loop: order-management's `RepromiseOrder`
 consumer reacts to them to recompute — and, if it moved, re-promise — the
-affected shipment group's delivery date. Neither needs a repo-lookup
-enrichment: every field comes straight off the domain event.
+affected shipment group's delivery date. `TaskCPTMissed` needs no
+repo-lookup enrichment: every field comes straight off the domain event.
+Since [ADR-0061](../adr/0061-package-manifested-carries-ship-correlation.md)
+`PackageManifested` gains a best-effort, fail-soft one: the payload's
+optional ship-correlation fields (`source_order_id`, `cpt`) are resolved
+from the order's tasks at encode time.
 
 `TaskCPTMissed` is raised by the Clock-driven CPT-missed sweep (`POST
 /tasks/sweep-cpt-misses`) for a task still open (Pending or Claimed) at

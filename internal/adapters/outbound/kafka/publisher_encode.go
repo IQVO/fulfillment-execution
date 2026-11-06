@@ -3,10 +3,12 @@ package kafka
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/claudioed/fulfillment-execution/internal/adapters/kafka/cloudevents"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
+	"github.com/claudioed/fulfillment-execution/internal/domain/task"
 )
 
 func (p *Publisher) encodeTaskCompleted(ctx context.Context, tc shared.TaskCompleted) ([]Encoded, error) {
@@ -90,16 +92,88 @@ func (p *Publisher) encodeTaskCPTMissed(ev shared.TaskCPTMissed) ([]Encoded, err
 	return []Encoded{enc}, nil
 }
 
-func (p *Publisher) encodePackageManifested(ev shared.PackageManifested) ([]Encoded, error) {
+// encodePackageManifested builds the wire form of a PackageManifested.
+// Since ADR 0061 the payload carries the ship-correlation fields,
+// resolved best-effort from the order's tasks (fail-soft, exactly like
+// the analytics publisher's on-time-to-CPT enrichment: a missing repo,
+// lookup error or unresolvable task leaves the optional fields omitted
+// rather than failing the publish — the pre-ADR-0061 payload ships). The
+// actual SLAM weight rides the domain event itself (RunSlam measured it).
+func (p *Publisher) encodePackageManifested(ctx context.Context, ev shared.PackageManifested) ([]Encoded, error) {
+	sourceOrderId, cpt := p.manifestCorrelation(ctx, ev.OrderRef)
 	data := PackageManifestedData{
-		PackageId: string(ev.PackageId),
-		OrderRef:  string(ev.OrderRef),
+		PackageId:     string(ev.PackageId),
+		OrderRef:      string(ev.OrderRef),
+		SourceOrderId: sourceOrderId,
+		Cpt:           cpt,
+		WeightG:       ev.WeightG,
 	}
 	enc, err := p.encodeIntegration(entityPackage, "PackageManifested", string(ev.PackageId), ev.OccurredAt(), data)
 	if err != nil {
 		return nil, err
 	}
 	return []Encoded{enc}, nil
+}
+
+// manifestCorrelation resolves a manifest's source_order_id and cpt from
+// the tasks sharing its orderRef (ADR 0061). The SLAM task is the leg a
+// manifest is measured against — the same correlation the analytics
+// on-time-to-CPT KPI uses (pickSlamTask, ADR-0026) — so its CPT becomes
+// the payload's cpt. source_order_id prefers a correlated task's
+// Task.SourceOrderId (WorkReleased.ref on the release path; the rebin
+// PACK task's stamp on the consolidation path), checking the SLAM leg
+// first, then the PACK task the package was sealed for. When the order's
+// tasks are known but none carries one (a PACK task from before the
+// ArriveAtRebin stamp), the rebin caller convention applies: the
+// package's orderRef IS the bare order id, and a trailing "-line-N"
+// work-unit suffix is stripped defensively (stripWorkUnitSuffix). When
+// nothing correlates at all (no repo, lookup error, no tasks) both
+// returns are "" and the payload keeps its exact pre-ADR-0061 bytes
+// (omit-when-unknown).
+func (p *Publisher) manifestCorrelation(ctx context.Context, orderRef shared.OrderRef) (sourceOrderId, cpt string) {
+	if p.Tasks == nil {
+		return "", ""
+	}
+	tasks, err := p.Tasks.FindByOrderRef(ctx, orderRef)
+	if err != nil {
+		return "", ""
+	}
+	if slam := pickSlamTask(tasks); slam != nil {
+		if id := slam.SourceOrderId(); id != "" {
+			sourceOrderId = id
+		}
+		cpt = slam.CPT().Time().UTC().Format(time.RFC3339)
+	}
+	if sourceOrderId == "" {
+		for _, t := range tasks {
+			if t.Type() == task.Pack {
+				if id := t.SourceOrderId(); id != "" {
+					sourceOrderId = id
+					break
+				}
+			}
+		}
+	}
+	if sourceOrderId == "" && len(tasks) > 0 {
+		sourceOrderId = stripWorkUnitSuffix(string(orderRef))
+	}
+	return sourceOrderId, cpt
+}
+
+// workUnitSuffixRx matches the trailing "-line-N" of a per-line work
+// unit id ("<order>-line-<n>", as wes-work-planning mints them).
+var workUnitSuffixRx = regexp.MustCompile(`^(.*)-line-[0-9]+$`)
+
+// stripWorkUnitSuffix returns ref without a trailing "-line-N" work-unit
+// suffix, or ref unchanged when it has none. ADR 0061: on the rebin path
+// the package's orderRef is the bare order-management OrderId by caller
+// convention; this guard only defends against a caller that posts the
+// work-unit shape instead.
+func stripWorkUnitSuffix(ref string) string {
+	if m := workUnitSuffixRx.FindStringSubmatch(ref); m != nil {
+		return m[1]
+	}
+	return ref
 }
 
 // encodePackageDiverted builds the wire form of a PackageDiverted on the
