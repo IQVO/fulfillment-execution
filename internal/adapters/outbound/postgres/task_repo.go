@@ -25,7 +25,71 @@ func NewTaskRepo(pool *pgxpool.Pool) *TaskRepo {
 	return &TaskRepo{pool: pool}
 }
 
-func (r *TaskRepo) Save(ctx context.Context, t *task.Task) error {
+// taskInsertSQL upserts a task row: INSERT, and on an id conflict a full
+// UPDATE of every column (an id carries its whole current state). The
+// placeholders follow taskColumns' order, built by taskInsertArgs.
+const taskInsertSQL = `
+	INSERT INTO tasks (` + taskColumns + `)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
+	        $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37,
+	        $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48)
+	ON CONFLICT (id) DO UPDATE SET
+		task_type = EXCLUDED.task_type,
+		status = EXCLUDED.status,
+		cpt = EXCLUDED.cpt,
+		order_ref = EXCLUDED.order_ref,
+		required_capabilities = EXCLUDED.required_capabilities,
+		lease_station_id = EXCLUDED.lease_station_id,
+		lease_expiry = EXCLUDED.lease_expiry,
+		fragile = EXCLUDED.fragile,
+		gift_wrap = EXCLUDED.gift_wrap,
+		claimed_at = EXCLUDED.claimed_at,
+		transfer_ref = EXCLUDED.transfer_ref,
+		demand_id = EXCLUDED.demand_id,
+		work_kind = EXCLUDED.work_kind,
+		site_id = EXCLUDED.site_id,
+		sku = EXCLUDED.sku,
+		quantity = EXCLUDED.quantity,
+		source_order_id = EXCLUDED.source_order_id,
+		source_line_no = EXCLUDED.source_line_no,
+		relocation_plan_id = EXCLUDED.relocation_plan_id,
+		relocation_move_seq = EXCLUDED.relocation_move_seq,
+		relocation_kind = EXCLUDED.relocation_kind,
+		relocation_sku = EXCLUDED.relocation_sku,
+		relocation_from_bin = EXCLUDED.relocation_from_bin,
+		relocation_to_bin = EXCLUDED.relocation_to_bin,
+		relocated_quantity = EXCLUDED.relocated_quantity,
+		relocated_from_bin = EXCLUDED.relocated_from_bin,
+		relocated_to_bin = EXCLUDED.relocated_to_bin,
+		replenishment_request_id = EXCLUDED.replenishment_request_id,
+		replenishment_sku = EXCLUDED.replenishment_sku,
+		replenishment_from_bin = EXCLUDED.replenishment_from_bin,
+		replenishment_to_bin = EXCLUDED.replenishment_to_bin,
+		replenishment_quantity = EXCLUDED.replenishment_quantity,
+		replenishment_priority = EXCLUDED.replenishment_priority,
+		replenished_quantity = EXCLUDED.replenished_quantity,
+		replenished_from_bin = EXCLUDED.replenished_from_bin,
+		replenished_to_bin = EXCLUDED.replenished_to_bin,
+		pick_sku = EXCLUDED.pick_sku,
+		pick_quantity = EXCLUDED.pick_quantity,
+		pick_unit = EXCLUDED.pick_unit,
+		pick_from_bin = EXCLUDED.pick_from_bin,
+		pick_site_id = EXCLUDED.pick_site_id,
+		picked_eaches = EXCLUDED.picked_eaches,
+		break_lpn = EXCLUDED.break_lpn,
+		break_sku = EXCLUDED.break_sku,
+		break_loose_bin = EXCLUDED.break_loose_bin,
+		break_pick_task_id = EXCLUDED.break_pick_task_id,
+		work_started_at = EXCLUDED.work_started_at
+`
+
+// taskInsertArgs builds taskInsertSQL's arguments in taskColumns' order: the
+// base block, then the relocation, replenishment and pick tails, and
+// work_started_at last. It exists so Save spreads one built slice into Exec
+// — the inline nested-append form this replaces passed the whole slice as a
+// SINGLE argument (the ... landed on an inner append), which pgx rejects as
+// "mismatched param and argument count".
+func taskInsertArgs(t *task.Task) []any {
 	var leaseStationId *string
 	var leaseExpiry *time.Time
 	if lease := t.Lease(); lease != nil {
@@ -43,63 +107,20 @@ func (r *TaskRepo) Save(ctx context.Context, t *task.Task) error {
 		quantity = &q
 	}
 
-	_, err := querierFrom(ctx, r.pool).Exec(ctx, `
-		INSERT INTO tasks (`+taskColumns+`)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
-		        $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37,
-		        $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48)
-		ON CONFLICT (id) DO UPDATE SET
-			task_type = EXCLUDED.task_type,
-			status = EXCLUDED.status,
-			cpt = EXCLUDED.cpt,
-			order_ref = EXCLUDED.order_ref,
-			required_capabilities = EXCLUDED.required_capabilities,
-			lease_station_id = EXCLUDED.lease_station_id,
-			lease_expiry = EXCLUDED.lease_expiry,
-			fragile = EXCLUDED.fragile,
-			gift_wrap = EXCLUDED.gift_wrap,
-			claimed_at = EXCLUDED.claimed_at,
-			transfer_ref = EXCLUDED.transfer_ref,
-			demand_id = EXCLUDED.demand_id,
-			work_kind = EXCLUDED.work_kind,
-			site_id = EXCLUDED.site_id,
-			sku = EXCLUDED.sku,
-			quantity = EXCLUDED.quantity,
-			source_order_id = EXCLUDED.source_order_id,
-			source_line_no = EXCLUDED.source_line_no,
-			relocation_plan_id = EXCLUDED.relocation_plan_id,
-			relocation_move_seq = EXCLUDED.relocation_move_seq,
-			relocation_kind = EXCLUDED.relocation_kind,
-			relocation_sku = EXCLUDED.relocation_sku,
-			relocation_from_bin = EXCLUDED.relocation_from_bin,
-			relocation_to_bin = EXCLUDED.relocation_to_bin,
-			relocated_quantity = EXCLUDED.relocated_quantity,
-			relocated_from_bin = EXCLUDED.relocated_from_bin,
-			relocated_to_bin = EXCLUDED.relocated_to_bin,
-			replenishment_request_id = EXCLUDED.replenishment_request_id,
-			replenishment_sku = EXCLUDED.replenishment_sku,
-			replenishment_from_bin = EXCLUDED.replenishment_from_bin,
-			replenishment_to_bin = EXCLUDED.replenishment_to_bin,
-			replenishment_quantity = EXCLUDED.replenishment_quantity,
-			replenishment_priority = EXCLUDED.replenishment_priority,
-			replenished_quantity = EXCLUDED.replenished_quantity,
-			replenished_from_bin = EXCLUDED.replenished_from_bin,
-			replenished_to_bin = EXCLUDED.replenished_to_bin,
-			pick_sku = EXCLUDED.pick_sku,
-			pick_quantity = EXCLUDED.pick_quantity,
-			pick_unit = EXCLUDED.pick_unit,
-			pick_from_bin = EXCLUDED.pick_from_bin,
-			pick_site_id = EXCLUDED.pick_site_id,
-			picked_eaches = EXCLUDED.picked_eaches,
-			break_lpn = EXCLUDED.break_lpn,
-			break_sku = EXCLUDED.break_sku,
-			break_loose_bin = EXCLUDED.break_loose_bin,
-			break_pick_task_id = EXCLUDED.break_pick_task_id,
-			work_started_at = EXCLUDED.work_started_at
-	`, append(append(append([]any{string(t.Id()), string(t.Type()), string(t.Status()), t.CPT().Time(), string(t.OrderRef()),
+	args := []any{
+		string(t.Id()), string(t.Type()), string(t.Status()), t.CPT().Time(), string(t.OrderRef()),
 		capabilitiesToSlice(t.RequiredCapabilities()), leaseStationId, leaseExpiry, t.Fragile(), t.GiftWrap(), t.ClaimedAt(),
-		transferRef, demandId, workKind, siteId, sku, quantity, nullableString(t.SourceOrderId()), nullableLineNo(t.SourceLineNo())},
-		relocationColumnsOf(t).values()...), replenishmentColumnsOf(t).values()...), append(pickColumnsOf(t).values(), t.WorkStartedAt())...))
+		transferRef, demandId, workKind, siteId, sku, quantity,
+		nullableString(t.SourceOrderId()), nullableLineNo(t.SourceLineNo()),
+	}
+	args = append(args, relocationColumnsOf(t).values()...)
+	args = append(args, replenishmentColumnsOf(t).values()...)
+	args = append(args, pickColumnsOf(t).values()...)
+	return append(args, t.WorkStartedAt())
+}
+
+func (r *TaskRepo) Save(ctx context.Context, t *task.Task) error {
+	_, err := querierFrom(ctx, r.pool).Exec(ctx, taskInsertSQL, taskInsertArgs(t)...)
 	return err
 }
 
