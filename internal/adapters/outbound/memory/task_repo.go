@@ -97,6 +97,14 @@ func (r *TaskRepo) FindClaimableByType(_ context.Context, taskType task.Type, no
 		}
 	}
 	sort.Slice(result, func(i, j int) bool {
+		if result[i].CPT().Time().Equal(result[j].CPT().Time()) {
+			// Deterministic within one priority band: the map iteration
+			// order behind this slice is random, and FormWorkBatch's
+			// anchor-equivalence guarantee (ADR 0063) is asserted by
+			// comparing two identically-seeded pools — both must see the
+			// same within-band order.
+			return result[i].Id() < result[j].Id()
+		}
 		return result[i].CPT().Before(result[j].CPT())
 	})
 	return result, nil
@@ -196,5 +204,5 @@ func cloneTask(t *task.Task) *task.Task {
 	}
 	return task.RehydrateTransfer(t.Id(), t.Type(), t.Status(), t.CPT(), t.OrderRef(), t.RequiredCapabilities(), lease, t.Fragile(), t.GiftWrap(), claimedAt, transfer).WithSourceOrderId(t.SourceOrderId()).WithSourceLineNo(t.SourceLineNo()).
 		WithRelocation(t.Relocation(), t.RelocationResult()).WithReplenishment(t.Replenishment(), t.ReplenishmentResult()).
-		WithPickPlan(t.PickPlan(), t.PickedEaches()).WithCaseBreak(t.CaseBreak())
+		WithPickPlan(t.PickPlan(), t.PickedEaches()).WithCaseBreak(t.CaseBreak()).WithWorkStartedAt(t.WorkStartedAt())
 }

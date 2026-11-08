@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,10 +76,11 @@ func truncateAllTables(t *testing.T, pool *pgxpool.Pool) {
 		}
 		tables = append(tables, name)
 	}
-	for _, name := range tables {
-		if _, err := pool.Exec(ctx, "TRUNCATE TABLE "+name+" RESTART IDENTITY"); err != nil {
-			t.Fatalf("truncate %s: %v", name, err)
-		}
+	// One statement for every table: TRUNCATE refuses a table that another
+	// table's foreign key references unless they go together (work_batches
+	// is referenced by work_batch_members, migration 0027).
+	if _, err := pool.Exec(ctx, "TRUNCATE TABLE "+strings.Join(tables, ", ")+" RESTART IDENTITY CASCADE"); err != nil {
+		t.Fatalf("truncate: %v", err)
 	}
 }
 

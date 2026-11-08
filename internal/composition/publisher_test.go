@@ -48,7 +48,7 @@ func TestBuildEventPublisher_RefusesAnythingButTheRealRuntime(t *testing.T) {
 			if !tc.pool {
 				p = nil
 			}
-			pub, relay, closeFn, err := composition.BuildEventPublisher(tc.cfg, p, memory.NewTaskRepo(), memory.NewStationRepo(), quietLogger())
+			pub, relay, closeFn, err := composition.BuildEventPublisher(tc.cfg, p, memory.NewTaskRepo(), memory.NewStationRepo(), nil, quietLogger())
 			defer closeFn()
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("err = %v, want %v", err, tc.wantErr)
@@ -69,7 +69,7 @@ func TestBuildEventPublisher_UsesTheOutbox(t *testing.T) {
 	t.Run("relay requested (cmd/execution)", func(t *testing.T) {
 		pub, relay, closeFn, err := composition.BuildEventPublisher(
 			composition.PublisherConfig{Brokers: []string{"127.0.0.1:1"}, RunRelay: true, RelayInterval: time.Second, RelayMaxAttempts: 7},
-			pool, postgres.NewTaskRepo(pool), postgres.NewStationRepo(pool), quietLogger())
+			pool, postgres.NewTaskRepo(pool), postgres.NewStationRepo(pool), postgres.NewWorkBatchRepo(pool), quietLogger())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -90,7 +90,7 @@ func TestBuildEventPublisher_UsesTheOutbox(t *testing.T) {
 	t.Run("writer only (cmd/mcp)", func(t *testing.T) {
 		pub, relay, closeFn, err := composition.BuildEventPublisher(
 			composition.PublisherConfig{Brokers: []string{"127.0.0.1:1"}, RunRelay: false},
-			pool, postgres.NewTaskRepo(pool), postgres.NewStationRepo(pool), quietLogger())
+			pool, postgres.NewTaskRepo(pool), postgres.NewStationRepo(pool), postgres.NewWorkBatchRepo(pool), quietLogger())
 		if err != nil {
 			t.Fatal(err)
 		}

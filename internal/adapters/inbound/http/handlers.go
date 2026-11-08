@@ -49,6 +49,14 @@ type Handlers struct {
 	// delegation to the Work Planning agent (ADR-0058). Nil — or a nil
 	// Planning port inside it — answers 503 not-configured, never a panic.
 	RequestNextWork *usecases.RequestNextWork
+	// FormWorkBatch, RenewWorkBatchLease and GetWorkBatch back the
+	// pick-batching surface (ADR 0063): POST /stations/{stationId}/
+	// work-batches, POST /work-batches/{batchId}/lease-renewals and
+	// GET /work-batches/{batchId}. A nil FormWorkBatch answers 503
+	// not-configured, like every optional use case here.
+	FormWorkBatch       *usecases.FormWorkBatch
+	RenewWorkBatchLease *usecases.RenewWorkBatchLease
+	GetWorkBatch        *usecases.GetWorkBatch
 }
 
 func toTaskResponse(t *task.Task) taskResponse {

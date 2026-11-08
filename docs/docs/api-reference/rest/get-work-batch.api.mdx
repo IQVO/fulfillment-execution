@@ -1,0 +1,71 @@
+---
+id: get-work-batch
+title: "Read one work batch (the station's walk)"
+description: "The WorkBatch read side (ADR 0063): the batch, its status (`OPEN`, `COMPLETED`, `ABANDONED`) and its stops in visit order with their cart compartments and member states. A `DETACHED` member left the walk early (its lease expired and the task returned to the pool)."
+sidebar_label: "Read one work batch (the station's walk)"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "get api-method"
+info_path: docs/api-reference/rest/fulfillment-execution-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Read one work batch (the station's walk)"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"get"}
+  path={"/work-batches/{batchId}"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+The WorkBatch read side (ADR 0063): the batch, its status (`OPEN`, `COMPLETED`, `ABANDONED`) and its stops in visit order with their cart compartments and member states. A `DETACHED` member left the walk early (its lease expired and the task returned to the pool).
+
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./get-work-batch.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./get-work-batch.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./get-work-batch.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

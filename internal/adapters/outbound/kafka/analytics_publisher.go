@@ -27,6 +27,8 @@ const (
 	attrTaskType  = "task_type"
 	attrStationID = "station_id"
 	attrPackageID = "package_id"
+	attrBatchID   = "batch_id"
+	attrVersion   = "version"
 )
 
 // analyticsSchemaVersion is the dataschema version
@@ -141,12 +143,17 @@ func inAnalyticsContract(e shared.DomainEvent) bool {
 	switch e.(type) {
 	case shared.TaskCreated, shared.TaskClaimed, shared.LeaseExpired, shared.TaskCompleted, shared.ItemPicked,
 		shared.PackageSealed, shared.WeightDiscrepancyDetected, shared.LabelApplied, shared.PackageDiverted,
-		shared.PackageManifested:
+		shared.PackageManifested,
+		shared.WorkBatchFormed, shared.WorkBatchCompleted, shared.WorkBatchAbandoned:
 		return true
 	default:
 		return false
 	}
 }
+
+// work-batch analytics occurrences live in
+// analytics_publisher_workbatch.go (ADR 0063), keeping this file inside the
+// 300-code-line file-length budget.
 
 // publishOne encodes and writes one event inside a producer span, so the
 // injected traceparent names the publish span itself and a broker error
@@ -327,6 +334,20 @@ func (p *AnalyticsPublisher) marshalData(ctx context.Context, e shared.DomainEve
 			attrTaskID:   string(ev.TaskId),
 			attrTaskType: p.taskType(ctx, ev.TaskId),
 		}), true
+	case shared.PackageSealed, shared.WeightDiscrepancyDetected, shared.LabelApplied,
+		shared.PackageDiverted, shared.PackageManifested:
+		return p.marshalPackage(ctx, e)
+	case shared.WorkBatchFormed, shared.WorkBatchCompleted, shared.WorkBatchAbandoned:
+		return p.marshalWorkBatch(e)
+	default:
+		return "", "", "", nil, false
+	}
+}
+
+// marshalPackage maps the Package* occurrences (sealed, weighed, labelled,
+// diverted, manifested) so marshalData stays under the complexity gate.
+func (p *AnalyticsPublisher) marshalPackage(ctx context.Context, e shared.DomainEvent) (entity, eventName, key string, data json.RawMessage, ok bool) {
+	switch ev := e.(type) {
 	case shared.PackageSealed:
 		data := map[string]any{attrPackageID: string(ev.PackageId)}
 		// Optional and additive (ADR 0056): present only when the package
@@ -355,18 +376,24 @@ func (p *AnalyticsPublisher) marshalData(ctx context.Context, e shared.DomainEve
 			attrPackageID: string(ev.PackageId),
 		}), true
 	case shared.PackageManifested:
-		taskType, stationId, onTime, resolved := p.onTimeToCPTFields(ctx, ev.OrderRef, ev.OccurredAt())
-		return entityPackage, "PackageManifested", string(ev.PackageId), mustMarshal(map[string]any{
-			attrPackageID: string(ev.PackageId),
-			"order_ref":   string(ev.OrderRef),
-			attrTaskType:  taskType,
-			attrStationID: stationId,
-			"on_time":     onTime,
-			"resolved":    resolved,
-		}), true
+		return p.marshalPackageManifested(ctx, ev)
 	default:
 		return "", "", "", nil, false
 	}
+}
+
+// marshalPackageManifested maps a PackageManifested occurrence, enriched with
+// the on-time-to-CPT correlation (ADR-0026) via the reports read model.
+func (p *AnalyticsPublisher) marshalPackageManifested(ctx context.Context, ev shared.PackageManifested) (entity, eventName, key string, data json.RawMessage, ok bool) {
+	taskType, stationId, onTime, resolved := p.onTimeToCPTFields(ctx, ev.OrderRef, ev.OccurredAt())
+	return entityPackage, "PackageManifested", string(ev.PackageId), mustMarshal(map[string]any{
+		attrPackageID: string(ev.PackageId),
+		"order_ref":   string(ev.OrderRef),
+		attrTaskType:  taskType,
+		attrStationID: stationId,
+		"on_time":     onTime,
+		"resolved":    resolved,
+	}), true
 }
 
 // mustMarshal marshals a map whose shape is fully controlled by marshalData,

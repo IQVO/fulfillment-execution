@@ -26,8 +26,11 @@ func (p *Publisher) encodeTaskCompleted(ctx context.Context, tc shared.TaskCompl
 		// (audit decision 17): empty (omitted) when the task has none.
 		orderRef = t.SourceOrderId()
 		lineNo = t.SourceLineNo()
-		if claimedAt := t.ClaimedAt(); claimedAt != nil {
-			durationSeconds = int64(tc.OccurredAt().Sub(*claimedAt).Seconds())
+		// duration_seconds measures from the task's DurationBase — the
+		// per-stop work start inside a batch, else the claim (ADR 0064) —
+		// so a non-batched task produces exactly the bytes it did before.
+		if base := t.DurationBase(); base != nil {
+			durationSeconds = int64(tc.OccurredAt().Sub(*base).Seconds())
 		}
 		taskType = string(t.Type())
 	}
@@ -46,6 +49,12 @@ func (p *Publisher) encodeTaskCompleted(ctx context.Context, tc shared.TaskCompl
 		TaskType:        taskType,
 		OrderRef:        orderRef,
 		LineNo:          lineNo,
+	}
+	// Pick-batching correlation (ADR 0063): present only when the task
+	// completed into a work batch, omitted otherwise.
+	if batchId, batchSize, ok := p.batchFieldsOf(ctx, tc.TaskId); ok {
+		data.BatchId = batchId
+		data.BatchSize = batchSize
 	}
 	withRelocation(&data, tc.Relocation)
 	withReplenishment(&data, tc.Replenishment)

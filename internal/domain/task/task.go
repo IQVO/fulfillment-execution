@@ -201,6 +201,14 @@ type Task struct {
 	// caseBreak is the break a BREAK_CASE task executes (ADR 0054); nil for
 	// every other task.
 	caseBreak *CaseBreak
+	// workStartedAt is when work on this task actually began (ADR 0064):
+	// inside a work batch the first member's clock is its claim and each
+	// later member's clock starts when the previous stop completes
+	// (StartWork). Nil — every task outside a batch, and every row written
+	// before migration 0026 — means the work clock is the claim time (see
+	// DurationBase), so duration_seconds keeps its exact pre-batching
+	// meaning and bytes.
+	workStartedAt *time.Time
 }
 
 // New creates a task in the Pending state, ready for the pool. fragile is a
@@ -302,6 +310,48 @@ func (t *Task) Lease() *Lease                              { return t.lease }
 // CompleteTask's Kafka enrichment). A task persisted before this field
 // existed also reports nil (see Rehydrate).
 func (t *Task) ClaimedAt() *time.Time { return t.claimedAt }
+
+// StartWork starts this task's work clock at at — the NextStopClock policy
+// of a work batch (ADR 0064): the first member's clock is its claim, each
+// later member's clock starts when the previous stop completes. Write-once:
+// a second call is a no-op, so a replayed completion can never move an
+// already-started clock.
+func (t *Task) StartWork(at time.Time) {
+	if t.workStartedAt == nil {
+		st := at
+		t.workStartedAt = &st
+	}
+}
+
+// WorkStartedAt returns when this task's work clock started, or nil when it
+// never did (every task outside a batch, and every row written before
+// migration 0026).
+func (t *Task) WorkStartedAt() *time.Time { return t.workStartedAt }
+
+// DurationBase is the instant duration_seconds is measured from (ADR 0064):
+// the recorded work start when there is one (per-stop timing inside a
+// batch), otherwise the claim time — so a task that never entered a batch
+// reports exactly the same duration, and the same published bytes, as
+// before batching existed. Nil means neither is known (a task never
+// claimed); the TaskCompleted payload then omits duration_seconds, exactly
+// as today.
+func (t *Task) DurationBase() *time.Time {
+	if t.workStartedAt != nil {
+		return t.workStartedAt
+	}
+	return t.claimedAt
+}
+
+// WithWorkStartedAt stamps the work-start timestamp and returns the task,
+// for use when a repository rehydrates the column (migration 0026). nil
+// leaves the task without one — the pre-migration shape.
+func (t *Task) WithWorkStartedAt(at *time.Time) *Task {
+	if at != nil {
+		cp := *at
+		t.workStartedAt = &cp
+	}
+	return t
+}
 
 // Fragile reports whether this task's upstream order line was classified
 // Fragile by inventory-storage's ProductClassification, as stamped by
