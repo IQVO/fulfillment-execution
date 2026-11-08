@@ -272,7 +272,10 @@ jobs:
       - name: Install gremlins
         run: go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
       - name: Mutation testing (fast subset — task + workbatch aggregates)
-        run: gremlins unleash ./internal/domain/task ./internal/domain/workbatch
+        run: |
+          # gremlins unleash accepts exactly one package per invocation.
+          gremlins unleash ./internal/domain/task
+          gremlins unleash ./internal/domain/workbatch
 
   # Supply-chain sensor: known CVEs in the dependency graph and in the Go
   # stdlib version this module builds against.

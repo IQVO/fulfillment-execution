@@ -10,8 +10,9 @@
 #
 # Used by:
 #   - the `mutation-fast` CI job  -> gremlins unleash ./internal/domain/task
-#     ./internal/domain/workbatch (every push/PR; blocking; the task
-#     aggregate plus the workbatch aggregate of ADR 0063)
+#     then ./internal/domain/workbatch (one package per invocation; every
+#     push/PR; blocking; the task aggregate plus the workbatch aggregate of
+#     ADR 0063)
 #   - the `mutation` CI job       -> gremlins unleash ./internal/domain
 #     (workflow_dispatch/schedule only; exhaustive)
 #   - `make mutation-fast` / `make mutation` locally.
