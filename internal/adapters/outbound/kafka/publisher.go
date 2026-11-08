@@ -51,6 +51,9 @@ const (
 	entityTask     = "task"
 	entityPackage  = "package"
 	entityTransfer = "transfer"
+	// entityWorkBatch is the WorkBatch aggregate's entity segment (ADR
+	// 0063): com.warehouse.wes.fulfillment-execution.workbatch.<Event>.
+	entityWorkBatch = "workbatch"
 )
 
 // TaskCompletedData is the payload of a published TaskCompleted event,
@@ -98,6 +101,13 @@ type TaskCompletedData struct {
 	// inventory-storage applies the move as a RelocateStock with reason
 	// REPLENISHMENT and source_ref = request_ref (its ADR 0041).
 	RequestRef string `json:"request_ref,omitempty"`
+	// BatchId and BatchSize are the additive pick-batching fields (ADR
+	// 0063): the work batch the completed PICK's task was a member of, and
+	// how many tasks that walk held. Omitted on every non-batched
+	// completion — nil batch repo, task in no batch, or any other task
+	// type — so the pre-batching payload bytes are unchanged.
+	BatchId   string `json:"batch_id,omitempty"`
+	BatchSize int    `json:"batch_size,omitempty"`
 }
 
 // TaskCPTMissedData is the payload of a published TaskCPTMissed event: a
@@ -185,6 +195,53 @@ type TransferFactData struct {
 	Quantity    int    `json:"quantity,omitempty"`
 }
 
+// WorkBatchEventData structs (ADR 0063) mirror the analytics publisher's
+// payload maps field for field, with fields declared in alphabetical order
+// ON PURPOSE (encoding/json sorts map keys, so the integration `data` bytes
+// and the analytics occurrence are byte-identical — same convention as
+// WeightDiscrepancyDetectedData).
+
+// WorkBatchFormData is the payload of a published WorkBatchFormed event:
+// the batch that just formed, its members in stop order.
+type WorkBatchFormData struct {
+	BatchId   string                `json:"batch_id"`
+	Cpt       time.Time             `json:"cpt"`
+	FormedAt  time.Time             `json:"formed_at"`
+	Members   []WorkBatchMemberWire `json:"members"`
+	StationId string                `json:"station_id"`
+	Version   int64                 `json:"version"`
+}
+
+// WorkBatchMemberWire is one member of a WorkBatchFormed payload.
+type WorkBatchMemberWire struct {
+	Compartment int    `json:"compartment"`
+	StopSeq     int    `json:"stop_seq"`
+	TaskId      string `json:"task_id"`
+}
+
+// WorkBatchCompletedData is the payload of a published WorkBatchCompleted
+// event: the last open member completed, so the walk is over and
+// walk_seconds is measurable from formation.
+type WorkBatchCompletedData struct {
+	BatchId     string    `json:"batch_id"`
+	CompletedAt time.Time `json:"completed_at"`
+	MemberCount int       `json:"member_count"`
+	StationId   string    `json:"station_id"`
+	Version     int64     `json:"version"`
+	WalkSeconds int64     `json:"walk_seconds"`
+}
+
+// WorkBatchAbandonedData is the payload of a published WorkBatchAbandoned
+// event: the last open member left the batch (lease expired) without
+// completing.
+type WorkBatchAbandonedData struct {
+	AbandonedAt time.Time `json:"abandoned_at"`
+	BatchId     string    `json:"batch_id"`
+	MemberCount int       `json:"member_count"`
+	StationId   string    `json:"station_id"`
+	Version     int64     `json:"version"`
+}
+
 // Writer is the subset of *kafkago.Writer the Publisher needs, so tests can
 // substitute a fake without a live broker.
 type Writer interface {
@@ -199,6 +256,12 @@ type Publisher struct {
 	Writer   Writer
 	Tasks    ports.TaskRepo
 	Stations ports.StationRepo
+	// Batches, when non-nil, enriches a PICK's TaskCompleted with the
+	// batch_id and batch_size of the work batch the task completed into
+	// (ADR 0063) — the fields labor-performance needs to report batched and
+	// single picks apart. Nil (or no batch found) omits both, so the
+	// pre-batching payload bytes are unchanged.
+	Batches ports.WorkBatchRepo
 	// NewId mints the CloudEvents `id`, exactly once per domain event, in
 	// Encode — so the outbox persists, and the relay republishes, the
 	// same id on every redelivery.
@@ -268,12 +331,11 @@ func (p *Publisher) Encode(ctx context.Context, evts ...shared.DomainEvent) ([]E
 			encs, err = p.encodePackageDiverted(ev)
 		case shared.WeightDiscrepancyDetected:
 			encs, err = p.encodeWeightDiscrepancyDetected(ev)
-		case shared.TransferPicked:
-			encs, err = p.encodeTransferFact("TransferPicked", ev.TaskId, ev.OccurredAt(), ev.TaskTransferDetails)
-		case shared.TransferDispatched:
-			encs, err = p.encodeTransferFact("TransferDispatched", ev.TaskId, ev.OccurredAt(), ev.TaskTransferDetails)
-		case shared.TransferArrived:
-			encs, err = p.encodeTransferFact("TransferArrived", ev.TaskId, ev.OccurredAt(), ev.TaskTransferDetails)
+		case shared.TransferPicked, shared.TransferDispatched, shared.TransferArrived:
+			id, d := transferFactOf(e)
+			encs, err = p.encodeTransferFact(e.EventName(), id, e.OccurredAt(), d)
+		case shared.WorkBatchFormed, shared.WorkBatchCompleted, shared.WorkBatchAbandoned:
+			encs, err = p.encodeWorkBatch(e)
 		default:
 			continue
 		}
@@ -305,6 +367,21 @@ func (p *Publisher) Publish(ctx context.Context, evts ...shared.DomainEvent) err
 	return nil
 }
 
+// transferFactOf unpacks any Transfer* fact into the arguments
+// encodeTransferFact takes, so Encode's switch stays one arm per fact
+// family.
+func transferFactOf(e shared.DomainEvent) (id shared.TaskId, d shared.TaskTransferDetails) {
+	switch ev := e.(type) {
+	case shared.TransferPicked:
+		return ev.TaskId, ev.TaskTransferDetails
+	case shared.TransferDispatched:
+		return ev.TaskId, ev.TaskTransferDetails
+	case shared.TransferArrived:
+		return ev.TaskId, ev.TaskTransferDetails
+	}
+	return "", shared.TaskTransferDetails{}
+}
+
 // inIntegrationContract reports whether Encode knows how to turn e into a
 // wire message, so Publish can skip a foreign event before opening a span.
 func inIntegrationContract(e shared.DomainEvent) bool {
@@ -312,7 +389,8 @@ func inIntegrationContract(e shared.DomainEvent) bool {
 	case shared.TaskCompleted, shared.TaskCPTMissed, shared.PackageManifested,
 		shared.PackageDiverted, shared.WeightDiscrepancyDetected,
 		shared.TaskAvailable, shared.TaskClaimed,
-		shared.TransferPicked, shared.TransferDispatched, shared.TransferArrived:
+		shared.TransferPicked, shared.TransferDispatched, shared.TransferArrived,
+		shared.WorkBatchFormed, shared.WorkBatchCompleted, shared.WorkBatchAbandoned:
 		return true
 	default:
 		return false

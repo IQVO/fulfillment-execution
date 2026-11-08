@@ -86,6 +86,19 @@ func TestForm_RejectsMoreThanMaximum(t *testing.T) {
 	}
 }
 
+// TestForm_AcceptsExactlyMaximum: the maximum is reachable — a batch of
+// exactly D4's maximum members forms. The size rule rejects strictly more
+// than the maximum, never the maximum itself.
+func TestForm_AcceptsExactlyMaximum(t *testing.T) {
+	b, err := workbatch.Form("b1", "stn-1", 2, cpt("10:00"), []workbatch.Member{
+		member("t1", cpt("10:00"), "A-01"),
+		member("t2", cpt("10:00"), "A-02"),
+	})
+	if err != nil || len(b.Members()) != 2 {
+		t.Fatalf("b = %+v, err = %v", b, err)
+	}
+}
+
 // TestForm_RejectsEmptyBatch: zero members is ErrBatchSize too — a batch
 // exists only around an anchor.
 func TestForm_RejectsEmptyBatch(t *testing.T) {
@@ -153,6 +166,25 @@ func TestForm_AssignsStopSeqInRankOrder(t *testing.T) {
 	}
 }
 
+// TestForm_KeepsInputOrderForEqualRanks: ranks tie (two hints at the same
+// detour), and the stable rank order must keep the given order — stop_seq
+// follows formation input for ties, never an arbitrary swap.
+func TestForm_KeepsInputOrderForEqualRanks(t *testing.T) {
+	b, err := workbatch.Form("b1", "stn-1", 4, cpt("10:00"), []workbatch.Member{
+		hinted("later", cpt("10:00"), "A-02", 2),
+		hinted("earlier", cpt("10:00"), "A-01", 2),
+	})
+	if err != nil {
+		t.Fatalf("form: %v", err)
+	}
+	if got := b.Members()[0].TaskId; got != "later" {
+		t.Fatalf("first stop = %s, want later (input order on a rank tie)", got)
+	}
+	if b.Members()[0].StopSeq != 1 || b.Members()[1].StopSeq != 2 {
+		t.Fatalf("stop_seq = %d/%d, want 1/2", b.Members()[0].StopSeq, b.Members()[1].StopSeq)
+	}
+}
+
 // TestForm_OpenWithVersionOne: a formed batch is OPEN, carries the band's CPT
 // and the station, and starts at version 1.
 func TestForm_OpenWithVersionOne(t *testing.T) {
@@ -188,7 +220,7 @@ func TestCompleteMember_LastCompletionCompletesBatch(t *testing.T) {
 	if b.Status() != workbatch.StatusCompleted {
 		t.Fatalf("status = %s, want COMPLETED", b.Status())
 	}
-	if got := b.WalkSeconds(); got != int64(time.Duration(20*time.Minute).Seconds()) {
+	if got := b.WalkSeconds(); got != 1200 {
 		t.Fatalf("walk_seconds = %d, want 1200", got)
 	}
 	if b.Version() != 3 {
@@ -263,6 +295,9 @@ func TestDetachMember_AllDetachedAbandonsBatch(t *testing.T) {
 	b := formed(t)
 	if err := b.DetachMember("t1", cpt("10:06")); err != nil {
 		t.Fatalf("detach t1: %v", err)
+	}
+	if b.Version() != 2 {
+		t.Fatalf("version = %d, want 2 after one detach", b.Version())
 	}
 	if b.Status() != workbatch.StatusOpen {
 		t.Fatalf("status = %s, want OPEN with one member left", b.Status())

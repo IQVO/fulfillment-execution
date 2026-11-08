@@ -56,7 +56,8 @@ channels:
       summary: Consume Fulfillment Execution integration events.
       description: Receive the TaskAvailable, TaskClaimed, TaskCompleted, TaskCPTMissed, PackageManifested,
         PackageDiverted, WeightDiscrepancyDetected, TransferPicked, TransferDispatched and TransferArrived
-        CloudEvents this bounded context publishes.
+        CloudEvents this bounded context publishes — plus the pick-batching WorkBatchFormed,
+        WorkBatchCompleted and WorkBatchAbandoned (ADR 0063, published only with PICK_BATCH_MODE on).
       tags:
       - name: fulfillment-execution
       message:
@@ -71,6 +72,9 @@ channels:
         - $ref: '#/components/messages/TransferPicked'
         - $ref: '#/components/messages/TransferDispatched'
         - $ref: '#/components/messages/TransferArrived'
+        - $ref: '#/components/messages/WorkBatchFormed'
+        - $ref: '#/components/messages/WorkBatchCompleted'
+        - $ref: '#/components/messages/WorkBatchAbandoned'
   warehouse.fulfillment.analytics:
     description: Internal analytics stream (ADR-0012), keyed by aggregate id; read by this service's own
       analytics projector.
@@ -92,6 +96,9 @@ channels:
         - $ref: '#/components/messages/AnalyticsLabelApplied'
         - $ref: '#/components/messages/AnalyticsPackageDiverted'
         - $ref: '#/components/messages/AnalyticsPackageManifested'
+        - $ref: '#/components/messages/AnalyticsWorkBatchFormed'
+        - $ref: '#/components/messages/AnalyticsWorkBatchCompleted'
+        - $ref: '#/components/messages/AnalyticsWorkBatchAbandoned'
   warehouse.work-planning.events:
     description: wes-work-planning's integration topic; this service consumes WorkReleased from it (consumer
       group `WORK_RELEASED_CONSUMER_GROUP`, default `fulfillment-execution`).
@@ -303,6 +310,20 @@ components:
                     WorkReleased.data.replenishment.request_id; inventory-storage records it as the
                     StockRelocated source_ref (reason REPLENISHMENT) and pick-face-replenishment closes
                     the request by it. Omitted on every other task type.
+                batch_id:
+                  type: string
+                  minLength: 1
+                  description: PICK only, and only when the task completed into a work batch
+                    (ADR 0063; additive, the event stays v1). The walk the completed pick was a
+                    member of; with batch_size it lets labor-performance report batched and single
+                    picks apart. Omitted on every non-batched completion, so the pre-batching
+                    payload bytes are unchanged.
+                batch_size:
+                  type: integer
+                  format: int32
+                  minimum: 1
+                  description: PICK only, and only when batch_id is present (ADR 0063). How many
+                    tasks that walk held. Omitted together with batch_id.
       examples:
       - name: taskCompleted
         headers:
@@ -2774,6 +2795,478 @@ components:
               task_type: REPLENISH
               location: WH1-FWD-A02-01-01-A
               detour_m: 12.0
+    WorkBatchFormed:
+      name: WorkBatchFormed
+      title: WorkBatchFormed
+      summary: A station's pick walk formed (ADR 0063).
+      description: Raised when POST /stations/{stationId}/work-batches forms a walk, inside the
+        same transaction that persists the batch. Published on `warehouse.fulfillment.events`,
+        keyed (and `subject`-ed) by batch id. The anchor is exactly the task ClaimNext would
+        have returned, so a consumer can treat the first member as today's dispatch and the
+        rest as additions. Published only with PICK_BATCH_MODE on; with the fleet default off
+        nothing is published. Consumed by labor-performance (batch_size reporting) and
+        available to the warehouse console.
+      contentType: application/cloudevents+json
+      tags:
+      - name: workbatch
+      headers:
+        $ref: '#/components/schemas/KafkaHeaders'
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          required:
+          - type
+          - source
+          - dataschema
+          - data
+          properties:
+            type:
+              type: string
+              const: com.warehouse.wes.fulfillment-execution.workbatch.WorkBatchFormed
+            source:
+              type: string
+              const: /warehouse/fulfillment-execution
+            dataschema:
+              type: string
+              const: urn:warehouse:fulfillment-execution:events:WorkBatchFormed:v1
+            data:
+              type: object
+              required:
+              - batch_id
+              - station_id
+              - cpt
+              - formed_at
+              - version
+              - members
+              properties:
+                batch_id:
+                  type: string
+                  description: The formed batch's id.
+                station_id:
+                  type: string
+                  description: The station holding the walk.
+                cpt:
+                  type: string
+                  format: date-time
+                  description: The batch's priority band — every member shares this CPT instant (D3).
+                formed_at:
+                  type: string
+                  format: date-time
+                  description: Formation instant; WorkBatchCompleted's walk_seconds is measured from it.
+                version:
+                  type: integer
+                  format: int64
+                  description: Aggregate version at formation (1).
+                members:
+                  type: array
+                  minItems: 1
+                  description: The stops in visit order (hint rank order, D6).
+                  items:
+                    type: object
+                    required:
+                    - task_id
+                    - stop_seq
+                    - compartment
+                    properties:
+                      task_id:
+                        type: string
+                        description: The member PICK task's id.
+                      stop_seq:
+                        type: integer
+                        minimum: 1
+                        description: The 1-based visit order of this stop.
+                      compartment:
+                        type: integer
+                        minimum: 1
+                        description: The cart position holding this task's items.
+      examples:
+      - name: workBatchFormed
+        headers:
+          content-type: application/cloudevents+json; charset=UTF-8
+          traceparent: 00-8812c36621d214139a08949823716b93-14ddf02dbd8913ba-01
+        payload:
+          specversion: "1.0"
+          id: 7a2d3e4f-5a6b-7c80-9d0e-1f2a3b4c5d6e
+          source: /warehouse/fulfillment-execution
+          type: com.warehouse.wes.fulfillment-execution.workbatch.WorkBatchFormed
+          subject: wb-20260930T150000.000000000
+          time: '2026-09-30T15:00:00Z'
+          datacontenttype: application/json
+          dataschema: urn:warehouse:fulfillment-execution:events:WorkBatchFormed:v1
+          data:
+            batch_id: wb-20260930T150000.000000000
+            station_id: STN-07
+            cpt: '2026-09-30T18:00:00Z'
+            formed_at: '2026-09-30T15:00:00Z'
+            version: 1
+            members:
+            - task_id: task-8a1f
+              stop_seq: 1
+              compartment: 1
+            - task_id: task-9c2e
+              stop_seq: 2
+              compartment: 2
+    WorkBatchCompleted:
+      name: WorkBatchCompleted
+      title: WorkBatchCompleted
+      summary: The walk's last open stop completed (ADR 0063).
+      description: Raised when the last still-open member completes, in the same transaction
+        that flips the batch to COMPLETED. Published on `warehouse.fulfillment.events`, keyed
+        (and `subject`-ed) by batch id. walk_seconds is completion minus formation — the whole
+        walk, not per-stop labor (per-stop durations stay on each member's own TaskCompleted,
+        ADR 0064). Published only with PICK_BATCH_MODE on.
+      contentType: application/cloudevents+json
+      tags:
+      - name: workbatch
+      headers:
+        $ref: '#/components/schemas/KafkaHeaders'
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          required:
+          - type
+          - source
+          - dataschema
+          - data
+          properties:
+            type:
+              type: string
+              const: com.warehouse.wes.fulfillment-execution.workbatch.WorkBatchCompleted
+            source:
+              type: string
+              const: /warehouse/fulfillment-execution
+            dataschema:
+              type: string
+              const: urn:warehouse:fulfillment-execution:events:WorkBatchCompleted:v1
+            data:
+              type: object
+              required:
+              - batch_id
+              - station_id
+              - member_count
+              - walk_seconds
+              - completed_at
+              - version
+              properties:
+                batch_id:
+                  type: string
+                  description: The completed batch's id.
+                station_id:
+                  type: string
+                  description: The station that walked it.
+                member_count:
+                  type: integer
+                  minimum: 1
+                  description: How many tasks the walk held at formation.
+                walk_seconds:
+                  type: integer
+                  format: int64
+                  minimum: 0
+                  description: Completion minus formation, whole seconds.
+                completed_at:
+                  type: string
+                  format: date-time
+                  description: When the last open member completed.
+                version:
+                  type: integer
+                  format: int64
+                  description: Aggregate version at completion.
+      examples:
+      - name: workBatchCompleted
+        headers:
+          content-type: application/cloudevents+json; charset=UTF-8
+          traceparent: 00-8812c36621d214139a08949823716b93-14ddf02dbd8913ba-01
+        payload:
+          specversion: "1.0"
+          id: 8b3e4f5a-6b7c-8d90-0e1f-2a3b4c5d6e7f
+          source: /warehouse/fulfillment-execution
+          type: com.warehouse.wes.fulfillment-execution.workbatch.WorkBatchCompleted
+          subject: wb-20260930T150000.000000000
+          time: '2026-09-30T15:07:30Z'
+          datacontenttype: application/json
+          dataschema: urn:warehouse:fulfillment-execution:events:WorkBatchCompleted:v1
+          data:
+            batch_id: wb-20260930T150000.000000000
+            station_id: STN-07
+            member_count: 2
+            walk_seconds: 450
+            completed_at: '2026-09-30T15:07:30Z'
+            version: 3
+    WorkBatchAbandoned:
+      name: WorkBatchAbandoned
+      title: WorkBatchAbandoned
+      summary: Every member left the walk without completing (ADR 0063).
+      description: Raised when the last still-open member detaches — its lease expired and the
+        task returned to the pool through the existing sweep — in the same transaction that
+        flips the batch to ABANDONED. The tasks themselves are NOT lost — each detaches through
+        the ordinary lease-expiry path and stays claimable. Published on
+        `warehouse.fulfillment.events`, keyed (and `subject`-ed) by batch id. Published only
+        with PICK_BATCH_MODE on.
+      contentType: application/cloudevents+json
+      tags:
+      - name: workbatch
+      headers:
+        $ref: '#/components/schemas/KafkaHeaders'
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          required:
+          - type
+          - source
+          - dataschema
+          - data
+          properties:
+            type:
+              type: string
+              const: com.warehouse.wes.fulfillment-execution.workbatch.WorkBatchAbandoned
+            source:
+              type: string
+              const: /warehouse/fulfillment-execution
+            dataschema:
+              type: string
+              const: urn:warehouse:fulfillment-execution:events:WorkBatchAbandoned:v1
+            data:
+              type: object
+              required:
+              - batch_id
+              - station_id
+              - member_count
+              - abandoned_at
+              - version
+              properties:
+                batch_id:
+                  type: string
+                  description: The abandoned batch's id.
+                station_id:
+                  type: string
+                  description: The station that held it.
+                member_count:
+                  type: integer
+                  minimum: 1
+                  description: How many tasks the walk held at formation.
+                abandoned_at:
+                  type: string
+                  format: date-time
+                  description: When the last open member detached.
+                version:
+                  type: integer
+                  format: int64
+                  description: Aggregate version at abandonment.
+      examples:
+      - name: workBatchAbandoned
+        headers:
+          content-type: application/cloudevents+json; charset=UTF-8
+          traceparent: 00-8812c36621d214139a08949823716b93-14ddf02dbd8913ba-01
+        payload:
+          specversion: "1.0"
+          id: 9c4f5a6b-7c8d-9e01-1f2a-3b4c5d6e7f8a
+          source: /warehouse/fulfillment-execution
+          type: com.warehouse.wes.fulfillment-execution.workbatch.WorkBatchAbandoned
+          subject: wb-20260930T150000.000000000
+          time: '2026-09-30T15:10:00Z'
+          datacontenttype: application/json
+          dataschema: urn:warehouse:fulfillment-execution:events:WorkBatchAbandoned:v1
+          data:
+            batch_id: wb-20260930T150000.000000000
+            station_id: STN-07
+            member_count: 2
+            abandoned_at: '2026-09-30T15:10:00Z'
+            version: 3
+    AnalyticsWorkBatchFormed:
+      name: AnalyticsWorkBatchFormed
+      title: WorkBatchFormed
+      summary: Analytics occurrence of WorkBatchFormed for the batching data product.
+      description: A walk formed (ADR 0063). Published on the internal `warehouse.fulfillment.analytics`
+        topic (ADR-0012) and consumed only by this service's own analytics projector
+        (`cmd/fulfillment-projector`); the `data` bytes are identical to the integration
+        occurrence. Wave 4's batch-effectiveness report reads these to measure would-be batch
+        sizes and detour against the anchor-only walk.
+      contentType: application/cloudevents+json
+      tags:
+      - name: workbatch
+      - name: analytics
+      headers:
+        $ref: '#/components/schemas/KafkaHeaders'
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          required:
+          - type
+          - source
+          - dataschema
+          - data
+          properties:
+            type:
+              type: string
+              const: com.warehouse.wes.fulfillment-execution.workbatch.WorkBatchFormed
+            source:
+              type: string
+              const: /warehouse/fulfillment-execution
+            dataschema:
+              type: string
+              const: urn:warehouse:fulfillment-execution:analytics:WorkBatchFormed:v1
+            data:
+              type: object
+              required:
+              - batch_id
+              - station_id
+              - cpt
+              - formed_at
+              - version
+              - members
+              properties:
+                batch_id:
+                  type: string
+                  description: Batch id.
+                station_id:
+                  type: string
+                  description: Station id.
+                cpt:
+                  type: string
+                  format: date-time
+                  description: The batch's priority band.
+                formed_at:
+                  type: string
+                  format: date-time
+                  description: Formation instant.
+                version:
+                  type: integer
+                  format: int64
+                  description: Aggregate version at formation.
+                members:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required:
+                    - task_id
+                    - stop_seq
+                    - compartment
+                    properties:
+                      task_id:
+                        type: string
+                      stop_seq:
+                        type: integer
+                      compartment:
+                        type: integer
+    AnalyticsWorkBatchCompleted:
+      name: AnalyticsWorkBatchCompleted
+      title: WorkBatchCompleted
+      summary: Analytics occurrence of WorkBatchCompleted for the batching data product.
+      description: A walk completed (ADR 0063) — member_count and walk_seconds (completion
+        minus formation) per batch. Published on the internal `warehouse.fulfillment.analytics`
+        topic (ADR-0012) and consumed only by this service's own analytics projector
+        (`cmd/fulfillment-projector`); the `data` bytes are identical to the integration
+        occurrence.
+      contentType: application/cloudevents+json
+      tags:
+      - name: workbatch
+      - name: analytics
+      headers:
+        $ref: '#/components/schemas/KafkaHeaders'
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          required:
+          - type
+          - source
+          - dataschema
+          - data
+          properties:
+            type:
+              type: string
+              const: com.warehouse.wes.fulfillment-execution.workbatch.WorkBatchCompleted
+            source:
+              type: string
+              const: /warehouse/fulfillment-execution
+            dataschema:
+              type: string
+              const: urn:warehouse:fulfillment-execution:analytics:WorkBatchCompleted:v1
+            data:
+              type: object
+              required:
+              - batch_id
+              - station_id
+              - member_count
+              - walk_seconds
+              - completed_at
+              - version
+              properties:
+                batch_id:
+                  type: string
+                station_id:
+                  type: string
+                member_count:
+                  type: integer
+                walk_seconds:
+                  type: integer
+                  format: int64
+                completed_at:
+                  type: string
+                  format: date-time
+                version:
+                  type: integer
+                  format: int64
+    AnalyticsWorkBatchAbandoned:
+      name: AnalyticsWorkBatchAbandoned
+      title: WorkBatchAbandoned
+      summary: Analytics occurrence of WorkBatchAbandoned for the batching data product.
+      description: A walk abandoned (ADR 0063) — every member left without completing.
+        Published on the internal `warehouse.fulfillment.analytics` topic (ADR-0012) and
+        consumed only by this service's own analytics projector
+        (`cmd/fulfillment-projector`); the `data` bytes are identical to the integration
+        occurrence.
+      contentType: application/cloudevents+json
+      tags:
+      - name: workbatch
+      - name: analytics
+      headers:
+        $ref: '#/components/schemas/KafkaHeaders'
+      payload:
+        allOf:
+        - $ref: '#/components/schemas/CloudEvent'
+        - type: object
+          required:
+          - type
+          - source
+          - dataschema
+          - data
+          properties:
+            type:
+              type: string
+              const: com.warehouse.wes.fulfillment-execution.workbatch.WorkBatchAbandoned
+            source:
+              type: string
+              const: /warehouse/fulfillment-execution
+            dataschema:
+              type: string
+              const: urn:warehouse:fulfillment-execution:analytics:WorkBatchAbandoned:v1
+            data:
+              type: object
+              required:
+              - batch_id
+              - station_id
+              - member_count
+              - abandoned_at
+              - version
+              properties:
+                batch_id:
+                  type: string
+                station_id:
+                  type: string
+                member_count:
+                  type: integer
+                abandoned_at:
+                  type: string
+                  format: date-time
+                version:
+                  type: integer
+                  format: int64
   schemas:
     TransferFactData:
       type: object

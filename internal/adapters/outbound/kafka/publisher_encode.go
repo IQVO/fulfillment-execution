@@ -50,6 +50,12 @@ func (p *Publisher) encodeTaskCompleted(ctx context.Context, tc shared.TaskCompl
 		OrderRef:        orderRef,
 		LineNo:          lineNo,
 	}
+	// Pick-batching correlation (ADR 0063): present only when the task
+	// completed into a work batch, omitted otherwise.
+	if batchId, batchSize, ok := p.batchFieldsOf(ctx, tc.TaskId); ok {
+		data.BatchId = batchId
+		data.BatchSize = batchSize
+	}
 	withRelocation(&data, tc.Relocation)
 	withReplenishment(&data, tc.Replenishment)
 	enc, err := p.encodeIntegration(entityTask, "TaskCompleted", string(tc.TaskId), tc.OccurredAt(), data)

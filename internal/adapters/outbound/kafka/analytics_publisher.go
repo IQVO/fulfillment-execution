@@ -27,6 +27,8 @@ const (
 	attrTaskType  = "task_type"
 	attrStationID = "station_id"
 	attrPackageID = "package_id"
+	attrBatchID   = "batch_id"
+	attrVersion   = "version"
 )
 
 // analyticsSchemaVersion is the dataschema version
@@ -141,10 +143,76 @@ func inAnalyticsContract(e shared.DomainEvent) bool {
 	switch e.(type) {
 	case shared.TaskCreated, shared.TaskClaimed, shared.LeaseExpired, shared.TaskCompleted, shared.ItemPicked,
 		shared.PackageSealed, shared.WeightDiscrepancyDetected, shared.LabelApplied, shared.PackageDiverted,
-		shared.PackageManifested:
+		shared.PackageManifested,
+		shared.WorkBatchFormed, shared.WorkBatchCompleted, shared.WorkBatchAbandoned:
 		return true
 	default:
 		return false
+	}
+}
+
+// workBatchFormedPayload builds the analytics occurrence of a
+// WorkBatchFormed event. It mirrors WorkBatchFormData field for field (the
+// integration payload struct declares its fields alphabetically and
+// encoding/json sorts map keys), so the `data` bytes on the integration
+// topic are identical to this occurrence.
+func workBatchFormedPayload(ev shared.WorkBatchFormed) map[string]any {
+	members := make([]map[string]any, len(ev.Members))
+	for i, m := range ev.Members {
+		members[i] = map[string]any{
+			attrTaskID:    string(m.TaskId),
+			"stop_seq":    m.StopSeq,
+			"compartment": m.Compartment,
+		}
+	}
+	return map[string]any{
+		attrBatchID:   string(ev.BatchId),
+		attrStationID: string(ev.StationId),
+		"cpt":         ev.Cpt,
+		"members":     members,
+		"formed_at":   ev.OccurredAt(),
+		attrVersion:   ev.Version,
+	}
+}
+
+// workBatchCompletedPayload mirrors WorkBatchCompletedData.
+func workBatchCompletedPayload(ev shared.WorkBatchCompleted) map[string]any {
+	return map[string]any{
+		attrBatchID:    string(ev.BatchId),
+		attrStationID:  string(ev.StationId),
+		"member_count": ev.MemberCount,
+		"walk_seconds": ev.WalkSeconds,
+		"completed_at": ev.OccurredAt(),
+		attrVersion:    ev.Version,
+	}
+}
+
+// workBatchAbandonedPayload mirrors WorkBatchAbandonedData.
+func workBatchAbandonedPayload(ev shared.WorkBatchAbandoned) map[string]any {
+	return map[string]any{
+		attrBatchID:    string(ev.BatchId),
+		attrStationID:  string(ev.StationId),
+		"member_count": ev.MemberCount,
+		"abandoned_at": ev.OccurredAt(),
+		attrVersion:    ev.Version,
+	}
+}
+
+// marshalWorkBatch maps a WorkBatch* domain event (ADR 0063) to its
+// analytics occurrence: same entity segment, event name and batch-id
+// key/subject as the integration publisher, with a `data` map whose bytes
+// are identical to the integration payload (the payload funcs mirror the
+// wire structs field for field and encoding/json sorts map keys).
+func (p *AnalyticsPublisher) marshalWorkBatch(e shared.DomainEvent) (entity, eventName, key string, data json.RawMessage, ok bool) {
+	switch ev := e.(type) {
+	case shared.WorkBatchFormed:
+		return entityWorkBatch, "WorkBatchFormed", string(ev.BatchId), mustMarshal(workBatchFormedPayload(ev)), true
+	case shared.WorkBatchCompleted:
+		return entityWorkBatch, "WorkBatchCompleted", string(ev.BatchId), mustMarshal(workBatchCompletedPayload(ev)), true
+	case shared.WorkBatchAbandoned:
+		return entityWorkBatch, "WorkBatchAbandoned", string(ev.BatchId), mustMarshal(workBatchAbandonedPayload(ev)), true
+	default:
+		return "", "", "", nil, false
 	}
 }
 
@@ -327,6 +395,20 @@ func (p *AnalyticsPublisher) marshalData(ctx context.Context, e shared.DomainEve
 			attrTaskID:   string(ev.TaskId),
 			attrTaskType: p.taskType(ctx, ev.TaskId),
 		}), true
+	case shared.PackageSealed, shared.WeightDiscrepancyDetected, shared.LabelApplied,
+		shared.PackageDiverted, shared.PackageManifested:
+		return p.marshalPackage(ctx, e)
+	case shared.WorkBatchFormed, shared.WorkBatchCompleted, shared.WorkBatchAbandoned:
+		return p.marshalWorkBatch(e)
+	default:
+		return "", "", "", nil, false
+	}
+}
+
+// marshalPackage maps the Package* occurrences (sealed, weighed, labelled,
+// diverted, manifested) so marshalData stays under the complexity gate.
+func (p *AnalyticsPublisher) marshalPackage(ctx context.Context, e shared.DomainEvent) (entity, eventName, key string, data json.RawMessage, ok bool) {
+	switch ev := e.(type) {
 	case shared.PackageSealed:
 		data := map[string]any{attrPackageID: string(ev.PackageId)}
 		// Optional and additive (ADR 0056): present only when the package
@@ -355,18 +437,24 @@ func (p *AnalyticsPublisher) marshalData(ctx context.Context, e shared.DomainEve
 			attrPackageID: string(ev.PackageId),
 		}), true
 	case shared.PackageManifested:
-		taskType, stationId, onTime, resolved := p.onTimeToCPTFields(ctx, ev.OrderRef, ev.OccurredAt())
-		return entityPackage, "PackageManifested", string(ev.PackageId), mustMarshal(map[string]any{
-			attrPackageID: string(ev.PackageId),
-			"order_ref":   string(ev.OrderRef),
-			attrTaskType:  taskType,
-			attrStationID: stationId,
-			"on_time":     onTime,
-			"resolved":    resolved,
-		}), true
+		return p.marshalPackageManifested(ctx, ev)
 	default:
 		return "", "", "", nil, false
 	}
+}
+
+// marshalPackageManifested maps a PackageManifested occurrence, enriched with
+// the on-time-to-CPT correlation (ADR-0026) via the reports read model.
+func (p *AnalyticsPublisher) marshalPackageManifested(ctx context.Context, ev shared.PackageManifested) (entity, eventName, key string, data json.RawMessage, ok bool) {
+	taskType, stationId, onTime, resolved := p.onTimeToCPTFields(ctx, ev.OrderRef, ev.OccurredAt())
+	return entityPackage, "PackageManifested", string(ev.PackageId), mustMarshal(map[string]any{
+		attrPackageID: string(ev.PackageId),
+		"order_ref":   string(ev.OrderRef),
+		attrTaskType:  taskType,
+		attrStationID: stationId,
+		"on_time":     onTime,
+		"resolved":    resolved,
+	}), true
 }
 
 // mustMarshal marshals a map whose shape is fully controlled by marshalData,

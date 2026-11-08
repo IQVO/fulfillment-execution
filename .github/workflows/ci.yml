@@ -271,8 +271,8 @@ jobs:
           go-version-file: go.mod
       - name: Install gremlins
         run: go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
-      - name: Mutation testing (fast subset — task aggregate)
-        run: gremlins unleash ./internal/domain/task
+      - name: Mutation testing (fast subset — task + workbatch aggregates)
+        run: gremlins unleash ./internal/domain/task ./internal/domain/workbatch
 
   # Supply-chain sensor: known CVEs in the dependency graph and in the Go
   # stdlib version this module builds against.

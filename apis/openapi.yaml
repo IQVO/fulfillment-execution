@@ -450,6 +450,240 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /stations/{stationId}/work-batches:
+    post:
+      operationId: formWorkBatch
+      tags: [Stations, Tasks]
+      summary: Form this station's pick walk (ADR 0063)
+      description: >
+        Pick batching behind the `PICK_BATCH_MODE` rollout gate. The anchor
+        is exactly the task `POST /stations/{stationId}/task-claims` with
+        `taskType: PICK` would return (the same claimer selects it), so
+        batching never changes who goes first; companions are the station's
+        interleaving-hint candidates inside the anchor's CPT band, in hint
+        rank order, kept only when the station can do them and the cart
+        segregation matrix allows sharing, up to the configured maximum
+        (default 4). A batch of one is valid; nothing waits for a batch to
+        fill. With the mode not `on` (the fleet default is `off`) the
+        surface answers 503 batch-mode-off and `task-claims` is the only
+        dispatch path, exactly as before.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - name: stationId
+          in: path
+          required: true
+          description: The station forming its walk, e.g. as registered via `POST /stations`.
+          schema:
+            type: string
+            example: station-1
+      responses:
+        "200":
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+          description: >
+            The anchor was claimed as an ordinary single task because it has
+            no pick face (ADR 0062): the claim stands, exactly as
+            `task-claims` would have left it, and no walk was formed. `batch`
+            is `null`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FormWorkBatchResponse"
+              example:
+                anchor_task_id: "20260101T120000.000000000"
+        "201":
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+          description: The walk formed. `Location` names the batch read resource.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FormWorkBatchResponse"
+              example:
+                batch:
+                  batch_id: wb-20260101T120000.000000000
+                  station_id: station-1
+                  status: OPEN
+                  cpt: "2026-01-01T18:00:00Z"
+                  formed_at: "2026-01-01T12:00:00Z"
+                  members:
+                    - task_id: "20260101T120000.000000000"
+                      stop_seq: 1
+                      compartment: 1
+                      state: OPEN
+                    - task_id: "20260101T120001.000000000"
+                      stop_seq: 2
+                      compartment: 2
+                      state: OPEN
+                anchor_task_id: "20260101T120000.000000000"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: No station is registered with this `stationId`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/station-not-found
+                title: Station not found
+                status: 404
+                detail: "usecases: station not found"
+                instance: /stations/station-1/work-batches
+        "409":
+          description: >
+            The station holds no claimable PICK right now (`no-claimable-task`),
+            or it already holds an OPEN batch (`station-has-open-batch`) —
+            a station walks one batch at a time.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/station-has-open-batch
+                title: Station already holds an open batch
+                status: 409
+                detail: "workbatch: station already holds an open batch"
+                instance: /stations/station-1/work-batches
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          description: >
+            `PICK_BATCH_MODE` is not `on` (the fleet default is `off`): the
+            batch surface is explicitly off, not broken. Use
+            `POST /stations/{stationId}/task-claims`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/batch-mode-off
+                title: Pick batching is off (PICK_BATCH_MODE)
+                status: 503
+                detail: "usecases: pick batching is off (PICK_BATCH_MODE)"
+                instance: /stations/station-1/work-batches
+
+  /work-batches/{batchId}:
+    get:
+      operationId: getWorkBatch
+      tags: [Stations, Tasks]
+      summary: Read one work batch (the station's walk)
+      description: >
+        The WorkBatch read side (ADR 0063): the batch, its status
+        (`OPEN`, `COMPLETED`, `ABANDONED`) and its stops in visit order with
+        their cart compartments and member states. A `DETACHED` member left
+        the walk early (its lease expired and the task returned to the pool).
+      parameters:
+        - name: batchId
+          in: path
+          required: true
+          description: The batch id, as returned by `POST /stations/{stationId}/work-batches`.
+          schema:
+            type: string
+            example: wb-20260101T120000.000000000
+      responses:
+        "200":
+          description: The batch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkBatchResponse"
+              example:
+                batch_id: wb-20260101T120000.000000000
+                station_id: station-1
+                status: OPEN
+                cpt: "2026-01-01T18:00:00Z"
+                formed_at: "2026-01-01T12:00:00Z"
+                members:
+                  - task_id: "20260101T120000.000000000"
+                    stop_seq: 1
+                    compartment: 1
+                    state: OPEN
+        "404":
+          description: No batch exists with this `batchId`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/batch-not-found
+                title: Work batch not found
+                status: 404
+                detail: "usecases: work batch not found"
+                instance: /work-batches/wb-1
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /work-batches/{batchId}/lease-renewals:
+    post:
+      operationId: renewWorkBatchLease
+      tags: [Stations, Tasks]
+      summary: Renew every open member's task lease (LeaseTogether)
+      description: >
+        The batch's lease is the union of its open members' task leases
+        (ADR 0063's LeaseTogether policy): one call renews every still-open
+        stop, so later stops of a long walk cannot expire mid-walk.
+        Completed members are not renewed; detached members are gone (the
+        sweep already returned them to the pool).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - name: batchId
+          in: path
+          required: true
+          description: The batch id whose walk is still in progress.
+          schema:
+            type: string
+            example: wb-20260101T120000.000000000
+      responses:
+        "204":
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+          description: Every open member's lease was renewed.
+        "400":
+          description: >
+            A missing or malformed `Idempotency-Key` header (the route is
+            behind the idempotency middleware, like every non-idempotent
+            POST that changes lease state).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/idempotency-key-required
+                title: An Idempotency-Key header is required
+                status: 400
+                detail: "the Idempotency-Key header is required on this route"
+                instance: /work-batches/wb-1/lease-renewals
+        "404":
+          description: No batch exists with this `batchId`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/batch-not-found
+                title: Work batch not found
+                status: 404
+                detail: "usecases: work batch not found"
+                instance: /work-batches/wb-1/lease-renewals
+        "409":
+          description: The batch is not OPEN (already completed or abandoned).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/batch-not-open
+                title: Batch is not open
+                status: 409
+                detail: "workbatch: batch is not open"
+                instance: /work-batches/wb-1/lease-renewals
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /stations/{stationId}/check-ins:
     post:
       operationId: checkInStation
@@ -2184,6 +2418,87 @@ components:
         orderRef: order-42
         requiredCapabilities: [pick]
         fragile: false
+
+    WorkBatchMember:
+      type: object
+      required: [task_id, stop_seq, compartment, state]
+      properties:
+        task_id:
+          type: string
+          description: The member PICK task's id.
+          example: 20260101T120000.000000000
+        stop_seq:
+          type: integer
+          minimum: 1
+          description: The 1-based visit order of this stop (hint rank order, ADR 0063 D6).
+          example: 1
+        compartment:
+          type: integer
+          minimum: 1
+          description: The cart position holding this task's items; v1 assigns it by stop order.
+          example: 1
+        state:
+          type: string
+          enum: [OPEN, COMPLETED, DETACHED]
+          description: >
+            The member's state inside the walk. DETACHED means the task's
+            lease expired and it returned to the pool through the existing
+            sweep.
+          example: OPEN
+
+    WorkBatchResponse:
+      type: object
+      required: [batch_id, station_id, status, cpt, formed_at, members]
+      properties:
+        batch_id:
+          type: string
+          description: Server-generated work batch id.
+          example: wb-20260101T120000.000000000
+        station_id:
+          type: string
+          description: The station holding the walk.
+          example: station-1
+        status:
+          type: string
+          enum: [OPEN, COMPLETED, ABANDONED]
+          description: >
+            OPEN while any member is still open; COMPLETED when the last
+            open member completed; ABANDONED when every member left without
+            completing.
+          example: OPEN
+        cpt:
+          type: string
+          format: date-time
+          description: The batch's priority band — every member shares this CPT instant.
+          example: "2026-01-01T18:00:00Z"
+        formed_at:
+          type: string
+          format: date-time
+          description: The formation instant; the walk's `walk_seconds` on WorkBatchCompleted is measured from it.
+          example: "2026-01-01T12:00:00Z"
+        members:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/WorkBatchMember"
+
+    FormWorkBatchResponse:
+      type: object
+      required: [anchor_task_id]
+      properties:
+        batch:
+          type: object
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/WorkBatchResponse"
+          description: >
+            The formed walk, or null when the anchor was claimed as an
+            ordinary single task because it has no pick face (ADR 0062) —
+            the claim stands exactly as `task-claims` would have left it.
+        anchor_task_id:
+          type: string
+          description: The task ClaimNext would have returned — batching never changes who goes first.
+          example: 20260101T120000.000000000
 
     TaskResponse:
       type: object

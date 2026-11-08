@@ -246,6 +246,12 @@ otel:
 # INVENTORY_STORAGE_BASE_URL is read again (ADR 0054: BREAK_CASE) and comes from
 # config.inventoryStorageBaseUrl above. The consumer groups come from
 # config.* above unless an entry here names them first.
+#
+# Pick batching (ADR 0063) is env-driven only: PICK_BATCH_MODE (off|shadow|on,
+# default off — the batch surface answers 503 batch-mode-off and task-claims
+# is the only dispatch path) and PICK_BATCH_MAXIMUM (default 4, the D4
+# placeholder until measured). Set them through extraEnv; the fleet default
+# stays off and needs no chart change.
 extraEnv: []
 
 # ---------------------------------------------------------------------------

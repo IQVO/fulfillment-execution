@@ -10,10 +10,10 @@
 #
 # Used by:
 #   - the `mutation-fast` CI job  -> gremlins unleash ./internal/domain/task
-#     (every push/PR; blocking; ~30s locally, 16 mutants as of ADR-0025's
-#     IsCPTMissed addition, up from 15)
+#     ./internal/domain/workbatch (every push/PR; blocking; the task
+#     aggregate plus the workbatch aggregate of ADR 0063)
 #   - the `mutation` CI job       -> gremlins unleash ./internal/domain
-#     (workflow_dispatch/schedule only; exhaustive; ~1m30s locally, 31 mutants)
+#     (workflow_dispatch/schedule only; exhaustive)
 #   - `make mutation-fast` / `make mutation` locally.
 
 silent: false

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -62,7 +63,9 @@ type batchFixture struct {
 	claim          *usecases.ClaimNext
 	ctx            context.Context
 	clock          *memory.FixedClock
-	nextBatchId    int
+	// nextBatchId is atomic: the concurrency test builds one use case per
+	// station from two goroutines, and both mint through it.
+	nextBatchId atomic.Int64
 }
 
 // newBatchFixture seeds one station (caps "pick") and the given tasks, and
@@ -110,14 +113,13 @@ func newBatchFixture(t *testing.T, now time.Time, seeds []pickSeed) *batchFixtur
 // wired (re)builds the FormWorkBatch use case, so a test can attach a hint
 // lookup or classification overrides after seeding.
 func (fx *batchFixture) wired(hints ports.InterleavingHintLookup) *usecases.FormWorkBatch {
-	fx.nextBatchId++
 	return &usecases.FormWorkBatch{
 		Tasks:          fx.tasks,
 		Stations:       fx.stations,
 		Batches:        fx.batches,
 		Publisher:      fx.publisher,
 		Clock:          fx.clock,
-		NewBatchId:     func() shared.BatchId { return shared.BatchId(fmt.Sprintf("b-%d", fx.nextBatchId)) },
+		NewBatchId:     func() shared.BatchId { return shared.BatchId(fmt.Sprintf("b-%d", fx.nextBatchId.Add(1))) },
 		Hints:          hints,
 		Classification: fx.classification,
 		Mode:           usecases.BatchModeOn,
@@ -476,6 +478,13 @@ func TestFormWorkBatch_NoClaimableTask(t *testing.T) {
 
 // --- Two stations, one pool ------------------------------------------------------
 
+// formResult is one station's concurrent formation outcome.
+type formResult struct {
+	station shared.StationId
+	out     *usecases.FormWorkBatchOutcome
+	err     error
+}
+
 // TestFormWorkBatch_TwoStationsOnePoolNoTaskInTwoBatches: two stations form
 // concurrently from one shared pool; no task may end up claimed by — or a
 // member of — both.
@@ -491,17 +500,12 @@ func TestFormWorkBatch_TwoStationsOnePoolNoTaskInTwoBatches(t *testing.T) {
 		t.Fatalf("seed s-2: %v", err)
 	}
 	var wg sync.WaitGroup
-	type result struct {
-		station shared.StationId
-		out     *usecases.FormWorkBatchOutcome
-		err     error
-	}
-	results := make(chan result, 2)
+	results := make(chan formResult, 2)
 	form := func(id shared.StationId) {
 		defer wg.Done()
 		uc := fx.wired(nil)
 		out, err := uc.Execute(fx.ctx, id)
-		results <- result{station: id, out: out, err: err}
+		results <- formResult{station: id, out: out, err: err}
 	}
 	wg.Add(2)
 	go form("s-1")
@@ -509,8 +513,29 @@ func TestFormWorkBatch_TwoStationsOnePoolNoTaskInTwoBatches(t *testing.T) {
 	wg.Wait()
 	close(results)
 
-	owner := make(map[shared.TaskId]shared.StationId)
-	batchCount := 0
+	owner, batchCount := collectBatchOwners(t, results)
+	if batchCount == 0 {
+		t.Fatal("no batch formed at all")
+	}
+	// Every claimed task belongs to exactly one batch or was claimed
+	// singly; none is Pending and claimed at once.
+	for _, s := range seeds {
+		tk, err := fx.tasks.FindById(fx.ctx, shared.TaskId(s.id))
+		if err != nil || tk == nil {
+			t.Fatalf("find %s: %v", s.id, err)
+		}
+		if st, ok := owner[tk.Id()]; ok && st != tk.Lease().StationId {
+			t.Fatalf("task %s member of %s's batch but leased to %v", tk.Id(), st, tk.Lease().StationId)
+		}
+	}
+}
+
+// collectBatchOwners folds the two stations' outcomes into the
+// task -> owning-station map, asserting along the way that each batch
+// belongs to its forming station and no task is a member of two batches.
+func collectBatchOwners(t *testing.T, results <-chan formResult) (owner map[shared.TaskId]shared.StationId, batchCount int) {
+	t.Helper()
+	owner = make(map[shared.TaskId]shared.StationId)
 	for res := range results {
 		if res.err != nil {
 			t.Fatalf("station %s: %v", res.station, res.err)
@@ -529,20 +554,7 @@ func TestFormWorkBatch_TwoStationsOnePoolNoTaskInTwoBatches(t *testing.T) {
 			owner[id] = res.station
 		}
 	}
-	if batchCount == 0 {
-		t.Fatal("no batch formed at all")
-	}
-	// Every claimed task belongs to exactly one batch or was claimed
-	// singly; none is Pending and claimed at once.
-	for _, s := range seeds {
-		tk, err := fx.tasks.FindById(fx.ctx, shared.TaskId(s.id))
-		if err != nil || tk == nil {
-			t.Fatalf("find %s: %v", s.id, err)
-		}
-		if st, ok := owner[tk.Id()]; ok && st != tk.Lease().StationId {
-			t.Fatalf("task %s member of %s's batch but leased to %v", tk.Id(), st, tk.Lease().StationId)
-		}
-	}
+	return owner, batchCount
 }
 
 // --- LeaseTogether / renew -------------------------------------------------------

@@ -58,41 +58,37 @@ func (uc *RenewWorkBatchLease) Execute(ctx context.Context, batchId shared.Batch
 		return workbatch.ErrBatchNotOpen
 	}
 	now := uc.Clock.Now()
+	var firstErr error
+	for _, m := range b.OpenMembers() {
+		if err := uc.renewMember(ctx, b.StationId(), m.TaskId, now); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// renewMember renews one open member's task lease. A member whose lease
+// already expired frees to Pending and answers ErrNotClaimed (the sweep
+// will detach it from the batch — not the renewal's failure to report), and
+// a member whose task already completed (bookkeeping not yet in step) is
+// equally not a failure; every other problem is returned.
+func (uc *RenewWorkBatchLease) renewMember(ctx context.Context, stationId shared.StationId, taskId shared.TaskId, now time.Time) error {
+	t, err := uc.Tasks.FindById(ctx, taskId)
+	if err != nil {
+		return err
+	}
+	if t == nil {
+		return nil
+	}
 	duration := uc.LeaseDuration
 	if duration <= 0 {
 		duration = DefaultLeaseDuration
 	}
-	var firstErr error
-	for _, m := range b.OpenMembers() {
-		t, err := uc.Tasks.FindById(ctx, m.TaskId)
-		if err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
+	if err := t.RenewLease(stationId, now, duration); err != nil {
+		if errors.Is(err, task.ErrNotClaimed) || errors.Is(err, task.ErrAlreadyCompleted) {
+			return nil
 		}
-		if t == nil {
-			continue
-		}
-		if err := t.RenewLease(b.StationId(), now, duration); err != nil {
-			// A member whose lease already expired frees to Pending and
-			// answers ErrNotClaimed: the sweep will detach it from the
-			// batch. Not the renewal's failure to report. A member whose
-			// task already completed (bookkeeping not yet in step) is
-			// equally not a failure.
-			if errors.Is(err, task.ErrNotClaimed) || errors.Is(err, task.ErrAlreadyCompleted) {
-				continue
-			}
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		if err := uc.Tasks.Save(ctx, t); err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-		}
+		return err
 	}
-	return firstErr
+	return uc.Tasks.Save(ctx, t)
 }

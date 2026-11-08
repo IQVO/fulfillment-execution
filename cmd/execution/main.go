@@ -16,6 +16,10 @@
 //	TASK_INTERLEAVING_CONSUMER_GROUP       stable group of the InterleavingHintIssued consumer (REQUIRED)
 //	PRODUCT_CLASSIFICATION_MODE            kafka (default); permissive/off/http are boot errors
 //	TASK_INTERLEAVING_MODE                 kafka (default); permissive/off are boot errors
+//	PICK_BATCH_MODE                        off (default) | shadow | on — the pick-batching
+//	                                       rollout gate (ADR 0063); anything else is a boot
+//	                                       error. PICK_BATCH_MAXIMUM (default 4) is the D4
+//	                                       batch-size setting, a tuning knob.
 //	EVENT_PUBLISHER                        kafka (default); log is a boot error
 //	OUTBOX_RELAY_INTERVAL, OUTBOX_MAX_ATTEMPTS, PATH_CATALOGUE_SOURCE, PATH_CATALOGUE_FILE,
 //	LOCATION_ROLE_MODE, FACILITY_LAYOUT_BASE_URL, HTTP_ADDR, LOG_LEVEL, OTEL_*

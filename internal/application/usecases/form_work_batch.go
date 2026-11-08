@@ -145,57 +145,10 @@ func (uc *FormWorkBatch) Execute(ctx context.Context, stationId shared.StationId
 		return &FormWorkBatchOutcome{AnchorTaskId: anchor.Id()}, nil
 	}
 
-	members := []workbatch.Member{uc.memberOf(ctx, anchor, 0)}
-	classes := []int{members[0].HazardClass}
-	if len(members) < uc.maximum() {
-		st, err := uc.core().station(ctx, stationId)
-		if err != nil {
-			return nil, err
-		}
-		for _, companion := range uc.companions(ctx, stationId, anchor, now) {
-			if len(members) >= uc.maximum() {
-				break
-			}
-			// The station's capability gate is the same predicate the
-			// anchor passed (task.Claim's own HasAll): a companion the
-			// station cannot do is skipped, never an error.
-			if !st.capabilities.HasAll(companion.RequiredCapabilities()) {
-				continue
-			}
-			// The cart segregation filter (model invariant): a hazard
-			// class that may not share the cart with an already-chosen
-			// member skips the companion, never fails the batch.
-			m := uc.memberOf(ctx, companion, uc.rankOf(ctx, stationId, companion, now))
-			conflict := false
-			for _, class := range classes {
-				if pack.IsSegregationIncompatible(class, m.HazardClass) {
-					conflict = true
-					break
-				}
-			}
-			if conflict {
-				continue
-			}
-			if err := companion.Claim(stationId, st.capabilities, now, uc.core().leaseDuration()); err != nil {
-				return nil, err
-			}
-			won, err := uc.core().persistClaim(ctx, companion, stationId, now)
-			if err != nil {
-				return nil, err
-			}
-			if !won {
-				// Another station won this companion; the batch forms
-				// without it (per-task compare-and-set, ADR-0003).
-				continue
-			}
-			if uc.Metrics != nil {
-				uc.Metrics.TaskClaimed(ctx, companion.Type())
-			}
-			members = append(members, m)
-			classes = append(classes, m.HazardClass)
-		}
+	members, err := uc.walkMembers(ctx, stationId, anchor, now)
+	if err != nil {
+		return nil, err
 	}
-
 	b, err := workbatch.Form(uc.NewBatchId(), stationId, uc.maximum(), anchor.CPT().Time(), members, now)
 	if err != nil {
 		return nil, err
@@ -209,6 +162,66 @@ func (uc *FormWorkBatch) Execute(ctx context.Context, stationId shared.StationId
 		return nil, err
 	}
 	return &FormWorkBatchOutcome{Batch: b, AnchorTaskId: anchor.Id()}, nil
+}
+
+// walkMembers builds the walk around the anchor: the anchor first, then the
+// hinted companions that may join it (see companions), each claimed through
+// the per-task compare-and-set, until the configured maximum. Losing a
+// companion — another station won it, the station cannot do it, or the cart
+// segregation matrix forbids sharing — skips it, never fails the batch.
+func (uc *FormWorkBatch) walkMembers(ctx context.Context, stationId shared.StationId, anchor *task.Task, now time.Time) ([]workbatch.Member, error) {
+	members := []workbatch.Member{uc.memberOf(ctx, anchor, 0)}
+	if len(members) >= uc.maximum() {
+		return members, nil
+	}
+	st, err := uc.core().station(ctx, stationId)
+	if err != nil {
+		return nil, err
+	}
+	classes := []int{members[0].HazardClass}
+	for _, companion := range uc.companions(ctx, stationId, anchor, now) {
+		if len(members) >= uc.maximum() {
+			break
+		}
+		m, won := uc.tryCompanion(ctx, stationId, st, companion, classes, now)
+		if !won {
+			continue
+		}
+		members = append(members, m)
+		classes = append(classes, m.HazardClass)
+	}
+	return members, nil
+}
+
+// tryCompanion claims one companion candidate for the walk. The station's
+// capability gate is the same predicate the anchor passed (task.Claim's own
+// HasAll), and the cart segregation filter (model invariant) checks the
+// candidate's hazard class against every already-chosen member: an unfit
+// candidate is skipped, never an error. won is true only when the claim
+// compare-and-set succeeded.
+func (uc *FormWorkBatch) tryCompanion(ctx context.Context, stationId shared.StationId, st *stationTaskView, companion *task.Task, classes []int, now time.Time) (m workbatch.Member, won bool) {
+	if !st.capabilities.HasAll(companion.RequiredCapabilities()) {
+		return workbatch.Member{}, false
+	}
+	m = uc.memberOf(ctx, companion, uc.rankOf(ctx, stationId, companion, now))
+	for _, class := range classes {
+		if pack.IsSegregationIncompatible(class, m.HazardClass) {
+			return workbatch.Member{}, false
+		}
+	}
+	if err := companion.Claim(stationId, st.capabilities, now, uc.core().leaseDuration()); err != nil {
+		return workbatch.Member{}, false
+	}
+	won, err := uc.core().persistClaim(ctx, companion, stationId, now)
+	if err != nil || !won {
+		// Another station won this companion; the batch forms without it
+		// (per-task compare-and-set, ADR-0003).
+		return workbatch.Member{}, false
+	}
+	if uc.Metrics != nil {
+		uc.Metrics.TaskClaimed(ctx, companion.Type())
+	}
+	return m, true
 }
 
 // companions returns the station's hinted candidates that could still join

@@ -1,0 +1,1 @@
+{"parameters":[{"name":"batchId","in":"path","required":true,"description":"The batch id, as returned by `POST /stations/{stationId}/work-batches`.","schema":{"type":"string","example":"wb-20260101T120000.000000000"}}]}
