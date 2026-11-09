@@ -3,12 +3,12 @@ id: domain-events
 title: Domain events
 sidebar_label: Domain events
 sidebar_position: 3
-description: All thirteen past-tense domain events raised by this bounded context — full CloudEvents type, topic, partition key, payload, producing use case and known consumers — plus the events consumed from upstream.
+description: All twenty past-tense domain events raised by this bounded context — full CloudEvents type, topic, partition key, payload, producing use case and known consumers — plus the events consumed from upstream.
 ---
 
 # Domain events
 
-Thirteen past-tense facts, all defined in `internal/domain/shared/events.go`.
+Twenty past-tense facts, all defined in `internal/domain/shared/events.go`.
 Every one satisfies the same tiny interface:
 
 ```go
@@ -74,13 +74,16 @@ errored — that is how the two Rebin events stay in-process.
 | `TransferPicked` | `com.warehouse.wes.fulfillment-execution.transfer.TransferPicked` | `CompleteTask` (task with a TRANSFER_PICK correlation block) | `TaskId`, correlation block | `transfer_ref`, `demand_id`?, `work_unit_id`, `task_id`, `work_kind`, `site_id`?, `sku`?, `quantity`? | `task_id` |
 | `TransferDispatched` | `com.warehouse.wes.fulfillment-execution.transfer.TransferDispatched` | `CompleteTask` (TRANSFER_DISPATCH) | `TaskId`, correlation block | same shape as `TransferPicked` | `task_id` |
 | `TransferArrived` | `com.warehouse.wes.fulfillment-execution.transfer.TransferArrived` | `CompleteTask` (TRANSFER_ARRIVAL) | `TaskId`, correlation block | same shape as `TransferPicked` | `task_id` |
+| `WorkBatchFormed` | `com.warehouse.wes.fulfillment-execution.workbatch.WorkBatchFormed` | `FormWorkBatch` (only with `PICK_BATCH_MODE=on`) | `BatchId`, `StationId`, CPT, member facts, version | `batch_id`, `station_id`, `cpt`, `formed_at`, `version`, `members[]` (`task_id`, `stop_seq`, `compartment`) ([ADR-0063](../adr/0063-work-batches-formed-at-assignment-behind-a-mode-gate.md)) | same `data` |
+| `WorkBatchCompleted` | `com.warehouse.wes.fulfillment-execution.workbatch.WorkBatchCompleted` | `CompleteTask` (the last open member completes) | `BatchId`, `StationId`, member count, walk seconds, version | `batch_id`, `station_id`, `member_count`, `walk_seconds`, `completed_at`, `version` | same `data` |
+| `WorkBatchAbandoned` | `com.warehouse.wes.fulfillment-execution.workbatch.WorkBatchAbandoned` | `ExpireLeases` (the last open member detaches) | `BatchId`, `StationId`, member count, version | `batch_id`, `station_id`, `member_count`, `abandoned_at`, `version` | same `data` |
 | `ItemArrivedAtRebin` | *(none — never encoded)* | `ArriveAtRebin` | `OrderRef`, `LineId` | — | — |
 | `OrderConsolidated` | *(none — never encoded)* | `ArriveAtRebin` (completing arrival) | `OrderRef` | — | — |
 
 `?` marks a field tagged `omitempty` — omitted when the value is unavailable
 (no occupant checked in, no recorded claim, task no longer found). The
-partition key is the task id for every `task.*` row and the package id for
-every `package.*` row.
+partition key is the task id for every `task.*` row, the package id for
+every `package.*` row and the batch id for every `workbatch.*` row.
 
 Source: `internal/domain/shared/events.go`,
 `internal/adapters/outbound/kafka/publisher.go` (`inIntegrationContract`,
@@ -94,11 +97,13 @@ Source: `internal/domain/shared/events.go`,
 :::caution[Published is not the same as defined]
 Only **`TaskAvailable`, `TaskClaimed`, `TaskCompleted`, `TaskCPTMissed`,
 `PackageManifested`, `PackageDiverted` and `WeightDiscrepancyDetected`**
-(plus the three transfer facts) form the integration contract — the two
+(plus the three transfer facts and the three `WorkBatch*` facts) form the integration contract — the two
 package exception facts were promoted from the analytics topic for
 exception-management ([ADR-0053](../adr/0053-promote-package-exception-facts-to-integration-topic.md)).
 Ten events go to the analytics topic (everything but
-`TaskAvailable`, `TaskCPTMissed` and the two Rebin events). `ItemArrivedAtRebin` and
+`TaskAvailable`, `TaskCPTMissed` and the two Rebin events), plus the three
+`WorkBatch*` occurrences, which are published on both topics only with
+`PICK_BATCH_MODE=on`. `ItemArrivedAtRebin` and
 `OrderConsolidated` (ADR-0016) are in neither allowlist and are not in
 `apis/asyncapi.yaml`; if they are ever published their entity would be
 `orderconsolidation`.
@@ -118,6 +123,7 @@ because it is part of the intended model.
 | `warehouse.fulfillment.events` | `com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed`, `com.warehouse.wes.fulfillment-execution.package.PackageManifested` | `order-management` | `RepromiseOrder` promise feedback loop ([ADR-0025](../adr/0025-cpt-missed-sweep-and-package-manifested.md)) |
 | `warehouse.fulfillment.events` | `...package.PackageDiverted`, `...package.WeightDiscrepancyDetected` | `exception-management` (planned) | Opens its problem-solve case on the divert ([ADR-0053](../adr/0053-promote-package-exception-facts-to-integration-topic.md)) |
 | `warehouse.fulfillment.events` | `...transfer.TransferPicked`, `...transfer.TransferDispatched`, `...transfer.TransferArrived` | `network-inventory-planning` (transfer saga), destination receipt/stow | Transfer custody facts, one per completed transfer task, selected by `work_kind` ([ADR-0036](../adr/0036-transfer-task-types-and-facts.md)) |
+| `warehouse.fulfillment.events` | `...workbatch.WorkBatchFormed`, `...workbatch.WorkBatchCompleted`, `...workbatch.WorkBatchAbandoned` | `labor-performance` (batch-size reporting), `warehouse-console` (planned) | Per-walk facts; with `TaskCompleted.batch_id` / `batch_size` labor-performance reports batched and single picks apart ([ADR-0063](../adr/0063-work-batches-formed-at-assignment-behind-a-mode-gate.md)) |
 | `warehouse.fulfillment.analytics` | `...task.TaskClaimed`, `...task.TaskCompleted`, `...task.LeaseExpired`, `...package.WeightDiscrepancyDetected`, `...package.PackageManifested` | this service's `cmd/fulfillment-projector`, group `fulfillment-analytics` | Projects the throughput rollup ([Throughput report](../analytics/throughput-report.md)); every other analytics type is acknowledged without projecting |
 
 The downstream consumers are the ones listed in `apis/asyncapi.yaml`; their
