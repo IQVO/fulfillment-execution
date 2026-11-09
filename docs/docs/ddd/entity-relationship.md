@@ -3,7 +3,7 @@ id: entity-relationship
 title: Entity-relationship diagram
 sidebar_label: Entity-relationship diagram
 sidebar_position: 16
-description: ER diagrams of the final Fulfillment Execution schemas — the OLTP database after migrations 0001 to 0024 and the separate analytics database after analytics migrations 0001 and 0002 — with the table-to-aggregate mapping.
+description: ER diagrams of the final Fulfillment Execution schemas — the OLTP database after migrations 0001 to 0027 and the separate analytics database after analytics migrations 0001 and 0002 — with the table-to-aggregate mapping.
 ---
 
 # Entity-relationship diagram
@@ -13,20 +13,22 @@ startup:
 
 - **OLTP** (`DATABASE_URL`, migrated over `MIGRATIONS_DATABASE_URL` when
   set — [ADR-0031](../adr/0031-migrations-direct-postgres-connection.md))
-  — `migrations/0001` to `0024`, applied by `cmd/execution`.
+  — `migrations/0001` to `0027`, applied by `cmd/execution`, `cmd/mcp` and `cmd/a2a` (each runs the migrations at boot).
 - **Analytics** (`ANALYTICS_DATABASE_URL`) — `migrations/analytics/0001`
   and `0002`, applied by `cmd/fulfillment-projector` and read by
   `cmd/fulfillment-reports` ([ADR-0012](../adr/0012-analytical-data-product.md)).
 
-Without `DATABASE_URL`, `cmd/execution` runs on the in-memory adapters and
-none of this exists.
+`DATABASE_URL` is mandatory: there is no in-memory mode
+([ADR-0052](../adr/0052-postgres-and-kafka-are-the-only-runtime.md)).
 
-**There is not a single `FOREIGN KEY` in either schema**, so the diagrams
-draw no relationship lines. The logical links are explained below the
-diagrams — each one crosses an aggregate boundary, which is exactly why it
-is held by id and not by a constraint.
+**There is exactly one `FOREIGN KEY` in either schema**:
+`work_batch_members.batch_id` → `work_batches.id` (`ON DELETE CASCADE`,
+migration 0027) — a member row is part of its `WorkBatch` aggregate and has no
+meaning without it. Every other link is held by id. The logical links are
+explained below the diagrams — each one crosses an aggregate boundary, which
+is exactly why it is held by id and not by a constraint.
 
-## OLTP schema (final, after 0024)
+## OLTP schema (final, after 0027)
 
 ```mermaid
 erDiagram
@@ -77,6 +79,8 @@ erDiagram
         text break_sku "0023, nullable"
         text break_loose_bin "0023, nullable"
         text break_pick_task_id "0023, nullable - the EACH pick that found only the case"
+        text pick_site_id "0025, nullable - site the PICK plan is worked at"
+        timestamptz work_started_at "0026, nullable - NULL means the claim time; set only for work batch members"
     }
     stations {
         text id PK
@@ -105,6 +109,28 @@ erDiagram
         text_array required_lines
         text_array arrived_lines
     }
+    work_batches {
+        text id PK
+        text station_id "partial unique where status = OPEN, 0027"
+        timestamptz cpt "the anchor's priority band"
+        text status "OPEN, COMPLETED, ABANDONED"
+        bigint version
+        timestamptz formed_at
+        timestamptz completed_at "nullable"
+        timestamptz abandoned_at "nullable"
+    }
+    work_batch_members {
+        text batch_id PK "FK to work_batches.id, ON DELETE CASCADE, 0027"
+        text task_id PK "indexed, logical link to tasks.id"
+        timestamptz cpt
+        text from_bin
+        integer hazard_class
+        integer hint_rank
+        integer stop_seq
+        integer compartment
+        text state "OPEN, COMPLETED, DETACHED"
+    }
+    work_batches ||--o{ work_batch_members : "holds"
     product_classification_copy {
         text sku PK
         text_array handling_tags
@@ -169,7 +195,7 @@ erDiagram
     }
 ```
 
-Source: `migrations/0001_init.up.sql` to `migrations/0024_pack_view_dims_package_container.up.sql`,
+Source: `migrations/0001_init.up.sql` to `migrations/0027_work_batch.up.sql`,
 applied in order; `0018_drop_domain_events` removed the legacy `domain_events` table
 ([ADR-0045](../adr/0045-drop-legacy-domain-events-table.md)); `schema_migrations` is golang-migrate's own table
 (`internal/adapters/outbound/postgres/migrate.go`). Array columns are shown
@@ -224,6 +250,8 @@ Source: `migrations/analytics/0001_report.up.sql`,
 | From | To | Why there is no FK |
 | --- | --- | --- |
 | `packages.task_id` | `tasks.id` | `Package` and `Task` are separate aggregates; `SealPackage` checks the task in the application layer. The partial unique index enforces one package per PACK task. |
+| `work_batch_members.task_id` | `tasks.id` | A member is a snapshot of a task at formation (pick face, CPT instant, hazard class); the batch never re-reads the task pool and the two aggregates change in separate transactions ([ADR-0063](../adr/0063-work-batches-formed-at-assignment-behind-a-mode-gate.md)). |
+| `work_batches.station_id` | `stations.id` | Held by id; the one-open-batch-per-station rule is the partial unique index `work_batches_one_open_per_station`. |
 | `tasks.lease_station_id` | `stations.id` | The lease names its owner by id; a station can be re-registered without touching tasks. |
 | `tasks.order_ref`, `packages.order_ref`, `order_consolidations.order_ref` | upstream `work_unit_id` | Not a table here at all — an opaque id from `wes-work-planning`. |
 | `product_classification_copy.sku`, `pack_view.gtin` / `.sku` | product-master | Local copies fed by `ProductClassified` and `ProductPackLevelDeclared` / `ProductPackLevelRetired` events ([ADR-0039](../adr/0039-product-classification-local-copy.md), [ADR-0054](../adr/0054-case-and-each-pick-scans-and-break-case-task.md)); the producer owns the keys. |
@@ -238,6 +266,8 @@ Source: `migrations/analytics/0001_report.up.sql`,
 | `stations` | `station.Station` | aggregate |
 | `packages` | `pack.Package` | aggregate |
 | `order_consolidations` | `consolidation.OrderConsolidation` | aggregate |
+| `work_batches` | `workbatch.WorkBatch`, the aggregate root: one station's pick walk ([ADR-0063](../adr/0063-work-batches-formed-at-assignment-behind-a-mode-gate.md)); with `PICK_BATCH_MODE` off (the fleet default) no row is ever written | aggregate |
+| `work_batch_members` | the batch's member snapshots (`workbatch.Member`), stored with and only through their `WorkBatch`; `tasks.work_started_at` is the per-stop work clock ([ADR-0064](../adr/0064-per-stop-work-clock-behind-the-batch.md)) | aggregate (part) |
 | `product_classification_copy` | local copy of product-master's classifications, read by `SealPackage`'s `ProductClassificationLookup` ([ADR-0039](../adr/0039-product-classification-local-copy.md)) | local copy |
 | `interleaving_hints` | local copy of task-interleaving's advisory hints, read by `claimNext` as a tie-break ([ADR-0051](../adr/0051-interleaving-hints-advise-claimnext.md)) | local copy |
 | `pack_view` | local copy of product-master's pack levels keyed by GTIN, read by the pick scan confirmation ([ADR-0054](../adr/0054-case-and-each-pick-scans-and-break-case-task.md)); declared dims and the package container columns come from ship-in-own-container ([ADR-0056](../adr/0056-ship-in-own-container.md)) | local copy |

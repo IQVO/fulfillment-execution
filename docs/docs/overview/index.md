@@ -87,7 +87,7 @@ workforce planning.
   in-memory with just a process-path catalogue file, Postgres and the shared
   Kafka broker when you want the real thing, and a first curl session.
 - **[Configuration](../operations/configuration.md)** — every environment
-  variable of the four binaries.
+  variable of the six binaries.
 - **[Runbook](../operations/runbook.md)**,
   **[Observability](../operations/observability.md)** and
   **[Troubleshooting](../operations/troubleshooting.md)** — deploying,
