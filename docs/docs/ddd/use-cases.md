@@ -3,7 +3,7 @@ id: use-cases
 title: Use cases & ports
 sidebar_label: Use cases & ports
 sidebar_position: 4
-description: The nineteen application-layer use cases, the outbound ports they depend on, and the adapters that satisfy them.
+description: The application-layer use cases (including the three WorkBatch ones), the outbound ports they depend on, and the adapters that satisfy them.
 ---
 
 # Use cases & ports
@@ -12,7 +12,7 @@ The application layer is one struct per use case, each holding its
 dependencies as plain fields. There is no DI container and no base class. Each
 use case depends only on the domain and on `ports` — never on an adapter.
 
-## The nineteen use cases
+## The use cases
 
 One file each in `internal/application/usecases/`.
 
@@ -37,12 +37,17 @@ One file each in `internal/application/usecases/`.
 | 17 | `GetPackagesByOrderRef` | `Execute(ctx, orderRef) ([]*Package, error)` | — | `GET /packages?orderRef=` ([ADR-0033](../adr/0033-package-read-model.md)) |
 | 18 | `ApplyWorkReleased` | `Execute(ctx, WorkReleasedRequest) error` | `TaskCreated` (via `CreateTask`, once per CloudEvents `id`) | Kafka `WorkReleased` on `warehouse.work-planning.events`. Claims the event id in `processed_events`, resolves `path_id` through the catalogue (unknown path = error, retried then dead-lettered), saves the task, all in ONE `UnitOfWork` ([ADR-0036](../adr/0036-transfer-task-types-and-facts.md)). RELOCATE-path work must carry `data.relocation` and nothing else may; a violation is `ErrRelocationMoveMissing` / `ErrRelocationMoveOnOtherPath` ([ADR-0047](../adr/0047-relocate-tasks-execute-slot-plan-moves.md)); REPLENISH-path work must carry `data.replenishment` and nothing else may, a violation is `ErrReplenishmentMoveMissing` / `ErrReplenishmentMoveOnOtherPath` ([ADR-0050](../adr/0050-replenish-tasks-execute-pick-face-replenishment.md)) |
 | 19 | `ApplyProductClassified` | `Execute(ctx, ProductClassifiedRequest) error` | — | Kafka `ProductClassified` on `warehouse.product-master.events`, only with `PRODUCT_CLASSIFICATION_MODE=kafka`. Claims the event id and runs the version-guarded `UpsertIfNewer` into `product_classification_copy` in ONE `UnitOfWork` ([ADR-0039](../adr/0039-product-classification-local-copy.md)) |
+| 20 | `FormWorkBatch` | `Execute(ctx, stationId) (*FormWorkBatchOutcome, error)` | `WorkBatchFormed` | `POST /stations/{stationId}/work-batches`. Behind `PICK_BATCH_MODE=on`; any other mode returns `ErrBatchModeOff` (`503 batch-mode-off`). Claims the anchor through the same claimer as `ClaimNext`, then the hinted companions (per-task compare-and-set), forms the `WorkBatch` and saves it with the event in one `UnitOfWork`; an anchor without a pick face is claimed as an ordinary task and no batch forms ([ADR-0063](../adr/0063-work-batches-formed-at-assignment-behind-a-mode-gate.md)). |
+| 21 | `RenewWorkBatchLease` | `Execute(ctx, batchId) error` | — | `POST /work-batches/{batchId}/lease-renewals`. LeaseTogether: renews every open member's task lease; every member is attempted even when one fails. |
+| 22 | `GetWorkBatch` | `Execute(ctx, batchId) (*WorkBatch, error)` | — | `GET /work-batches/{batchId}`; MCP `get_work_batch`. `ErrBatchNotFound` is `404 batch-not-found`. |
 
 Source: `internal/application/usecases/` (one file per use case;
 `consume_work_released.go` holds `ApplyWorkReleased`). The scheduler for
 `ExpireLeases` and `SweepCPTMisses` is the chart's sweeps CronJob, which calls
 the two REST endpoints every 5 minutes
 ([ADR-0037](../adr/0037-sweeps-scheduled-by-cronjob-default-on.md)).
+
+`CompleteTask` and `ExpireLeases` also keep a task's work batch in step when a `WorkBatchRepo` is wired: a completion marks the member `COMPLETED` (the last one completes the batch and raises `WorkBatchCompleted`), and a lease expiry detaches the member (the last detach abandons the batch and raises `WorkBatchAbandoned`); each raises its batch event alongside the task's own events ([ADR-0063](../adr/0063-work-batches-formed-at-assignment-behind-a-mode-gate.md)).
 
 The MCP tools `find_claimable_work` and `diagnose_stuck_tasks` read
 `TaskRepo` directly through a narrow query port (`mcp.TaskQueries`) rather

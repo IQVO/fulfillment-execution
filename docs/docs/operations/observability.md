@@ -3,12 +3,12 @@ id: observability
 title: Observability
 sidebar_label: Observability
 sidebar_position: 3
-description: Every OpenTelemetry metric instrument the four binaries emit (name, type, unit, attributes), span names, structured log fields and key log messages, the OTLP exporter settings, the Grafana dashboard in warehouse-infra, and suggested alerts.
+description: Every OpenTelemetry metric instrument the five long-running binaries emit (name, type, unit, attributes), span names, structured log fields and key log messages, the OTLP exporter settings, the Grafana dashboard in warehouse-infra, and suggested alerts.
 ---
 
 # Observability
 
-All four binaries share one telemetry setup,
+All five long-running binaries (everything but the short-lived `cmd/sweep`) share one telemetry setup,
 `internal/observability/telemetry.go` (`observability.Setup`), following the
 fleet metrics convention ([ADR-0019](../adr/0019-standard-metrics-convention.md)).
 
@@ -53,7 +53,7 @@ changes state.
 | --- | --- | --- | --- | --- | --- |
 | `http.server.request.duration` | Float64 histogram (buckets 5ms … 10s) | `s` | `http.method`, `http.scheme`, `http.route` (the chi pattern). **No status-code attribute.** | `github.com/riandyrn/otelchi/metric` v0.12.3 | `cmd/execution`, `cmd/fulfillment-reports`, `cmd/mcp` routers. The projector's admin server is not instrumented. |
 | `pgxpool.acquires`, `pgxpool.acquire_duration`, `pgxpool.acquired_connections`, `pgxpool.canceled_acquires`, `pgxpool.constructing_connections`, `pgxpool.empty_acquire`, `pgxpool.empty_acquire_wait_time`, `pgxpool.idle_connections`, `pgxpool.max_connections`, `pgxpool.max_idle_destroys`, `pgxpool.max_lifetime_destroys`, `pgxpool.new_connections`, `pgxpool.total_connections` | observable counters / up-down counters / gauge | – | – | `github.com/exaring/otelpgx` v0.12.0 `RecordStats` | `cmd/execution` (with `DATABASE_URL`), `cmd/fulfillment-projector`, `cmd/fulfillment-reports`. `cmd/mcp` does **not** register pool stats. |
-| `go.memory.used`, `go.memory.limit`, `go.memory.allocated`, `go.memory.allocations`, `go.memory.gc.goal`, `go.goroutine.count`, `go.processor.limit`, `go.config.gogc` | runtime observables | various | – | `go.opentelemetry.io/contrib/instrumentation/runtime` v0.71.0 | all four binaries |
+| `go.memory.used`, `go.memory.limit`, `go.memory.allocated`, `go.memory.allocations`, `go.memory.gc.goal`, `go.goroutine.count`, `go.processor.limit`, `go.config.gogc` | runtime observables | various | – | `go.opentelemetry.io/contrib/instrumentation/runtime` v0.71.0 | all five long-running binaries |
 
 There is no metric for consumer lag, outbox backlog or DLQ volume. Use the
 broker's consumer-group lag, the SQL in the [Runbook](./runbook.md#routine-procedures)
@@ -65,7 +65,7 @@ and the log lines below.
 | --- | --- | --- | --- |
 | `<METHOD> <route pattern>`, for example `POST /tasks/{id}/completions` | server | every chi router (otelchi with `WithChiRoutes` and the method in the name) | Low-cardinality: the route pattern, not the raw path. |
 | `kafka.consume warehouse.work-planning.events` | consumer | `WorkReleased` consumer | Parent is the producer's span from the message headers, so a release in wes-work-planning and the task created here share one trace. The span covers all in-process retries. Attributes `messaging.system=kafka`, `messaging.destination.name`, `messaging.operation.name=process`. |
-| `kafka.consume warehouse.product-master.events` | consumer | `ProductClassified` consumer | Same attributes. |
+| `kafka.consume warehouse.product-master.events` | consumer | `ProductClassified` consumer and the pack-level consumer | Same attributes. |
 | `kafka.consume warehouse.fulfillment.analytics` | consumer | projector | Same attributes. |
 | `kafka.publish warehouse.fulfillment.events`, `kafka.publish warehouse.fulfillment.analytics` | producer | publishers in **direct** mode only (`EVENT_PUBLISHER=kafka` without `DATABASE_URL`) | With the outbox, the trace context of the request's span is written into the stored headers at encode time, so the downstream consumer span still joins the request's trace, but no publish span is recorded. |
 | `mcp.tool <tool name>`, for example `mcp.tool complete_task` | internal | every MCP tool call | Attribute `mcp.tool.name`; status `Error` with the message when the tool fails. |
