@@ -3,15 +3,15 @@ id: aggregates-and-invariants
 title: Aggregates & invariants
 sidebar_label: Aggregates & invariants
 sidebar_position: 2
-description: The four aggregate roots of this bounded context, every invariant each one enforces, the typed error it returns, and the HTTP status it maps to.
+description: The five aggregate roots of this bounded context, every invariant each one enforces, the typed error it returns, and the HTTP status it maps to.
 ---
 
 # Aggregates & invariants
 
-Four aggregate roots, each enforcing its own invariants in pure Go with no
+Five aggregate roots, each enforcing its own invariants in pure Go with no
 framework or SQL types anywhere near them. Every invariant listed here has a
 **failing-path** unit test — asserting the rule *rejects* the bad case, not
-merely that the happy path works. The ddd-crew view of the same four roots
+merely that the happy path works. The ddd-crew view of the same five roots
 (state transitions, handled commands, created events, throughput and size)
 is the [Aggregate Design Canvas](./aggregate-design-canvas.md).
 
@@ -212,6 +212,45 @@ the Rebin wall. Execution-scoped only — it does not model the order itself.
 | C1 | **Only required lines may arrive.** An arrival for a line outside the order's required set is rejected. | `OrderConsolidation.RecordArrival` | `consolidation.ErrUnknownLine` | `422` |
 | C2 | **Arrivals are idempotent.** Re-recording an arrived line is a no-op, and once complete the PACK task is created exactly once. | `RecordArrival`; `ArriveAtRebin`'s `wasAlreadyComplete` guard | — | — |
 
+## WorkBatch
+
+The pick walk ([ADR-0063](../adr/0063-work-batches-formed-at-assignment-behind-a-mode-gate.md)): the PICK tasks one station holds for one walk,
+formed at assignment time inside one priority band. It is **not a wave** —
+nothing waits for a batch to fill and a batch of one (the anchor alone) is
+valid. The aggregate (`internal/domain/workbatch`) is event-free and knows
+nothing about claiming or leases: the application layer claims each member
+through the existing per-task compare-and-set and publishes the events.
+Everything sits behind `PICK_BATCH_MODE` (`off` by default, see
+[Configuration](../operations/configuration.md)).
+
+| # | Invariant | Enforced in | Error | HTTP |
+| --- | --- | --- | --- | --- |
+| W1 | **Size is 1..maximum.** A batch has at least the anchor and at most `PICK_BATCH_MAXIMUM` (default 4) members. | `workbatch.Form` | `workbatch.ErrBatchSize` | — (the forming use case never offers more candidates than the maximum) |
+| W2 | **Every member is pickable.** A member is a PICK task with a planned `from_bin`; a blank pick face cannot be a stop. | `Form` | `workbatch.ErrMemberNotPickable` | — (an anchor without a pick face is claimed as an ordinary task and no batch forms, [ADR-0062](../adr/0062-pick-tasks-are-announced-to-the-open-task-pool.md)) |
+| W3 | **One priority band.** Every member shares the anchor's CPT instant, so a batch can never delay an earlier cutoff. | `Form` | `workbatch.ErrCrossesPriorityBand` | — (companions outside the band are skipped) |
+| W4 | **Cart segregation.** Member hazard classes must not conflict under the DOT segregation matrix; an unclassified SKU (class 0) never blocks. | `Form` → `pack.IsSegregationIncompatible` | `workbatch.ErrSegregationConflict` | — (conflicting companions are skipped) |
+| W5 | **One open batch per station.** A station that holds an `OPEN` batch cannot form another; the database backs it with the partial unique index `work_batches_one_open_per_station`. | `FormWorkBatch` over `WorkBatchRepo`; migration 0027 | `workbatch.ErrStationHasOpenBatch` | `409` `station-has-open-batch` |
+| W6 | **Anchor equivalence.** The anchor is exactly the task `ClaimNext` would return, because both use the same claimer. | `FormWorkBatch` shares `claim_core.go` with `ClaimNext` | — | — |
+| W7 | **Only an open batch changes.** Completing or detaching a member of a `COMPLETED` or `ABANDONED` batch is rejected. | `WorkBatch.CompleteMember` / `DetachMember` | `workbatch.ErrBatchNotOpen` | `409` `batch-not-open` |
+| W8 | **Member lifecycle.** A member goes `OPEN` → `COMPLETED` (the last completion flips the batch to `COMPLETED`) or `OPEN` → `DETACHED` (its lease expired and the sweep returned the task to the pool; detaching the last open member makes the batch `ABANDONED`). A repeated detach is a no-op. | `CompleteMember`, `DetachMember` | `workbatch.ErrMemberAlreadyCompleted`, `workbatch.ErrMemberDetached`, `workbatch.ErrMemberNotInBatch` | — |
+
+Companions are the station's active interleaving-hint candidates in rank
+order, kept only when still claimable, in the anchor's band, carrying a pick
+face, within the station's capabilities and segregation-safe; losing one to
+another station is a skip, never an error. Leases stay per task, and
+`POST /work-batches/{batchId}/lease-renewals` renews every still-open member
+together (LeaseTogether). The per-stop work clock — `tasks.work_started_at`,
+which makes a batched pick's `duration_seconds` run from the previous stop's
+completion — is [ADR-0064](../adr/0064-per-stop-work-clock-behind-the-batch.md).
+
+REST: `POST /stations/{stationId}/work-batches` (`201` with the batch, or `200`
+with `batch: null` and only `anchor_task_id` when the anchor had no pick
+face), `GET /work-batches/{batchId}` and
+`POST /work-batches/{batchId}/lease-renewals`. With the mode not `on` all
+three answer `503` `batch-mode-off`. MCP: the read-only `get_work_batch` tool.
+Events: `WorkBatchFormed`, `WorkBatchCompleted`, `WorkBatchAbandoned` (see
+[Domain events](./domain-events.md)).
+
 ## Consistency boundaries
 
 Each aggregate is one transaction. A use case never mutates two aggregates
@@ -222,6 +261,7 @@ inside one consistency boundary:
   **writes** the new `Package`.
 - `RunSlam` touches only the `Package`.
 - `CompleteTask` touches only the `Task`.
+- `FormWorkBatch` writes the `WorkBatch` and claims each member `Task` through the per-task compare-and-set; the batch holds a snapshot of the task facts it needs and never re-reads the task pool. `CompleteTask` and `ExpireLeases` keep the batch in step by loading and saving it themselves; the aggregates never reference each other.
 - `ArriveAtRebin` writes the `OrderConsolidation` and, on the completing
   arrival, creates a new PACK `Task` through `CreateTask` — a new aggregate,
   not a mutation of an existing one — inside the same unit of work.

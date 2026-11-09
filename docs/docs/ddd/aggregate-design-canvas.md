@@ -3,7 +3,7 @@ id: aggregate-design-canvas
 title: Aggregate design canvas
 sidebar_label: Aggregate design canvas
 sidebar_position: 12
-description: The ddd-crew Aggregate Design Canvas v1.1 for each of the four aggregate roots in Fulfillment Execution — Task, Station, Package and OrderConsolidation — with state transitions, enforced invariants, handled commands, created events and throughput/size estimates.
+description: The ddd-crew Aggregate Design Canvas v1.1 for each of the five aggregate roots in Fulfillment Execution — Task, Station, Package, OrderConsolidation and WorkBatch — with state transitions, enforced invariants, handled commands, created events and throughput/size estimates.
 ---
 
 # Aggregate design canvas
@@ -316,6 +316,73 @@ command per line. Contention is per order and serialized by the row lock.
 
 Small: one event per line plus one at completion, lifetime minutes, one
 row in `order_consolidations`.
+
+## WorkBatch
+
+### 1. Name
+
+`workbatch.WorkBatch` — `internal/domain/workbatch/workbatch.go`.
+
+### 2. Description
+
+The PICK tasks one station holds for one walk, formed at assignment time
+inside one priority band; a batch of one is valid and nothing waits for a
+batch to fill ([ADR-0063](../adr/0063-work-batches-formed-at-assignment-behind-a-mode-gate.md)). Members are snapshots (task id, CPT instant, pick
+face, hazard class, hint rank, stop sequence, cart compartment, state).
+
+### 3. State Transitions
+
+```mermaid
+stateDiagram-v2
+    [*] --> Open: Form - anchor plus companions claimed
+    Open --> Open: CompleteMember - more open members
+    Open --> Open: DetachMember - more open members
+    Open --> Completed: CompleteMember - last open member
+    Open --> Abandoned: DetachMember - last open member
+```
+
+Source: `internal/domain/workbatch/workbatch.go` (`Form`, `CompleteMember`,
+`DetachMember`). `Completed` and `Abandoned` are terminal: any further member
+command is `ErrBatchNotOpen`.
+
+### 4. Enforced Invariants
+
+W1–W8 on [Aggregates & invariants](./aggregates-and-invariants.md#workbatch):
+size 1..maximum, pickable members, one priority band, cart segregation, one
+open batch per station (partial unique index), anchor equivalence with
+`ClaimNext`, open-only changes, and the member lifecycle.
+
+### 5. Corrective Policies
+
+An expired member lease detaches that member when `ExpireLeases` returns the
+task to the pool; the last detach abandons the batch. `RenewWorkBatchLease`
+renews every open member together so a long walk cannot expire mid-walk.
+
+### 6. Handled Commands
+
+`FormWorkBatch` (`POST /stations/{stationId}/work-batches`),
+`RenewWorkBatchLease` (`POST /work-batches/{batchId}/lease-renewals`); member
+completion and detachment arrive through `CompleteTask` and `ExpireLeases`.
+The read is `GetWorkBatch` (`GET /work-batches/{batchId}`, MCP
+`get_work_batch`).
+
+### 7. Created Events
+
+`WorkBatchFormed`, `WorkBatchCompleted` and `WorkBatchAbandoned`
+(`com.warehouse.wes.fulfillment-execution.workbatch.*`, key and `subject` =
+the batch id) on both topics, only with `PICK_BATCH_MODE=on`. `TaskCompleted`
+gains the optional `batch_id` and `batch_size`.
+
+### 8. Throughput (estimate)
+
+Not estimated: the feature ships dark (`PICK_BATCH_MODE` defaults to `off`)
+and [ADR-0063](../adr/0063-work-batches-formed-at-assignment-behind-a-mode-gate.md) records that no reliable saving figure exists yet.
+
+### 9. Size (estimate)
+
+Not estimated. One `work_batches` row plus at most `PICK_BATCH_MAXIMUM`
+(default 4) `work_batch_members` rows per walk; no row is ever written while
+the mode is `off`.
 
 ## Read models and projections (not aggregates)
 

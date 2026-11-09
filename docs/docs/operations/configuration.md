@@ -3,12 +3,12 @@ id: configuration
 title: Configuration reference
 sidebar_label: Configuration
 sidebar_position: 1
-description: Every environment variable each of the four binaries reads (cmd/execution, cmd/mcp, cmd/fulfillment-projector, cmd/fulfillment-reports), with its default, whether it is required, what it does, and the file that reads it.
+description: Every environment variable each of the six binaries reads (cmd/execution, cmd/mcp, cmd/a2a, cmd/fulfillment-projector, cmd/fulfillment-reports, cmd/sweep), with its default, whether it is required, what it does, and the file that reads it.
 ---
 
 # Configuration reference
 
-The repository builds four binaries from one Go module (and one container
+The repository builds six binaries from one Go module (and one container
 image, see the `Dockerfile`). Each binary is configured **only** through
 environment variables, read in its composition root under `cmd/` plus the
 shared telemetry setup in `internal/observability/telemetry.go`. There is no
@@ -25,8 +25,8 @@ Conventions on this page:
 
 ## `cmd/execution` (the OLTP service)
 
-The main deployable: REST API, the `WorkReleased` and `ProductClassified`
-Kafka consumers, the optional process-path catalogue consumer, and the
+The main deployable: REST API, the `WorkReleased`, `ProductClassified`,
+`InterleavingHintIssued` and pack-level Kafka consumers, the optional process-path catalogue consumer, and the
 transactional-outbox relay.
 
 | Variable | Default | Required? | Meaning | Read in |
@@ -44,6 +44,10 @@ transactional-outbox relay.
 | `PATH_CATALOGUE_FILE` | `/etc/fulfillment-execution/process-paths.yaml` | **yes in `file` mode** | Process-path catalogue YAML. A missing or invalid file is a fatal boot error. Ignored in `kafka` mode. | `cmd/execution/main.go`, `internal/adapters/outbound/filecatalog/loader.go` |
 | `PRODUCT_CLASSIFICATION_MODE` | `kafka` | no | `kafka` is the only accepted value (unset = `kafka`, case-insensitive): the local copy of product-master's `ProductClassified` events (Postgres table `product_classification_copy`) is fed and read. `permissive`, `off`, `http` and anything else **fail the boot**. See [ADR-0039](../adr/0039-product-classification-local-copy.md) and [ADR-0052](../adr/0052-postgres-and-kafka-are-the-only-runtime.md). | `cmd/execution/classification.go` |
 | `PRODUCT_CLASSIFICATION_CONSUMER_GROUP` | *(none)* | **yes** | Stable consumer group for `warehouse.product-master.events`; unset is a boot error. A new group starts at the **earliest** offset so the copy sees the whole history. The chart and the kind cluster use `fulfillment-execution-product-classification`. | `cmd/execution/classification.go` |
+| `PACK_VIEW_CONSUMER_GROUP` | *(none)* | **yes** | Stable consumer group of the pack-level consumer: a **second** consumer of `warehouse.product-master.events` that feeds the local PackView (Postgres table `pack_view`) from `ProductPackLevelDeclared` / `ProductPackLevelRetired`, always on ([ADR-0054](../adr/0054-case-and-each-pick-scans-and-break-case-task.md)). Unset is the boot error `PACK_VIEW_CONSUMER_GROUP is required`; a value equal to `PRODUCT_CLASSIFICATION_CONSUMER_GROUP` is the boot error `PACK_VIEW_CONSUMER_GROUP must differ from PRODUCT_CLASSIFICATION_CONSUMER_GROUP` (a shared group would split the topic's partitions between the two consumers). A new group starts at the **earliest** offset so the PackView fills from history. Chart value `config.packViewConsumerGroup` (`fulfillment-execution-pack-view`). | `cmd/execution/packview.go` |
+| `INVENTORY_STORAGE_BASE_URL` | *(none)* | **yes** | Base URL of inventory-storage's REST API. Completing a `BREAK_CASE` task calls `POST <base>/containers/{lpn}/case-breaks` (5 s timeout, `Idempotency-Key` header), so there is no degraded mode without it: unset or blank is the boot error `INVENTORY_STORAGE_BASE_URL is required` ([ADR-0054](../adr/0054-case-and-each-pick-scans-and-break-case-task.md)). Chart value `config.inventoryStorageBaseUrl` (`http://inventory-storage.warehouse-systems.svc.cluster.local:80`). | `cmd/execution/config.go`, `internal/adapters/outbound/inventorystorage/client.go` |
+| `PICK_BATCH_MODE` | `off` | no | Pick-batching rollout gate ([ADR-0063](../adr/0063-work-batches-formed-at-assignment-behind-a-mode-gate.md)): `off`, `shadow` or `on`. Only `on` forms work batches; with `off` or `shadow` the work-batch routes answer `503 batch-mode-off`, no batch row is written and no `WorkBatch*` event is published. Any other value is a boot error (`PICK_BATCH_MODE: ...`). No chart value: set it through `extraEnv`. | `cmd/execution/config.go`, `cmd/execution/wire_handlers.go` |
+| `PICK_BATCH_MAXIMUM` | `4` | no | Maximum members of one work batch (a tuning knob, never a boot error). Unset, malformed or non-positive keeps `4`. No chart value: set it through `extraEnv`. | `cmd/execution/wire_handlers.go`, `cmd/execution/env.go` |
 | `TASK_INTERLEAVING_MODE` | `kafka` | no | `kafka` is the only accepted value; `permissive`, `off` and anything else fail the boot. See [ADR-0051](../adr/0051-interleaving-hints-advise-claimnext.md). | `cmd/execution/interleaving.go` |
 | `TASK_INTERLEAVING_CONSUMER_GROUP` | *(none)* | **yes** | Stable consumer group for `warehouse.task-interleaving.events`; unset is a boot error. A brand-new group starts at the **latest** offset (hints are short-lived). The chart and the kind cluster use `fulfillment-execution-interleaving`. | `cmd/execution/interleaving.go` |
 | `MIGRATIONS_PATH` | `migrations` | no | golang-migrate source directory (the image ships `migrations/`). | `cmd/execution/config.go` |
@@ -80,6 +84,26 @@ never runs the outbox relay (only `cmd/execution` drains `outbox_events`).
 | `KAFKA_BROKERS` | *(none)* | **yes** | Broker list; unset is a boot error (no `localhost:9092` default). | `cmd/mcp/config.go` |
 | `REPORTS_BASE_URL` | *(unset)* | no | Base URL of `cmd/fulfillment-reports`. When set, the read-only tools `get_fulfillment_throughput_report` and `get_on_time_to_cpt` are registered; unset, they are absent from `tools/list`. | `cmd/mcp/main.go` |
 | `OTEL_SERVICE_NAME` | `fulfillment-execution-mcp` | no | Resource `service.name` and the HTTP middleware's server name. | `cmd/mcp/main.go` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`, `SERVICE_VERSION`, `ENVIRONMENT` | as above | no | Shared telemetry settings. | `internal/observability/telemetry.go` |
+
+## `cmd/a2a` (the A2A agent)
+
+A third driving adapter over the same use cases and the same OLTP database
+([ADR-0059](../adr/0059-a2a-inbound-adapter.md)): the Agent Card at
+`/.well-known/agent-card.json`, JSON-RPC at `/` and `/a2a`, and `GET /healthz`.
+Like `cmd/mcp` it runs the migrations at boot but never starts a Kafka consumer
+or the outbox relay. The chart deploys it only when `a2a.enabled=true`.
+
+| Variable | Default | Required? | Meaning | Read in |
+| --- | --- | --- | --- | --- |
+| `A2A_ADDR` | `:8093` | no | Listen address. | `cmd/a2a/main.go` |
+| `A2A_AGENT_URL` | *(none)* | **yes** | Absolute `http(s)` URL of this agent's JSON-RPC endpoint, advertised on the Agent Card. Unset is the boot error `A2A_AGENT_URL is required`; a relative or schemeless value is `... is not an absolute http(s) URL`. | `cmd/a2a/config.go` |
+| `DATABASE_URL` | *(none)* | **yes** | OLTP Postgres DSN; unset is a boot error. | `cmd/a2a/config.go` |
+| `MIGRATIONS_DATABASE_URL` | value of `DATABASE_URL` | no | Same split as `cmd/execution` ([ADR-0031](../adr/0031-migrations-direct-postgres-connection.md)). | `cmd/a2a/config.go` |
+| `KAFKA_BROKERS` | *(none)* | **yes** | Broker list; unset is a boot error. | `cmd/a2a/config.go` |
+| `EVENT_PUBLISHER` | `kafka` | no | `kafka` is the only accepted value (the `complete_task` skill writes `outbox_events` rows for `cmd/execution`'s relay to publish); anything else is a boot error. | `cmd/a2a/config.go` |
+| `LOG_LEVEL` | `info` | no | As for `cmd/execution`. | `cmd/a2a/main.go` |
+| `OTEL_SERVICE_NAME` | `fulfillment-execution-a2a` | no | Resource `service.name`. | `cmd/a2a/main.go` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT`, `SERVICE_VERSION`, `ENVIRONMENT` | as above | no | Shared telemetry settings. | `internal/observability/telemetry.go` |
 
 ## `cmd/fulfillment-projector` (analytics writer)
@@ -142,14 +166,15 @@ and frontend Deployments do not mount it.
 | --- | --- | --- |
 | `config.httpAddr` (`:8080`) | `HTTP_ADDR` | api (`cmd/execution`) |
 | `config.eventPublisher` (`kafka`, the only accepted value) | `EVENT_PUBLISHER` | api, mcp (`mcp.eventPublisher` is gone) |
-| `config.workReleasedConsumerGroup` (`fulfillment-execution`), `config.productClassificationConsumerGroup`, `config.taskInterleavingConsumerGroup` | `WORK_RELEASED_CONSUMER_GROUP`, `PRODUCT_CLASSIFICATION_CONSUMER_GROUP`, `TASK_INTERLEAVING_CONSUMER_GROUP` (the last two only when `extraEnv` does not name them: `extraEnv` wins, so no duplicate env entry) | api |
+| `config.workReleasedConsumerGroup` (`fulfillment-execution`), `config.productClassificationConsumerGroup`, `config.taskInterleavingConsumerGroup`, `config.packViewConsumerGroup` (`fulfillment-execution-pack-view`) | `WORK_RELEASED_CONSUMER_GROUP`, `PRODUCT_CLASSIFICATION_CONSUMER_GROUP`, `TASK_INTERLEAVING_CONSUMER_GROUP`, `PACK_VIEW_CONSUMER_GROUP` (all but the first only when `extraEnv` does not name them: `extraEnv` wins, so no duplicate env entry) | api |
+| `config.inventoryStorageBaseUrl` (`http://inventory-storage.warehouse-systems.svc.cluster.local:80`) | `INVENTORY_STORAGE_BASE_URL` (only when `extraEnv` does not name it) | api |
 | `config.outboxMaxAttempts` (`20`) | `OUTBOX_MAX_ATTEMPTS` | api |
 | `kafka.brokers` (`kafka:9092`, required) | `KAFKA_BROKERS` | api, mcp, projector |
 | `database.url` / `database.existingSecret` + `existingSecretKey` (one is required: the render fails without it) | `DATABASE_URL` | api, mcp |
 | `database.migrationsExistingSecretKey` (`MIGRATIONS_DATABASE_URL`, `optional: true`) | `MIGRATIONS_DATABASE_URL` | api, mcp |
 | `otel.enabled`, `otel.endpoint`, `otel.serviceName` | `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`, `SERVICE_VERSION` (image tag), `ENVIRONMENT` (`environment`) | api; the other three get fixed service names `fulfillment-execution-mcp`, `fulfillment-projector`, `fulfillment-reports` |
 | `pathCatalogue.enabled`, `pathCatalogue.mountPath` | `PATH_CATALOGUE_FILE` (`<mountPath>/process-paths.yaml`) and the ConfigMap mount | api |
-| `extraEnv` | anything else, e.g. `PRODUCT_CLASSIFICATION_MODE`, `PATH_CATALOGUE_SOURCE`, `LOCATION_ROLE_MODE` | api |
+| `extraEnv` | anything else, e.g. `PRODUCT_CLASSIFICATION_MODE`, `PATH_CATALOGUE_SOURCE`, `LOCATION_ROLE_MODE`, `PICK_BATCH_MODE`, `PICK_BATCH_MAXIMUM` | api |
 | `mcp.httpAddr`, `mcp.logLevel`, `mcp.eventPublisher`, `mcp.reportsBaseUrl`, `mcp.extraEnv` | `MCP_ADDR`, `LOG_LEVEL`, `EVENT_PUBLISHER`, `REPORTS_BASE_URL` (derived from the reports Service when `analytics.enabled` and the value is empty) | mcp |
 | `analytics.projector.adminAddr`, `analytics.migrationsPath` | `ADMIN_ADDR`, `ANALYTICS_MIGRATIONS_PATH` | projector |
 | `analytics.database.*` | `ANALYTICS_DATABASE_URL` (projector: key `ANALYTICS_DATABASE_URL`; reports: key `ANALYTICS_READER_DATABASE_URL`) | projector, reports |
