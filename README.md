@@ -40,7 +40,7 @@ Start here:
 | Page | What it answers |
 | --- | --- |
 | [Introduction](https://iqvo.github.io/fulfillment-execution/docs/overview/) | what this context owns and who it talks to |
-| [Architecture](https://iqvo.github.io/fulfillment-execution/docs/overview/architecture) | hexagonal layout, the four binaries, data stores |
+| [Architecture](https://iqvo.github.io/fulfillment-execution/docs/overview/architecture) | hexagonal layout, the binaries, data stores |
 | [Running locally](https://iqvo.github.io/fulfillment-execution/docs/overview/running-locally) | prerequisites, make targets, first curl calls |
 | [Configuration](https://iqvo.github.io/fulfillment-execution/docs/operations/configuration) | every env var of every binary |
 | [Runbook](https://iqvo.github.io/fulfillment-execution/docs/operations/runbook) | Helm deployment, probes, migrations, Kafka, outbox, DLQ, sweeps, scaling, procedures |
@@ -251,6 +251,9 @@ curl localhost:8093/.well-known/agent-card.json
 | `KAFKA_BROKERS` | (required) | Comma-separated Kafka broker list, used by the consumers, the publishers, the outbox relay and `/readyz`; unset is a boot error, there is no `localhost:9092` default |
 | `WORK_RELEASED_CONSUMER_GROUP` | (required) | Stable consumer group of the `WorkReleased` consumer on `warehouse.work-planning.events` (the chart renders `fulfillment-execution`) |
 | `PRODUCT_CLASSIFICATION_CONSUMER_GROUP`, `TASK_INTERLEAVING_CONSUMER_GROUP` | (required) | Stable consumer groups of the `ProductClassified` and `InterleavingHintIssued` consumers; `PRODUCT_CLASSIFICATION_MODE` and `TASK_INTERLEAVING_MODE` accept only `kafka` (unset = `kafka`) |
+| `PACK_VIEW_CONSUMER_GROUP` | (required) | Stable consumer group of the pack-level consumer (`ProductPackLevelDeclared` / `ProductPackLevelRetired` from `warehouse.product-master.events` into the local PackView, [ADR-0054](docs/docs/adr/0054-case-and-each-pick-scans-and-break-case-task.md)); boot error when unset or equal to `PRODUCT_CLASSIFICATION_CONSUMER_GROUP` (chart: `fulfillment-execution-pack-view`) |
+| `INVENTORY_STORAGE_BASE_URL` | (required) | Base URL of inventory-storage; completing a `BREAK_CASE` task calls `POST /containers/{lpn}/case-breaks` on it; boot error when unset |
+| `PICK_BATCH_MODE` | `off` | Pick-batching gate ([ADR-0063](docs/docs/adr/0063-work-batches-formed-at-assignment-behind-a-mode-gate.md)): `off`, `shadow` or `on`; only `on` forms work batches (otherwise `503 batch-mode-off`); any other value is a boot error. `PICK_BATCH_MAXIMUM` (default `4`) caps a batch |
 | `PATH_CATALOGUE_SOURCE` | `file` | `file` loads `PATH_CATALOGUE_FILE` at boot; `kafka` replays `warehouse.process-path-management.events` into memory and blocks readiness until the replay catches up — see [ADR-0017](docs/docs/adr/0017-process-path-catalogue-as-configuration.md) |
 | `PATH_CATALOGUE_FILE` | `/etc/fulfillment-execution/process-paths.yaml` | Path to the declared process-path catalogue YAML (see `warehouse-infra`'s `config/process-paths/sortable-fc.yaml`). Loaded once at startup; a missing or invalid file is a fatal boot-time error — see [ADR-0017](docs/docs/adr/0017-process-path-catalogue-as-configuration.md) |
 | `EVENT_PUBLISHER` | `kafka` | `kafka` is the only accepted value (`log` is a boot error): `TaskCompleted`, `TaskCPTMissed` and `PackageManifested` go to `warehouse.fulfillment.events` AND every domain event to `warehouse.fulfillment.analytics` (feeds the report), both through the **transactional outbox** (`outbox_events`, committed in the use case's own transaction and drained by the always-on in-process relay — see [ADR-0020](docs/docs/adr/0020-transactional-outbox.md)) |
