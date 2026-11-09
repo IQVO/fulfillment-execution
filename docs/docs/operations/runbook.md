@@ -17,7 +17,8 @@ detail is on [Configuration](./configuration.md); failure diagnosis is on
 
 One Helm chart, **`fulfillment-execution`** (`charts/fulfillment-execution`),
 one container image (`ghcr.io/iqvo/fulfillment-execution`, built from the
-`Dockerfile`; it contains the four binaries under `/app` plus
+`Dockerfile`; it contains the six binaries under `/app` — `execution`, `mcp`, `a2a`,
+`fulfillment-projector`, `fulfillment-reports` and `sweep` — plus
 `/app/migrations`). On every merge to `main` the CI `release` job publishes
 the image tag and the chart as `oci://ghcr.io/iqvo/fulfillment-execution`.
 
@@ -25,6 +26,7 @@ the image tag and the chart as `oci://ghcr.io/iqvo/fulfillment-execution`.
 | --- | --- | --- | --- | --- | --- | --- |
 | api | `<release>` (component `api`) | `cmd/execution` (image entrypoint) | always | `8080` (`HTTP_ADDR=:8080`) | ClusterIP `80` → `8080` | startup `/healthz` (2s × 30), liveness `/healthz` (every 10s), readiness **`/readyz`** (every 5s) |
 | mcp | `<release>-mcp` | `/app/mcp` | `mcp.enabled` (default `false`) | `8090` (`MCP_ADDR`) | ClusterIP `8090` → `8090` | startup, liveness and readiness all on `/healthz` |
+| a2a agent | `<release>-a2a` | `/app/a2a` | `a2a.enabled` (default `false`) | `8093` (`A2A_ADDR`) | ClusterIP `8093` → `8093` | startup, liveness and readiness all on `/healthz` |
 | analytics projector | `<release>-projector` | `/app/fulfillment-projector` | `analytics.enabled` (default `false`) | `8091` (admin, `ADMIN_ADDR`) | none | startup, liveness and readiness on `/healthz` (port `admin`) |
 | analytics reports | `<release>-reports` | `/app/fulfillment-reports` | `analytics.enabled` | `8080` (`HTTP_ADDR=:8080` from the chart) | ClusterIP `80` → `http` | startup, liveness and readiness on `/healthz` |
 | frontend (MFE remote) | `<release>-frontend` | nginx serving `web/` | `frontend.enabled` (default `false`) | `8080` | ClusterIP `80` | see `frontend-deployment.yaml` |
@@ -102,7 +104,7 @@ The full report contract is on [Throughput report](../analytics/throughput-repor
 
 | Database | Owner process | Migrations | Tables |
 | --- | --- | --- | --- |
-| OLTP (`DATABASE_URL`, `fulfillment_execution` in the kind cluster) | `cmd/execution` and `cmd/mcp` (both run migrations at boot) | `migrations/0001`–`0018` | `tasks`, `stations`, `packages`, `order_consolidations`, `processed_events`, `outbox_events`, `idempotency_keys`, `product_classification_copy` (`domain_events` from 0001 was dropped by 0018, [ADR-0045](../adr/0045-drop-legacy-domain-events-table.md)) |
+| OLTP (`DATABASE_URL`, `fulfillment_execution` in the kind cluster) | `cmd/execution`, `cmd/mcp` and `cmd/a2a` (each runs migrations at boot) | `migrations/0001`–`0027` | `tasks`, `stations`, `packages`, `order_consolidations`, `processed_events`, `outbox_events`, `idempotency_keys`, `product_classification_copy`, `interleaving_hints` (0021), `pack_view` (0022, 0024), `work_batches` and `work_batch_members` (0027, [ADR-0063](../adr/0063-work-batches-formed-at-assignment-behind-a-mode-gate.md); empty while `PICK_BATCH_MODE` is `off`) (`domain_events` from 0001 was dropped by 0018, [ADR-0045](../adr/0045-drop-legacy-domain-events-table.md)) |
 | Analytical (`ANALYTICS_DATABASE_URL`) | `cmd/fulfillment-projector` (only writer, runs migrations); `cmd/fulfillment-reports` reads | `migrations/analytics/0001`–`0002` | `analytics_processed_events`, `analytics_consumed_events`, `analytics_pending_claims`, `throughput_rollup` |
 
 Migrations are golang-migrate `up` runs at process start (`internal/adapters/outbound/postgres/migrate.go`),
@@ -130,7 +132,8 @@ One broker for the whole platform (in-cluster; host access
 | --- | --- | --- | --- | --- | --- |
 | `warehouse.work-planning.events` | consume `WorkReleased` | `cmd/execution` | `WORK_RELEASED_CONSUMER_GROUP` (default `fulfillment-execution`) | **latest** | 3 in-process attempts (100ms → 2s jittered), then dead-letter; non-CloudEvents messages are dead-lettered at once. Offsets are committed only after the message is applied or dead-lettered; a shutdown mid-handle commits nothing and dead-letters nothing, so the message is redelivered and deduplicated ([ADR-0046](../adr/0046-workreleased-consumer-commits-after-settle.md)). |
 | `warehouse.work-planning.events.dlq` | produce | `cmd/execution` (only with `EVENT_PUBLISHER=kafka`) | – | – | Original key/value/headers plus `x-dlq-error`, `x-dlq-original-topic`, `x-dlq-original-partition`, `x-dlq-original-offset`, `x-dlq-failed-at`. A failed DLQ write is logged and the loop goes on. |
-| `warehouse.product-master.events` | consume `ProductClassified` | `cmd/execution` (only with `PRODUCT_CLASSIFICATION_MODE=kafka`) | `PRODUCT_CLASSIFICATION_CONSUMER_GROUP` | **earliest** | Explicit commit after the transaction. Transient failure: retried on the same message forever (200ms → 5s), blocking that partition. Invalid payload or non-CloudEvent: WARN and commit past. No DLQ. |
+| `warehouse.product-master.events` | consume `ProductClassified` | `cmd/execution` (always on: `kafka` is the only accepted `PRODUCT_CLASSIFICATION_MODE`) | `PRODUCT_CLASSIFICATION_CONSUMER_GROUP` | **earliest** | Explicit commit after the transaction. Transient failure: retried on the same message forever (200ms → 5s), blocking that partition. Invalid payload or non-CloudEvent: WARN and commit past. No DLQ. |
+| `warehouse.product-master.events` | consume `ProductPackLevelDeclared`, `ProductPackLevelRetired` | `cmd/execution` (always on) | `PACK_VIEW_CONSUMER_GROUP` (must differ from the classification group) | **earliest** | Feeds the PackView (`pack_view`). Transient failure: retried on the same message forever (200ms → 5s). Invalid payload or non-CloudEvent: WARN and commit past. No DLQ ([ADR-0054](../adr/0054-case-and-each-pick-scans-and-break-case-task.md)). |
 | `warehouse.process-path-management.events` | consume `ProcessPathCreated`/`Updated`/`Deactivated` | `cmd/execution` (only with `PATH_CATALOGUE_SOURCE=kafka`) | `fulfillment-execution-process-path-catalogue-<host>-<pid>-<nanos>` (new per process) | earliest | Full replay on every start into memory. Async commits every 1s. |
 | `warehouse.fulfillment.events` | produce `TaskCompleted`, `TaskCPTMissed`, `PackageManifested`, `TransferPicked`, `TransferDispatched`, `TransferArrived` | `cmd/execution` relay (rows written by `cmd/execution` and `cmd/mcp`) | – | – | Keyed by task id or package id (`kafka.Hash` balancer, `RequiredAcks=all`, 10ms batch). A RELOCATE task's `TaskCompleted` also carries `sku`, `from_bin`, `to_bin`, `quantity`, `relocation_ref` for inventory-storage ([ADR-0047](../adr/0047-relocate-tasks-execute-slot-plan-moves.md)); a REPLENISH task's carries the same with `request_ref` ([ADR-0050](../adr/0050-replenish-tasks-execute-pick-face-replenishment.md)). |
 | `warehouse.fulfillment.analytics` | produce every analytics event | same relay | – | – | Same writer settings. |

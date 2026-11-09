@@ -128,26 +128,28 @@ language, and only the Go identifier bends.
 
 ## Binaries, ports and data stores
 
-Four binaries are built from this module into one image (`/app/<name>`).
+Six binaries are built from this module into one image (`/app/<name>`).
 Each has its own composition root under `cmd/` and is deployed as its own
 Kubernetes Deployment ([Runbook](../operations/runbook.md#deployment-shape)).
 
 | Binary | Role | Listens on (default) | HTTP surface | Reads / writes |
 | --- | --- | --- | --- | --- |
-| `cmd/execution` | OLTP service: REST API, `WorkReleased` consumer, optional `ProductClassified` and process-path catalogue consumers, outbox relay | `HTTP_ADDR` `:8080` | every route in `apis/openapi.yaml`, incl. `/healthz` and `/readyz` | OLTP Postgres (read-write, runs migrations); Kafka in and out |
+| `cmd/execution` | OLTP service: REST API, `WorkReleased`, `ProductClassified`, `InterleavingHintIssued` and pack-level consumers, optional process-path catalogue consumer, outbox relay | `HTTP_ADDR` `:8080` | every route in `apis/openapi.yaml`, incl. `/healthz` and `/readyz` | OLTP Postgres (read-write, runs migrations); Kafka in and out |
 | `cmd/mcp` | MCP server over Streamable HTTP; same use cases over the same database | `MCP_ADDR` `:8090` | `/` and `/mcp` (MCP), `/healthz` | OLTP Postgres (runs migrations, writes `outbox_events` via `complete_task`); calls `cmd/fulfillment-reports` when `REPORTS_BASE_URL` is set |
+| `cmd/a2a` | A2A agent over the same use cases ([ADR-0059](../adr/0059-a2a-inbound-adapter.md)) | `A2A_ADDR` `:8093` | Agent Card at `/.well-known/agent-card.json`, JSON-RPC at `/` and `/a2a`, `/healthz` | OLTP Postgres (runs migrations, writes `outbox_events` via `complete_task`) |
 | `cmd/fulfillment-projector` | Analytics **writer**: consumes `warehouse.fulfillment.analytics` and projects it | `ADMIN_ADDR` `:8091` | `/healthz` only | analytical Postgres (read-write, runs analytics migrations) |
 | `cmd/fulfillment-reports` | Analytics **reader**: serves the throughput report | `HTTP_ADDR` `:8092` (chart: `:8080`) | `/reports/throughput`, `/reports/throughput/freshness`, `/healthz` | analytical Postgres over a read-only pool |
 
 Data stores: one **OLTP** Postgres database (`tasks`, `stations`,
 `packages`, `order_consolidations`, `processed_events`, `outbox_events`,
-`idempotency_keys`, `product_classification_copy`; the unused
+`idempotency_keys`, `product_classification_copy`, `interleaving_hints`,
+`pack_view`, `work_batches`, `work_batch_members`; the unused
 `domain_events` from migration 0001 was dropped by 0018,
 [ADR-0045](../adr/0045-drop-legacy-domain-events-table.md)) and one separate **analytical**
 Postgres database (`throughput_rollup`, `analytics_pending_claims`,
-`analytics_processed_events`, `analytics_consumed_events`). Without
-`DATABASE_URL`, `cmd/execution` and `cmd/mcp` each keep their state in
-process memory.
+`analytics_processed_events`, `analytics_consumed_events`). `DATABASE_URL` is
+mandatory for every binary that touches the OLTP database: there is no
+in-memory mode ([ADR-0052](../adr/0052-postgres-and-kafka-are-the-only-runtime.md)).
 
 ```mermaid
 flowchart LR
