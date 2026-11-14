@@ -56,6 +56,7 @@ flowchart LR
     C1["CreateTask"]:::command
     T1["Task"]:::aggregate
     E1["TaskCreated"]:::event
+    E1b["TaskAvailable"]:::event
     RM1["Queue depth"]:::readmodel
     ST["Station operator"]:::actor
     C2["CheckInStation"]:::command
@@ -63,26 +64,45 @@ flowchart LR
     C3["ClaimNext"]:::command
     T2["Task"]:::aggregate
     E3["TaskClaimed"]:::event
+    TI["task-interleaving"]:::external
+    C6["FormWorkBatch<br/>(PICK_BATCH_MODE=on)"]:::command
+    WB1["WorkBatch"]:::aggregate
+    E6["WorkBatchFormed"]:::event
     C4["RenewLease"]:::command
     C5["CompleteTask"]:::command
     T3["Task"]:::aggregate
     E5["TaskCompleted"]:::event
+    E5a["TransferPicked"]:::event
+    E5b["TransferDispatched"]:::event
+    E5c["TransferArrived"]:::event
+    NIP["network-inventory-planning"]:::external
+    WB2["WorkBatch"]:::aggregate
+    E7["WorkBatchCompleted"]:::event
     LP["labor-performance"]:::external
     WP2["wes-work-planning"]:::external
     H1["Hotspot: claim does not require check-in"]:::hotspot
     H2["Hotspot: ItemPicked defined but never raised"]:::hotspot
+    H3["Hotspot: WorkBatch events have no consumer yet"]:::hotspot
 
     WP --> E0 --> P0 --> C1 --> T1 --> E1
+    T1 --> E1b --> TI
     E1 -.-> RM1
     ST --> C2 --> S1
     RM1 -.-> ST
     ST --> C3 --> T2 --> E3
+    E3 --> TI
+    ST --> C6 --> WB1 --> E6
     ST --> C4 --> T2
     ST --> C5 --> T3 --> E5
+    T3 --> E5a --> NIP
+    T3 --> E5b --> NIP
+    T3 --> E5c --> NIP
+    C5 --> WB2 --> E7
     E5 --> WP2
     E5 --> LP
     H1 -.- C3
     H2 -.- T3
+    H3 -.- E6
 
     classDef actor fill:#fef9c3,stroke:#a16207,color:#000,font-size:11px
     classDef command fill:#4aa3df,stroke:#1f6391,color:#000
@@ -96,10 +116,21 @@ flowchart LR
 
 Source: `internal/adapters/inbound/kafka/consumer.go`,
 `internal/application/usecases/create_task.go`, `check_in_station.go`,
-`claim_next.go`, `renew_lease.go`, `complete_task.go`,
-`internal/domain/task/task.go`, `internal/domain/station/station.go`.
+`claim_next.go`, `form_work_batch.go`, `renew_lease.go`, `complete_task.go`,
+`internal/domain/task/task.go`, `internal/domain/station/station.go`,
+`internal/domain/workbatch/workbatch.go`.
 Omits `RegisterStation` (setup, no event) and the MCP `complete_task` path
-(same command).
+(same command). `CreateTask` raises `TaskCreated` and `TaskAvailable` on
+every creation path (`create_task.go`); the integration encoder publishes
+`TaskAvailable` only for a task with a determinable location (RELOCATE,
+REPLENISH, and a PICK with both a site and a pick face — `placement.go`,
+[ADR-0062](../adr/0062-pick-tasks-are-announced-to-the-open-task-pool.md)).
+`CompleteTask` raises exactly one of the three transfer facts, selected by
+the task's `work_kind`, only for a task released with a transfer correlation
+block ([ADR-0036](../adr/0036-transfer-task-types-and-facts.md)), and
+`WorkBatchCompleted` when the completed task was the last open member of its
+batch. `FormWorkBatch` and the two `WorkBatch*` stickies exist only with
+`PICK_BATCH_MODE=on` ([ADR-0063](../adr/0063-work-batches-formed-at-assignment-behind-a-mode-gate.md)).
 
 ## Process 2 — Rebin, Pack and SLAM
 
@@ -163,7 +194,10 @@ Source: `internal/application/usecases/arrive_at_rebin.go`,
 `internal/domain/package/package.go`. Omits the PACK task's claim and
 completion (process 1 applies unchanged) and the policy ordering detail:
 in code `CreateTask` runs before `OrderConsolidated` is published, in the
-same transaction.
+same transaction. `CreateTask PACK` raises `TaskCreated` and `TaskAvailable`
+like every creation, but a PACK task has no placement
+(`internal/domain/task/placement.go`), so `TaskAvailable` never reaches the
+integration topic for it.
 
 ## Process 3 — sweeps
 
@@ -173,6 +207,10 @@ flowchart LR
     C1["ExpireLeases"]:::command
     T1["Task"]:::aggregate
     E1["LeaseExpired"]:::event
+    E1b["TaskAvailable"]:::event
+    TI["task-interleaving"]:::external
+    WB["WorkBatch"]:::aggregate
+    E1c["WorkBatchAbandoned"]:::event
     P1["Policy: whenever a lease lapses, the task is claimable again"]:::policy
     RM1["Queue depth"]:::readmodel
     C2["SweepCPTMisses"]:::command
@@ -185,6 +223,8 @@ flowchart LR
     H2["Hotspot: TaskCPTMissed re-fires on every pass"]:::hotspot
 
     SCH --> C1 --> T1 --> E1 --> P1
+    T1 --> E1b --> TI
+    C1 --> WB --> E1c
     P1 -.-> RM1
     E1 -.-> PJ
     SCH --> C2 --> T2 --> E2 --> OM
@@ -205,10 +245,15 @@ flowchart LR
 
 Source: `internal/application/usecases/expire_leases.go`,
 `sweep_cpt_misses.go`, `internal/analytics/`,
-`internal/adapters/outbound/kafka/publisher.go`. Omits the lazy expiry
+`internal/adapters/outbound/kafka/publisher.go`,
+`internal/domain/workbatch/workbatch.go`. Omits the lazy expiry
 inside `Claim` / `RenewLease` / `Complete`, which frees a lapsed lease
 without raising `LeaseExpired`. The re-promise policy lives in
-`order-management`, not here.
+`order-management`, not here. `ExpireLeases` raises `LeaseExpired` and
+`TaskAvailable` for every freed task (the task re-enters the pool;
+published only if it has a determinable location, `expire_leases.go`), and
+`WorkBatchAbandoned` when the freed task was the last open member of an open
+batch (`PICK_BATCH_MODE=on` only, [ADR-0063](../adr/0063-work-batches-formed-at-assignment-behind-a-mode-gate.md)).
 
 ## Sticky inventory
 
@@ -216,17 +261,18 @@ without raising `LeaseExpired`. The re-promise policy lives in
 | --- | --- | --- |
 | Station operator, Packer, Rebin associate, SLAM line | Actor | REST callers of `router.go` |
 | External scheduler | Actor | callers of `POST /task-lease-expirations`, `POST /cpt-miss-sweeps` |
-| `CreateTask`, `CheckInStation`, `ClaimNext`, `RenewLease`, `CompleteTask`, `ArriveAtRebin`, `SealPackage`, `RunSlam`, `ExpireLeases`, `SweepCPTMisses` | Command | `internal/application/usecases/*.go` |
-| `Task`, `Station`, `Package`, `OrderConsolidation` | Aggregate | `internal/domain/{task,station,package,consolidation}` |
+| `CreateTask`, `CheckInStation`, `ClaimNext`, `FormWorkBatch`, `RenewLease`, `CompleteTask`, `ArriveAtRebin`, `SealPackage`, `RunSlam`, `ExpireLeases`, `SweepCPTMisses` | Command | `internal/application/usecases/*.go` |
+| `Task`, `Station`, `Package`, `OrderConsolidation`, `WorkBatch` | Aggregate | `internal/domain/{task,station,package,consolidation,workbatch}` |
 | `WorkReleased` | Domain event (inbound) | `com.warehouse.wes.work-planning.workunit.WorkReleased`, `internal/adapters/inbound/kafka/consumer.go` |
-| `TaskCreated`, `TaskClaimed`, `LeaseExpired`, `TaskCompleted`, `TaskCPTMissed`, `PackageSealed`, `LabelApplied`, `PackageManifested`, `WeightDiscrepancyDetected`, `PackageDiverted`, `ItemArrivedAtRebin`, `OrderConsolidated` | Domain event | `internal/domain/shared/events.go` |
+| `TaskCreated`, `TaskAvailable`, `TaskClaimed`, `LeaseExpired`, `TaskCompleted`, `TaskCPTMissed`, `TransferPicked`, `TransferDispatched`, `TransferArrived`, `WorkBatchFormed`, `WorkBatchCompleted`, `WorkBatchAbandoned`, `PackageSealed`, `LabelApplied`, `PackageManifested`, `WeightDiscrepancyDetected`, `PackageDiverted`, `ItemArrivedAtRebin`, `OrderConsolidated` (19 of the 20 events in the file; the 20th, `ItemPicked`, is the hotspot below) | Domain event | `internal/domain/shared/events.go` |
 | Create a task from the path catalogue | Policy | `consumer.go` → `PathCatalogue.Lookup` → `CreateTask` ([ADR-0017](../adr/0017-process-path-catalogue-as-configuration.md)) |
 | Create the PACK task once | Policy | `arrive_at_rebin.go` (`wasAlreadyComplete`, `IsComplete`) |
 | A lapsed lease is claimable again | Policy | `Task.IsAvailable`, `TaskRepo.FindClaimableByType` |
 | Re-promise on CPT miss | Policy (downstream) | `order-management`, [ADR-0025](../adr/0025-cpt-missed-sweep-and-package-manifested.md) |
 | Queue depth, Package read model, Throughput rollup | Read model | `get_queue_depth.go`; `get_package.go` ([ADR-0033](../adr/0033-package-read-model.md)); `throughput_rollup` ([ADR-0012](../adr/0012-analytical-data-product.md)) |
-| `wes-work-planning`, `labor-performance`, `order-management`, `product-master` | External system | `apis/asyncapi.yaml`; `inbound/kafka/product_classified_consumer.go` |
+| `wes-work-planning`, `labor-performance`, `order-management`, `product-master`, `task-interleaving`, `network-inventory-planning` | External system | `apis/asyncapi.yaml`; `inbound/kafka/product_classified_consumer.go` |
 | Claim does not require check-in | Hotspot | [Aggregates & invariants](./aggregates-and-invariants.md) "Honest status"; `claim_next.go` never reads occupancy |
+| WorkBatch events have no consumer yet | Hotspot | `x-no-consumer-reason` on the three `WorkBatch*` messages in `apis/asyncapi.yaml`: `labor-performance` is the intended consumer but has no handler for them; `PICK_BATCH_MODE` defaults to `off` ([ADR-0063](../adr/0063-work-batches-formed-at-assignment-behind-a-mode-gate.md)) |
 | `ItemPicked` never raised | Hotspot | [Domain events](./domain-events.md); no caller of `shared.NewItemPicked` outside tests |
 | Rebin events never leave the process | Hotspot | not in `inIntegrationContract` / `inAnalyticsContract`, not in `apis/asyncapi.yaml` ([ADR-0016](../adr/0016-rebin-and-order-consolidation.md)) |
 | SortLane with no WCS | Hotspot | `Package.SortLane`; `ports.EquipmentCommandPort` has no methods ([ADR-0010](../adr/0010-package-segregation-and-sort-lane.md), [ADR-0015](../adr/0015-wcs-equipment-anti-corruption-seam.md)) |

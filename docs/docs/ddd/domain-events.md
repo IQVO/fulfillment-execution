@@ -60,7 +60,7 @@ errored — that is how the two Rebin events stay in-process.
 | Event | Full CloudEvents `type` | Raised by (use case) | Domain payload | `warehouse.fulfillment.events` (integration) `data` | `warehouse.fulfillment.analytics` `data` |
 | --- | --- | --- | --- | --- | --- |
 | `TaskCreated` | `com.warehouse.wes.fulfillment-execution.task.TaskCreated` | `CreateTask` (REST `POST /tasks`, the `WorkReleased` consumer, and `ArriveAtRebin` on consolidation) | `TaskId` | — | `task_id`, `task_type` |
-| `TaskAvailable` | `com.warehouse.wes.fulfillment-execution.task.TaskAvailable` | `CreateTask` (every creation path, right after `TaskCreated`) and `ExpireLeases` (a freed task re-enters the pool, next to `LeaseExpired`) | `TaskId` (the payload is resolved from the task row in the same transaction) | `task_id`, `task_type`, `site_id`, `from_location`, `to_location`, `required_capabilities`, `cpt`?, `priority_band`, `available_at`; only for tasks with a determinable location (RELOCATE and REPLENISH today) ([ADR-0049](../adr/0049-task-pool-events-task-available-and-task-claimed.md), [ADR-0050](../adr/0050-replenish-tasks-execute-pick-face-replenishment.md)) | — |
+| `TaskAvailable` | `com.warehouse.wes.fulfillment-execution.task.TaskAvailable` | `CreateTask` (every creation path, right after `TaskCreated`) and `ExpireLeases` (a freed task re-enters the pool, next to `LeaseExpired`) | `TaskId` (the payload is resolved from the task row in the same transaction) | `task_id`, `task_type`, `site_id`, `from_location`, `to_location`, `required_capabilities`, `cpt`?, `priority_band`, `available_at`; only for tasks with a determinable location: RELOCATE and REPLENISH (their planned bins) and a PICK whose plan carries both a site and a pick face — a pick missing either is not announced (`Task.Placement()`, [ADR-0049](../adr/0049-task-pool-events-task-available-and-task-claimed.md), [ADR-0050](../adr/0050-replenish-tasks-execute-pick-face-replenishment.md), [ADR-0062](../adr/0062-pick-tasks-are-announced-to-the-open-task-pool.md)) | — |
 | `TaskClaimed` | `com.warehouse.wes.fulfillment-execution.task.TaskClaimed` | `ClaimNext` | `TaskId`, `StationId` | `task_id`, `task_type`, `station_id`, `claimed_at` ([ADR-0049](../adr/0049-task-pool-events-task-available-and-task-claimed.md)) | `task_id`, `task_type`, `station_id` |
 | `LeaseExpired` | `com.warehouse.wes.fulfillment-execution.task.LeaseExpired` | `ExpireLeases` | `TaskId` | — | `task_id`, `task_type` |
 | `TaskCompleted` | `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` | `CompleteTask` (REST and MCP `complete_task`) | `TaskId`, `StationId` | `task_id`, `station_id`, `work_unit_id`, `associate_id`?, `duration_seconds`?, `task_type`?, `order_ref`? ([ADR-0040](../adr/0040-task-completed-carries-order-ref.md)), `line_no`? ([ADR-0041](../adr/0041-task-completed-carries-line-no.md)); RELOCATE tasks only: `sku`, `from_bin`, `to_bin`, `quantity`, `relocation_ref` ([ADR-0047](../adr/0047-relocate-tasks-execute-slot-plan-moves.md)); REPLENISH tasks only: `sku`, `from_bin`, `to_bin`, `quantity`, `request_ref` ([ADR-0050](../adr/0050-replenish-tasks-execute-pick-face-replenishment.md)) | `task_id`, `task_type`, `station_id`, `order_ref`?, `line_no`? |
@@ -71,9 +71,9 @@ errored — that is how the two Rebin events stay in-process.
 | `PackageDiverted` | `com.warehouse.wes.fulfillment-execution.package.PackageDiverted` | `RunSlam` (outside tolerance) | `PackageId` | `package_id` ([ADR-0053](../adr/0053-promote-package-exception-facts-to-integration-topic.md)) | `package_id` |
 | `LabelApplied` | `com.warehouse.wes.fulfillment-execution.package.LabelApplied` | `RunSlam` (within tolerance) | `PackageId` | — | `package_id` |
 | `PackageManifested` | `com.warehouse.wes.fulfillment-execution.package.PackageManifested` | `RunSlam` (within tolerance, alongside `LabelApplied`) | `PackageId`, `OrderRef` | `package_id`, `order_ref` | `package_id`, `order_ref`, `task_type`, `station_id`, `on_time`, `resolved` |
-| `TransferPicked` | `com.warehouse.wes.fulfillment-execution.transfer.TransferPicked` | `CompleteTask` (task with a TRANSFER_PICK correlation block) | `TaskId`, correlation block | `transfer_ref`, `demand_id`?, `work_unit_id`, `task_id`, `work_kind`, `site_id`?, `sku`?, `quantity`? | `task_id` |
-| `TransferDispatched` | `com.warehouse.wes.fulfillment-execution.transfer.TransferDispatched` | `CompleteTask` (TRANSFER_DISPATCH) | `TaskId`, correlation block | same shape as `TransferPicked` | `task_id` |
-| `TransferArrived` | `com.warehouse.wes.fulfillment-execution.transfer.TransferArrived` | `CompleteTask` (TRANSFER_ARRIVAL) | `TaskId`, correlation block | same shape as `TransferPicked` | `task_id` |
+| `TransferPicked` | `com.warehouse.wes.fulfillment-execution.transfer.TransferPicked` | `CompleteTask` (task with a TRANSFER_PICK correlation block) | `TaskId`, correlation block | `transfer_ref`, `demand_id`?, `work_unit_id`, `task_id`, `work_kind`, `site_id`?, `sku`?, `quantity`? | — |
+| `TransferDispatched` | `com.warehouse.wes.fulfillment-execution.transfer.TransferDispatched` | `CompleteTask` (TRANSFER_DISPATCH) | `TaskId`, correlation block | same shape as `TransferPicked` | — |
+| `TransferArrived` | `com.warehouse.wes.fulfillment-execution.transfer.TransferArrived` | `CompleteTask` (TRANSFER_ARRIVAL) | `TaskId`, correlation block | same shape as `TransferPicked` | — |
 | `WorkBatchFormed` | `com.warehouse.wes.fulfillment-execution.workbatch.WorkBatchFormed` | `FormWorkBatch` (only with `PICK_BATCH_MODE=on`) | `BatchId`, `StationId`, CPT, member facts, version | `batch_id`, `station_id`, `cpt`, `formed_at`, `version`, `members[]` (`task_id`, `stop_seq`, `compartment`) ([ADR-0063](../adr/0063-work-batches-formed-at-assignment-behind-a-mode-gate.md)) | same `data` |
 | `WorkBatchCompleted` | `com.warehouse.wes.fulfillment-execution.workbatch.WorkBatchCompleted` | `CompleteTask` (the last open member completes) | `BatchId`, `StationId`, member count, walk seconds, version | `batch_id`, `station_id`, `member_count`, `walk_seconds`, `completed_at`, `version` | same `data` |
 | `WorkBatchAbandoned` | `com.warehouse.wes.fulfillment-execution.workbatch.WorkBatchAbandoned` | `ExpireLeases` (the last open member detaches) | `BatchId`, `StationId`, member count, version | `batch_id`, `station_id`, `member_count`, `abandoned_at`, `version` | same `data` |
@@ -100,10 +100,13 @@ Only **`TaskAvailable`, `TaskClaimed`, `TaskCompleted`, `TaskCPTMissed`,
 (plus the three transfer facts and the three `WorkBatch*` facts) form the integration contract — the two
 package exception facts were promoted from the analytics topic for
 exception-management ([ADR-0053](../adr/0053-promote-package-exception-facts-to-integration-topic.md)).
-Ten events go to the analytics topic (everything but
-`TaskAvailable`, `TaskCPTMissed` and the two Rebin events), plus the three
-`WorkBatch*` occurrences, which are published on both topics only with
-`PICK_BATCH_MODE=on`. `ItemArrivedAtRebin` and
+Ten events go to the analytics topic (`TaskCreated`, `TaskClaimed`,
+`LeaseExpired`, `TaskCompleted`, `ItemPicked`, `PackageSealed`,
+`WeightDiscrepancyDetected`, `LabelApplied`, `PackageDiverted` and
+`PackageManifested`), plus the three `WorkBatch*` occurrences, which are
+published on both topics only with `PICK_BATCH_MODE=on` — thirteen in all
+(`inAnalyticsContract`); `TaskAvailable`, `TaskCPTMissed`, the three
+transfer facts and the two Rebin events never go there. `ItemArrivedAtRebin` and
 `OrderConsolidated` (ADR-0016) are in neither allowlist and are not in
 `apis/asyncapi.yaml`; if they are ever published their entity would be
 `orderconsolidation`.
@@ -121,9 +124,10 @@ because it is part of the intended model.
 | `warehouse.fulfillment.events` | `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` | `wes-work-planning` | `RecordCompletion(work_unit_id)` — the drum-buffer-rope feedback edge |
 | `warehouse.fulfillment.events` | `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` | `labor-performance` | Per-associate / per-task-type attribution ([ADR-0014](../adr/0014-labor-performance-integration-hooks.md), [ADR-0023](../adr/0023-task-type-on-wire.md)) |
 | `warehouse.fulfillment.events` | `com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed`, `com.warehouse.wes.fulfillment-execution.package.PackageManifested` | `order-management` | `RepromiseOrder` promise feedback loop ([ADR-0025](../adr/0025-cpt-missed-sweep-and-package-manifested.md)) |
+| `warehouse.fulfillment.events` | `...task.TaskAvailable`, `...task.TaskClaimed` | `task-interleaving` | Keeps its local copy of the open-task pool: `TaskAvailable` adds (or re-adds) a task, `TaskClaimed` removes it ([ADR-0049](../adr/0049-task-pool-events-task-available-and-task-claimed.md)) |
 | `warehouse.fulfillment.events` | `...package.PackageDiverted`, `...package.WeightDiscrepancyDetected` | `exception-management` (planned) | Opens its problem-solve case on the divert ([ADR-0053](../adr/0053-promote-package-exception-facts-to-integration-topic.md)) |
 | `warehouse.fulfillment.events` | `...transfer.TransferPicked`, `...transfer.TransferDispatched`, `...transfer.TransferArrived` | `network-inventory-planning` (transfer saga), destination receipt/stow | Transfer custody facts, one per completed transfer task, selected by `work_kind` ([ADR-0036](../adr/0036-transfer-task-types-and-facts.md)) |
-| `warehouse.fulfillment.events` | `...workbatch.WorkBatchFormed`, `...workbatch.WorkBatchCompleted`, `...workbatch.WorkBatchAbandoned` | `labor-performance` (batch-size reporting), `warehouse-console` (planned) | Per-walk facts; with `TaskCompleted.batch_id` / `batch_size` labor-performance reports batched and single picks apart ([ADR-0063](../adr/0063-work-batches-formed-at-assignment-behind-a-mode-gate.md)) |
+| `warehouse.fulfillment.events` | `...workbatch.WorkBatchFormed`, `...workbatch.WorkBatchCompleted`, `...workbatch.WorkBatchAbandoned` | none on develop yet | Per-walk facts, published only with `PICK_BATCH_MODE=on`. The contract names `labor-performance` (batch-size reporting) as the intended consumer, but it has no handler for them (`x-no-consumer-reason` in `apis/asyncapi.yaml`). `TaskCompleted` carries optional `batch_id` / `batch_size` so a consumer can tell batched picks from single picks ([ADR-0063](../adr/0063-work-batches-formed-at-assignment-behind-a-mode-gate.md)) |
 | `warehouse.fulfillment.analytics` | `...task.TaskClaimed`, `...task.TaskCompleted`, `...task.LeaseExpired`, `...package.WeightDiscrepancyDetected`, `...package.PackageManifested` | this service's `cmd/fulfillment-projector`, group `fulfillment-analytics` | Projects the throughput rollup ([Throughput report](../analytics/throughput-report.md)); every other analytics type is acknowledged without projecting |
 
 The downstream consumers are the ones listed in `apis/asyncapi.yaml`; their
@@ -141,9 +145,15 @@ consumer-group ids live in their own repositories.
 ```mermaid
 flowchart LR
     CT["CreateTask"] --> TC["TaskCreated"]
+    CT --> TA["TaskAvailable"]
     CN["ClaimNext"] --> TCL["TaskClaimed"]
     EL["ExpireLeases"] --> LE["LeaseExpired"]
+    EL --> TA
+    EL --> WBA["WorkBatchAbandoned"]
     CMP["CompleteTask"] --> TCP["TaskCompleted"]
+    CMP -->|transfer task| TR["TransferPicked / TransferDispatched / TransferArrived"]
+    CMP -->|last open member| WBC["WorkBatchCompleted"]
+    FB["FormWorkBatch"] --> WBF["WorkBatchFormed"]
     SP["SealPackage"] --> PS["PackageSealed"]
     RS["RunSlam"] -->|within tolerance| LA["LabelApplied"]
     RS -->|within tolerance| PM["PackageManifested"]
@@ -156,6 +166,14 @@ flowchart LR
     TCP ==>|Kafka| K[("warehouse.fulfillment.events")]
     CM ==>|Kafka| K
     PM ==>|Kafka| K
+    PD ==>|Kafka| K
+    WD ==>|Kafka| K
+    TA ==>|Kafka| K
+    TCL ==>|Kafka| K
+    TR ==>|Kafka| K
+    WBF ==>|Kafka| K
+    WBC ==>|Kafka| K
+    WBA ==>|Kafka| K
     TC -.->|analytics| A[("warehouse.fulfillment.analytics")]
     TCL -.-> A
     LE -.-> A
@@ -165,10 +183,16 @@ flowchart LR
     PM -.-> A
     WD -.-> A
     PD -.-> A
+    WBF -.-> A
+    WBC -.-> A
+    WBA -.-> A
 ```
 
 Source: `internal/application/usecases/*.go` and the two encoders'
-allowlists. Omits `ItemPicked` (never raised) and the log publisher.
+allowlists. Omits `ItemPicked` (never raised) and the log publisher. The
+three `WorkBatch*` nodes are raised only with `PICK_BATCH_MODE=on`; the
+integration encoder drops a `TaskAvailable` for a task with no determinable
+location.
 
 `RegisterStation`, `CheckInStation`, `CheckOutStation`, `RenewLease` and the
 five reads (`GetQueueDepth`, `GetTasksByOrderRef`, `GetInstalledCapacity`,

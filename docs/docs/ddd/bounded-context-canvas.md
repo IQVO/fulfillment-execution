@@ -112,7 +112,7 @@ flowchart LR
     BC ==>|"evt - Kafka<br/>warehouse.fulfillment.events<br/>TaskCPTMissed,<br/>PackageManifested"| out2
     BC ==>|"evt - Kafka<br/>warehouse.fulfillment.events<br/>TransferPicked,<br/>TransferDispatched,<br/>TransferArrived"| out3
     BC -.->|"qry - REST (http mode)<br/>Location role lookup"| out4
-    BC ==>|"evt - Kafka<br/>warehouse.fulfillment.analytics<br/>10 analytics events<br/>(TaskCreated ...<br/>PackageManifested)"| out5
+    BC ==>|"evt - Kafka<br/>warehouse.fulfillment.analytics<br/>13 analytics events<br/>(10 always, 3 WorkBatch with<br/>PICK_BATCH_MODE=on)"| out5
     BC ==>|"evt - Kafka<br/>warehouse.work-planning.events.dlq<br/>poison or failed WorkReleased"| out6
     linkStyle 0 stroke:#e8590c,stroke-width:2.5px
     linkStyle 1 stroke:#e8590c,stroke-width:2.5px
@@ -201,7 +201,7 @@ completions and missed CPTs back to planning, labour and order management.
 | `order-management` | `TaskCPTMissed` | Event | Kafka `warehouse.fulfillment.events`, `com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed` | Published Language |
 | `order-management` | `PackageManifested` | Event | Kafka `warehouse.fulfillment.events`, `com.warehouse.wes.fulfillment-execution.package.PackageManifested` | Published Language |
 | `network-inventory-planning` (transfer saga) | `TransferPicked`, `TransferDispatched`, `TransferArrived` | Event | Kafka `warehouse.fulfillment.events`, `com.warehouse.wes.fulfillment-execution.transfer.<Event>` (raised when a transfer-kind task completes, [ADR-0036](../adr/0036-transfer-task-types-and-facts.md)) | Published Language |
-| own analytics read side | 10 analytics events (`TaskCreated`, `TaskClaimed`, `LeaseExpired`, `TaskCompleted`, `ItemPicked`, `PackageSealed`, `WeightDiscrepancyDetected`, `PackageDiverted`, `LabelApplied`, `PackageManifested`) | Event | Kafka `warehouse.fulfillment.analytics`, `com.warehouse.wes.fulfillment-execution.<task or package>.<Event>` | internal (same context) |
+| own analytics read side | 13 analytics events: 10 always (`TaskCreated`, `TaskClaimed`, `LeaseExpired`, `TaskCompleted`, `ItemPicked`, `PackageSealed`, `WeightDiscrepancyDetected`, `PackageDiverted`, `LabelApplied`, `PackageManifested`) and `WorkBatchFormed`, `WorkBatchCompleted`, `WorkBatchAbandoned` only with `PICK_BATCH_MODE=on` | Event | Kafka `warehouse.fulfillment.analytics`, `com.warehouse.wes.fulfillment-execution.<task, package or workbatch>.<Event>` | internal (same context) |
 | `product-master` (opt-in) | `ProductClassified` into a local classification copy | Event | Kafka `warehouse.product-master.events`, `com.warehouse.wms.product-master.product.ProductClassified` (`PRODUCT_CLASSIFICATION_MODE=kafka`, ADR-0039) | Published Language, ACL on this side |
 | `facility-layout` (opt-in) | Location role lookup | Query | REST `GET /locations/{locationCode}` (`LOCATION_ROLE_MODE=http`) | Conformist behind ACL |
 | `wes-work-planning` (operators) | Poison or failed `WorkReleased` | Event | Kafka `warehouse.work-planning.events.dlq` (`EVENT_PUBLISHER=kafka`) | — |

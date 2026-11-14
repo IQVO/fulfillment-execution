@@ -19,8 +19,11 @@ info:
     keys.
 
 
-    The same `type` names an occurrence on both the integration and analytics topics; `dataschema` names
-    the payload shape. A breaking payload change ships as a new `.v2` type with a new dataschema version.'
+    An event that is published on both the integration and analytics topics carries the same CloudEvents
+    `type` attribute on each; `dataschema` names the payload shape. The `Analytics` prefix on the analytics
+    message components below (for example `AnalyticsTaskCompleted`) is only the AsyncAPI component `name`
+    (the `title` is the plain event name); the CloudEvents `type` const never carries it. A breaking payload
+    change ships as a new `.v2` type with a new dataschema version.'
   contact:
     name: Fulfillment Execution Team
     url: https://github.com/claudioed/fulfillment-execution

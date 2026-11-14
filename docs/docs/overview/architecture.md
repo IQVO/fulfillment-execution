@@ -34,7 +34,7 @@ flowchart TB
         PK["pack.Package"]
         OC["consolidation.OrderConsolidation"]
         PC["pathcatalog"]
-        SH["shared<br/>TaskId · StationId · CPT · Capability · 16 events"]
+        SH["shared<br/>TaskId · StationId · CPT · Capability · 20 events"]
     end
 
     subgraph outbound["Outbound adapters (driven)"]
@@ -95,7 +95,7 @@ internal/
     package/                   Package aggregate (seal, segregation, SLAM weigh-check)
     consolidation/             OrderConsolidation — Rebin fan-in tracker
     pathcatalog/               process-path catalogue model (prefix-match lookup)
-    shared/                    TaskId, StationId, CPT, Capability, 16 domain events
+    shared/                    TaskId, StationId, CPT, Capability, 20 domain events
   analytics/report/            analytical read model + store ports
   application/
     ports/                     OUT interfaces (see Use cases & ports)

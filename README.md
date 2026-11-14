@@ -73,7 +73,7 @@ internal/
     package/                 Package aggregate (pack -> sealed; segregation; SLAM weigh-check)
     consolidation/           OrderConsolidation aggregate (Rebin fan-in, ADR-0016)
     pathcatalog/             process-path catalogue model (prefix-match lookup, ADR-0017)
-    shared/                  value objects: TaskId, StationId, PackageId, OrderRef, CPT, Capability, 13 events
+    shared/                  value objects: TaskId, StationId, PackageId, OrderRef, CPT, Capability, 20 events
   analytics/report/          analytical read model + store ports (ADR-0012)
   application/
     ports/                   OUT: TaskRepo, StationRepo, PackageRepo, OrderConsolidationRepo,
