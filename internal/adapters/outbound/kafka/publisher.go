@@ -2,7 +2,7 @@
 // fulfillment-execution domain events onto Kafka, satisfying
 // ports.EventPublisher. It forwards TaskCompleted, TaskCPTMissed,
 // PackageManifested, PackageDiverted and WeightDiscrepancyDetected (plus the
-// task-pool and transfer facts) — every other event type is not part of the
+// task-pool, transfer and work-batch facts) — every other event type is not part of the
 // published integration contract and is skipped. TaskCompleted is
 // enriched with the completed Task's OrderRef (looked up via TaskRepo,
 // since the domain event itself carries only TaskId/StationId) — the same
