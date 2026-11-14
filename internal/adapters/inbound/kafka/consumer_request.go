@@ -45,7 +45,22 @@ func requestOf(env workReleased) (usecases.WorkReleasedRequest, error) {
 		Replenishment: replenishment,
 		Pick:          pick,
 		CaseBreak:     caseBreak,
+		SiteId:        orderSiteOf(env.Data, transfer),
 	}, nil
+}
+
+// orderSiteOf is the raw WorkReleased.site_id of a release that is not
+// transfer work, or "" (ADR 0065). The wire field is shared: on transfer work
+// it is the transfer fact's site and rides inside task.TransferDetails, so it
+// must not also become the order's site; on order work it is the site the
+// order named. It is passed through unvalidated — the use case ignores a
+// malformed one with a WARN, so an invalid optional site can never fail or
+// dead-letter the release.
+func orderSiteOf(d WorkReleasedData, transfer *task.TransferDetails) string {
+	if transfer != nil {
+		return ""
+	}
+	return d.SiteId
 }
 
 // pickPlanOf maps the optional WorkReleased pick object onto a validated

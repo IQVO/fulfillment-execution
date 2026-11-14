@@ -59,12 +59,21 @@ func (uc *CreateTask) ExecuteRelease(ctx context.Context, taskType task.Type, cp
 // plan, so its completion requires the scans to add up to the planned
 // quantity. A nil plan makes this identical to ExecuteRelease.
 func (uc *CreateTask) ExecuteReleaseWithPick(ctx context.Context, taskType task.Type, cpt shared.CPT, orderRef shared.OrderRef, required shared.CapabilitySet, fragile bool, giftWrap bool, sourceOrderId string, sourceLineNo int, transfer *task.TransferDetails, pick *task.PickPlan) (*task.Task, error) {
+	return uc.ExecuteReleaseWithPickAtSite(ctx, taskType, cpt, orderRef, required, fragile, giftWrap, sourceOrderId, sourceLineNo, transfer, pick, "")
+}
+
+// ExecuteReleaseWithPickAtSite is ExecuteReleaseWithPick for work whose order
+// named a fulfillment site (WorkReleased.site_id, ADR 0065): the task keeps
+// it as its order site, and PackageManifested later publishes it as site_id.
+// An empty or malformed orderSiteId leaves the task without one, and the
+// transfer branch is untouched by it: callers pass "" for transfer work.
+func (uc *CreateTask) ExecuteReleaseWithPickAtSite(ctx context.Context, taskType task.Type, cpt shared.CPT, orderRef shared.OrderRef, required shared.CapabilitySet, fragile bool, giftWrap bool, sourceOrderId string, sourceLineNo int, transfer *task.TransferDetails, pick *task.PickPlan, orderSiteId string) (*task.Task, error) {
 	id := uc.NewId()
 	if transfer == nil {
-		t := task.New(id, taskType, cpt, orderRef, required, fragile, giftWrap).WithSourceOrderId(sourceOrderId).WithSourceLineNo(sourceLineNo).WithPickPlan(pick, 0)
+		t := task.New(id, taskType, cpt, orderRef, required, fragile, giftWrap).WithSourceOrderId(sourceOrderId).WithSourceLineNo(sourceLineNo).WithPickPlan(pick, 0).WithOrderSiteId(orderSiteId)
 		return uc.save(ctx, t)
 	}
-	t := task.NewTransferTask(id, taskType, cpt, orderRef, required, fragile, giftWrap, *transfer).WithSourceOrderId(sourceOrderId).WithSourceLineNo(sourceLineNo).WithPickPlan(pick, 0)
+	t := task.NewTransferTask(id, taskType, cpt, orderRef, required, fragile, giftWrap, *transfer).WithSourceOrderId(sourceOrderId).WithSourceLineNo(sourceLineNo).WithPickPlan(pick, 0).WithOrderSiteId(orderSiteId)
 	return uc.save(ctx, t)
 }
 
