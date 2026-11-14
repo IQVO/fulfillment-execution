@@ -20,20 +20,13 @@ Feature: The lease rules of the Task aggregate and its two sweeps
     And the response field "leaseExpiry" is "2026-01-01T12:05:00Z"
 
   @bdd
-  Scenario: A station holding more capabilities than the task requires can still take it
+  Scenario: A station holding more capabilities than the task requires takes it, with nobody checked in
     Given a Station "multi-01" is registered with capabilities "pick,hazmat,fragile"
     And a "PICK" Task for order "order-1" with a CPT 120 minutes from now requiring capabilities "pick"
     When Station "multi-01" calls claimNext for task type "PICK"
     Then the response status is 200
     And the claimed Task is the one for order "order-1"
-
-  @bdd
-  Scenario: Claiming does not require the station to be occupied
-    Given a Station "pick-01" is registered with capabilities "pick"
-    And a "PICK" Task for order "order-1" with a CPT 120 minutes from now requiring capabilities "pick"
-    When Station "pick-01" calls claimNext for task type "PICK"
-    Then the response status is 200
-    When Station "pick-01" completes the claimed Task
+    When Station "multi-01" completes the claimed Task
     Then the response status is 204
 
   # --- Lease boundaries (T3, T5, T6) ---------------------------------------------

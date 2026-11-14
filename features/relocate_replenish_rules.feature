@@ -70,45 +70,32 @@ Feature: Relocate and replenish work: the operator confirms what was physically 
   # --- completing a RELOCATE task (ADR-0047) -----------------------------------------
 
   @bdd
-  Scenario: Completing a Relocate move publishes the executed move with its plan reference
-    Given a Station "reloc-01" is registered with capabilities "relocate"
-    And work planning has released a RELOCATE move "Relocate" of SKU "SKU-1001" in plan "plan-7" step 3 as work unit "wu-reloc-1" from bin "WH1-FWD-A01-01" to bin "WH1-FWD-B02-04"
-    And Station "reloc-01" has claimed the next "RELOCATE" Task
-    When Station "reloc-01" completes the claimed Task with the confirmation {"quantity":12}
-    Then the response status is 204
-    And the task for order "wu-reloc-1" shows "status" as "COMPLETED"
-    And the task for order "wu-reloc-1" shows "relocation.executed.quantity" as "12"
-    And the task for order "wu-reloc-1" shows "relocation.executed.fromBin" as "WH1-FWD-A01-01"
-    And the task for order "wu-reloc-1" shows "relocation.executed.toBin" as "WH1-FWD-B02-04"
-    When the recorded events are encoded for the integration topic
-    Then the integration topic carries 1 "TaskCompleted" message
-    And the "TaskCompleted" integration message has "data.task_type" equal to "RELOCATE"
-    And the "TaskCompleted" integration message has "data.sku" equal to "SKU-1001"
-    And the "TaskCompleted" integration message has "data.from_bin" equal to "WH1-FWD-A01-01"
-    And the "TaskCompleted" integration message has "data.to_bin" equal to "WH1-FWD-B02-04"
-    And the "TaskCompleted" integration message has "data.quantity" equal to "12"
-    And the "TaskCompleted" integration message has "data.relocation_ref" equal to "plan-7:3"
-    And the "TaskCompleted" integration message has no "data.request_ref"
-
-  @bdd
-  Scenario Outline: The operator's scan fills the side the move left open
+  Scenario Outline: Completing a RELOCATE move publishes the executed bins, the operator's scan filling the side the move left open
     Given a Station "reloc-01" is registered with capabilities "relocate"
     And work planning has released a RELOCATE move "<kind>" of SKU "SKU-1001" in plan "plan-7" step 4 as work unit "wu-reloc-1" from bin "<from>" to bin "<to>"
     And Station "reloc-01" has claimed the next "RELOCATE" Task
     When Station "reloc-01" completes the claimed Task with the confirmation <confirmation>
     Then the response status is 204
+    And the task for order "wu-reloc-1" shows "status" as "COMPLETED"
+    And the task for order "wu-reloc-1" shows "relocation.executed.quantity" as "<quantity>"
     And the task for order "wu-reloc-1" shows "relocation.executed.fromBin" as "<executed_from>"
     And the task for order "wu-reloc-1" shows "relocation.executed.toBin" as "<executed_to>"
     When the recorded events are encoded for the integration topic
-    Then the "TaskCompleted" integration message has "data.from_bin" equal to "<executed_from>"
+    Then the integration topic carries 1 "TaskCompleted" message
+    And the "TaskCompleted" integration message has "data.task_type" equal to "RELOCATE"
+    And the "TaskCompleted" integration message has "data.sku" equal to "SKU-1001"
+    And the "TaskCompleted" integration message has "data.from_bin" equal to "<executed_from>"
     And the "TaskCompleted" integration message has "data.to_bin" equal to "<executed_to>"
+    And the "TaskCompleted" integration message has "data.quantity" equal to "<quantity>"
     And the "TaskCompleted" integration message has "data.relocation_ref" equal to "plan-7:4"
+    And the "TaskCompleted" integration message has no "data.request_ref"
 
     Examples:
-      | kind   | from           | to             | confirmation                                                            | executed_from  | executed_to    |
-      | Assign |                | WH1-FWD-A01-01 | {"quantity":6,"fromBin":"WH1-RES-C07-02"}                               | WH1-RES-C07-02 | WH1-FWD-A01-01 |
-      | Assign |                | WH1-FWD-A01-01 | {"quantity":6,"fromBin":"WH1-RES-C07-02","toBin":"WH1-FWD-A01-01"}      | WH1-RES-C07-02 | WH1-FWD-A01-01 |
-      | Vacate | WH1-FWD-A01-01 |                | {"quantity":6,"toBin":"WH1-RES-C07-02"}                                 | WH1-FWD-A01-01 | WH1-RES-C07-02 |
+      | kind     | from           | to             | confirmation                                                       | quantity | executed_from  | executed_to    |
+      | Relocate | WH1-FWD-A01-01 | WH1-FWD-B02-04 | {"quantity":12}                                                    | 12       | WH1-FWD-A01-01 | WH1-FWD-B02-04 |
+      | Assign   |                | WH1-FWD-A01-01 | {"quantity":6,"fromBin":"WH1-RES-C07-02"}                          | 6        | WH1-RES-C07-02 | WH1-FWD-A01-01 |
+      | Assign   |                | WH1-FWD-A01-01 | {"quantity":6,"fromBin":"WH1-RES-C07-02","toBin":"WH1-FWD-A01-01"} | 6        | WH1-RES-C07-02 | WH1-FWD-A01-01 |
+      | Vacate   | WH1-FWD-A01-01 |                | {"quantity":6,"toBin":"WH1-RES-C07-02"}                            | 6        | WH1-FWD-A01-01 | WH1-RES-C07-02 |
 
   @bdd
   Scenario Outline: A confirmation that does not fit the planned move is refused and the task stays claimed
@@ -131,18 +118,23 @@ Feature: Relocate and replenish work: the operator confirms what was physically 
       | Vacate   | WH1-FWD-A01-01 |                | {"quantity":6,"toBin":"WH1-FWD-A01-01"}   |
 
   @bdd
-  Scenario: A plain completion of a RELOCATE task is refused until the operator confirms
-    Given a Station "reloc-01" is registered with capabilities "relocate"
-    And work planning has released a RELOCATE move "Relocate" of SKU "SKU-1001" in plan "plan-7" step 3 as work unit "wu-reloc-1" from bin "WH1-FWD-A01-01" to bin "WH1-FWD-B02-04"
-    And Station "reloc-01" has claimed the next "RELOCATE" Task
-    When Station "reloc-01" completes the claimed Task
+  Scenario Outline: A plain completion of a move task is refused until the operator confirms
+    Given a Station "<station>" is registered with capabilities "<capability>"
+    And <release>
+    And Station "<station>" has claimed the next "<type>" Task
+    When Station "<station>" completes the claimed Task
     Then the response status is 422
-    And the response is a Problem Details document of type "relocation-confirmation-required"
-    And the "RELOCATE" Task for order "wu-reloc-1" has status "CLAIMED"
+    And the response is a Problem Details document of type "<slug>"
+    And the "<type>" Task for order "wu-1" has status "CLAIMED"
     And no "TaskCompleted" domain event is recorded
-    When Station "reloc-01" completes the claimed Task with the confirmation {"quantity":12}
+    When Station "<station>" completes the claimed Task with the confirmation <confirmation>
     Then the response status is 204
     And exactly 1 "TaskCompleted" domain event is recorded
+
+    Examples:
+      | station  | capability | type      | slug                                | confirmation   | release                                                                                                                                                                              |
+      | reloc-01 | relocate   | RELOCATE  | relocation-confirmation-required    | {"quantity":12} | work planning has released a RELOCATE move "Relocate" of SKU "SKU-1001" in plan "plan-7" step 3 as work unit "wu-1" from bin "WH1-FWD-A01-01" to bin "WH1-FWD-B02-04"                 |
+      | repl-01  | replenish  | REPLENISH | replenishment-confirmation-required | {"quantity":24} | work planning has released a REPLENISH request "req-9001" of 24 units of SKU "SKU-2002" from bin "WH1-RES-C07-02" to bin "WH1-FWD-A01-01" with priority "NORMAL" as work unit "wu-1" |
 
   @bdd
   Scenario: The claim rules run before the confirmation is looked at
@@ -177,36 +169,23 @@ Feature: Relocate and replenish work: the operator confirms what was physically 
       | {"toBin":"WH1-RES-C07-02"}                |
 
   @bdd
-  Scenario Outline: A count below one never completes a move task
+  Scenario Outline: A move task is never completed by a count below one or by a scanned bin without a count
     Given a Station "<station>" is registered with capabilities "<capability>"
     And <release>
     And Station "<station>" has claimed the next "<type>" Task
-    When Station "<station>" completes the claimed Task with the confirmation {"quantity":<quantity>}
-    Then the response is a client error
+    When Station "<station>" completes the claimed Task with the confirmation <confirmation>
+    Then <check>
     And the "<type>" Task for order "wu-1" has status "CLAIMED"
     And no "TaskCompleted" domain event is recorded
 
     Examples:
-      | station  | capability | type      | quantity | release                                                                                                                                                                              |
-      | reloc-01 | relocate   | RELOCATE  | 0        | work planning has released a RELOCATE move "Relocate" of SKU "SKU-1001" in plan "plan-7" step 3 as work unit "wu-1" from bin "WH1-FWD-A01-01" to bin "WH1-FWD-B02-04"                 |
-      | reloc-01 | relocate   | RELOCATE  | -3       | work planning has released a RELOCATE move "Relocate" of SKU "SKU-1001" in plan "plan-7" step 3 as work unit "wu-1" from bin "WH1-FWD-A01-01" to bin "WH1-FWD-B02-04"                 |
-      | repl-01  | replenish  | REPLENISH | 0        | work planning has released a REPLENISH request "req-9001" of 24 units of SKU "SKU-2002" from bin "WH1-RES-C07-02" to bin "WH1-FWD-A01-01" with priority "NORMAL" as work unit "wu-1" |
-      | repl-01  | replenish  | REPLENISH | -3       | work planning has released a REPLENISH request "req-9001" of 24 units of SKU "SKU-2002" from bin "WH1-RES-C07-02" to bin "WH1-FWD-A01-01" with priority "NORMAL" as work unit "wu-1" |
-
-  @bdd
-  Scenario Outline: A scanned bin without a count never completes a move task
-    Given a Station "<station>" is registered with capabilities "<capability>"
-    And <release>
-    And Station "<station>" has claimed the next "<type>" Task
-    When Station "<station>" completes the claimed Task with the confirmation {"fromBin":"WH1-FWD-A01-01"}
-    Then the response status is 422
-    And the "<type>" Task for order "wu-1" has status "CLAIMED"
-    And no "TaskCompleted" domain event is recorded
-
-    Examples:
-      | station  | capability | type      | release                                                                                                                                                                              |
-      | reloc-01 | relocate   | RELOCATE  | work planning has released a RELOCATE move "Relocate" of SKU "SKU-1001" in plan "plan-7" step 3 as work unit "wu-1" from bin "WH1-FWD-A01-01" to bin "WH1-FWD-B02-04"                 |
-      | repl-01  | replenish  | REPLENISH | work planning has released a REPLENISH request "req-9001" of 24 units of SKU "SKU-2002" from bin "WH1-FWD-A01-01" to bin "WH1-FWD-B02-04" with priority "NORMAL" as work unit "wu-1" |
+      | station  | capability | type      | confirmation                 | check                          | release                                                                                                                                                                              |
+      | reloc-01 | relocate   | RELOCATE  | {"quantity":0}               | the response is a client error | work planning has released a RELOCATE move "Relocate" of SKU "SKU-1001" in plan "plan-7" step 3 as work unit "wu-1" from bin "WH1-FWD-A01-01" to bin "WH1-FWD-B02-04"                |
+      | reloc-01 | relocate   | RELOCATE  | {"quantity":-3}              | the response is a client error | work planning has released a RELOCATE move "Relocate" of SKU "SKU-1001" in plan "plan-7" step 3 as work unit "wu-1" from bin "WH1-FWD-A01-01" to bin "WH1-FWD-B02-04"                |
+      | reloc-01 | relocate   | RELOCATE  | {"fromBin":"WH1-FWD-A01-01"} | the response status is 422     | work planning has released a RELOCATE move "Relocate" of SKU "SKU-1001" in plan "plan-7" step 3 as work unit "wu-1" from bin "WH1-FWD-A01-01" to bin "WH1-FWD-B02-04"                |
+      | repl-01  | replenish  | REPLENISH | {"quantity":0}               | the response is a client error | work planning has released a REPLENISH request "req-9001" of 24 units of SKU "SKU-2002" from bin "WH1-RES-C07-02" to bin "WH1-FWD-A01-01" with priority "NORMAL" as work unit "wu-1" |
+      | repl-01  | replenish  | REPLENISH | {"quantity":-3}              | the response is a client error | work planning has released a REPLENISH request "req-9001" of 24 units of SKU "SKU-2002" from bin "WH1-RES-C07-02" to bin "WH1-FWD-A01-01" with priority "NORMAL" as work unit "wu-1" |
+      | repl-01  | replenish  | REPLENISH | {"fromBin":"WH1-RES-C07-02"} | the response status is 422     | work planning has released a REPLENISH request "req-9001" of 24 units of SKU "SKU-2002" from bin "WH1-RES-C07-02" to bin "WH1-FWD-A01-01" with priority "NORMAL" as work unit "wu-1" |
 
   # --- completing a REPLENISH task (ADR-0050) ----------------------------------------
 
@@ -224,13 +203,14 @@ Feature: Relocate and replenish work: the operator confirms what was physically 
     And the task for order "wu-rep-1" shows nothing at "replenishment.executed"
 
   @bdd
-  Scenario: Completing a replenishment with the count publishes the planned bins and the request reference
+  Scenario Outline: A replenishment records the operator's count against the planned bins and the request reference
     Given a Station "repl-01" is registered with capabilities "replenish"
     And work planning has released a REPLENISH request "req-9001" of 24 units of SKU "SKU-2002" from bin "WH1-RES-C07-02" to bin "WH1-FWD-A01-01" with priority "NORMAL" as work unit "wu-rep-1"
     And Station "repl-01" has claimed the next "REPLENISH" Task
-    When Station "repl-01" completes the claimed Task with the confirmation {"quantity":24}
+    When Station "repl-01" completes the claimed Task with the confirmation {"quantity":<counted>}
     Then the response status is 204
-    And the task for order "wu-rep-1" shows "replenishment.executed.quantity" as "24"
+    And the task for order "wu-rep-1" shows "replenishment.quantity" as "24"
+    And the task for order "wu-rep-1" shows "replenishment.executed.quantity" as "<counted>"
     And the task for order "wu-rep-1" shows "replenishment.executed.fromBin" as "WH1-RES-C07-02"
     And the task for order "wu-rep-1" shows "replenishment.executed.toBin" as "WH1-FWD-A01-01"
     When the recorded events are encoded for the integration topic
@@ -238,21 +218,14 @@ Feature: Relocate and replenish work: the operator confirms what was physically 
     And the "TaskCompleted" integration message has "data.sku" equal to "SKU-2002"
     And the "TaskCompleted" integration message has "data.from_bin" equal to "WH1-RES-C07-02"
     And the "TaskCompleted" integration message has "data.to_bin" equal to "WH1-FWD-A01-01"
-    And the "TaskCompleted" integration message has "data.quantity" equal to "24"
+    And the "TaskCompleted" integration message has "data.quantity" equal to "<counted>"
     And the "TaskCompleted" integration message has "data.request_ref" equal to "req-9001"
     And the "TaskCompleted" integration message has no "data.relocation_ref"
 
-  @bdd
-  Scenario: The operator's count, not the planned quantity, is what a replenishment records
-    Given a Station "repl-01" is registered with capabilities "replenish"
-    And work planning has released a REPLENISH request "req-9001" of 24 units of SKU "SKU-2002" from bin "WH1-RES-C07-02" to bin "WH1-FWD-A01-01" with priority "NORMAL" as work unit "wu-rep-1"
-    And Station "repl-01" has claimed the next "REPLENISH" Task
-    When Station "repl-01" completes the claimed Task with the confirmation {"quantity":20}
-    Then the response status is 204
-    And the task for order "wu-rep-1" shows "replenishment.quantity" as "24"
-    And the task for order "wu-rep-1" shows "replenishment.executed.quantity" as "20"
-    When the recorded events are encoded for the integration topic
-    Then the "TaskCompleted" integration message has "data.quantity" equal to "20"
+    Examples:
+      | counted |
+      | 24      |
+      | 20      |
 
   @bdd
   Scenario Outline: A scanned bin is optional on a replenishment and accepted when it equals the plan
@@ -287,18 +260,6 @@ Feature: Relocate and replenish work: the operator confirms what was physically 
       | {"quantity":24,"toBin":"WH1-FWD-A09-09"}    |
 
   @bdd
-  Scenario: A plain completion of a REPLENISH task is refused until the operator counts
-    Given a Station "repl-01" is registered with capabilities "replenish"
-    And work planning has released a REPLENISH request "req-9001" of 24 units of SKU "SKU-2002" from bin "WH1-RES-C07-02" to bin "WH1-FWD-A01-01" with priority "NORMAL" as work unit "wu-rep-1"
-    And Station "repl-01" has claimed the next "REPLENISH" Task
-    When Station "repl-01" completes the claimed Task
-    Then the response status is 422
-    And the response is a Problem Details document of type "replenishment-confirmation-required"
-    And the "REPLENISH" Task for order "wu-rep-1" has status "CLAIMED"
-    When Station "repl-01" completes the claimed Task with the confirmation {"quantity":24}
-    Then the response status is 204
-
-  @bdd
   Scenario Outline: A replenishment is claimed by earliest CPT and never by its priority
     Given a Station "repl-01" is registered with capabilities "replenish"
     And work planning has released a REPLENISH request "req-normal" of 24 units of SKU "SKU-2002" from bin "WH1-RES-C07-02" to bin "WH1-FWD-A01-01" with priority "NORMAL" as work unit "wu-normal" due in 30 minutes
@@ -315,37 +276,28 @@ Feature: Relocate and replenish work: the operator confirms what was physically 
   # --- the WorkReleased contract of the two move paths ---------------------------------
 
   @bdd
-  Scenario Outline: A released move that breaks the relocation contract is rejected and creates no task
+  Scenario Outline: A released move is accepted only when it keeps the relocation contract
     When work planning publishes a WorkReleased event "evt-r" for work unit "wu-r" on path "relocate-slotting" with the "relocation" object <move>
-    Then the consumer rejects the message
-    And the order "wu-r" has 0 "RELOCATE" Tasks
-    And no "TaskCreated" domain event is recorded
+    Then the consumer <verdict> the message
+    And the order "wu-r" has <tasks> "RELOCATE" Tasks
+    And exactly <created> "TaskCreated" domain events are recorded
 
     Examples:
-      | move                                                                                                  |
-      | {"plan_id":"plan-7","kind":"Relocate","sku":"SKU-1001","from_bin":"A-01","to_bin":"B-02"}             |
-      | {"plan_id":"plan-7","move_seq":-1,"kind":"Relocate","sku":"SKU-1001","from_bin":"A-01","to_bin":"B-02"} |
-      | {"plan_id":"plan-7","move_seq":1,"kind":"Teleport","sku":"SKU-1001","from_bin":"A-01","to_bin":"B-02"}  |
-      | {"plan_id":"plan-7","move_seq":1,"kind":"relocate","sku":"SKU-1001","from_bin":"A-01","to_bin":"B-02"}  |
-      | {"plan_id":"plan-7","move_seq":1,"kind":"Relocate","sku":"SKU-1001","from_bin":"A-01"}                 |
-      | {"plan_id":"plan-7","move_seq":1,"kind":"Relocate","sku":"SKU-1001","to_bin":"B-02"}                   |
-      | {"plan_id":"plan-7","move_seq":1,"kind":"Assign","sku":"SKU-1001","from_bin":"A-01"}                   |
-      | {"plan_id":"plan-7","move_seq":1,"kind":"Vacate","sku":"SKU-1001","to_bin":"B-02"}                     |
-      | {"plan_id":"plan-7","move_seq":1,"kind":"Relocate","sku":"SKU-1001","from_bin":"A-01","to_bin":"A-01"}  |
-      | {"plan_id":" ","move_seq":1,"kind":"Relocate","sku":"SKU-1001","from_bin":"A-01","to_bin":"B-02"}       |
-      | {"plan_id":"plan-7","move_seq":1,"kind":"Relocate","sku":" ","from_bin":"A-01","to_bin":"B-02"}         |
-
-  @bdd
-  Scenario Outline: A move at the edge of the relocation contract is accepted
-    When work planning publishes a WorkReleased event "evt-r" for work unit "wu-r" on path "relocate-slotting" with the "relocation" object <move>
-    Then the consumer accepts the message
-    And the order "wu-r" has 1 "RELOCATE" Task
-
-    Examples:
-      | move                                                                                                   |
-      | {"plan_id":"plan-7","move_seq":0,"kind":"Relocate","sku":"SKU-1001","from_bin":"A-01","to_bin":"B-02"}  |
-      | {"plan_id":"plan-7","move_seq":1,"kind":"Assign","sku":"SKU-1001","from_bin":"R-07","to_bin":"B-02"}    |
-      | {"plan_id":"plan-7","move_seq":1,"kind":"Vacate","sku":"SKU-1001","from_bin":"A-01","to_bin":"R-07"}    |
+      | move                                                                                                    | verdict | tasks | created |
+      | {"plan_id":"plan-7","kind":"Relocate","sku":"SKU-1001","from_bin":"A-01","to_bin":"B-02"}               | rejects | 0     | 0       |
+      | {"plan_id":"plan-7","move_seq":-1,"kind":"Relocate","sku":"SKU-1001","from_bin":"A-01","to_bin":"B-02"} | rejects | 0     | 0       |
+      | {"plan_id":"plan-7","move_seq":1,"kind":"Teleport","sku":"SKU-1001","from_bin":"A-01","to_bin":"B-02"}  | rejects | 0     | 0       |
+      | {"plan_id":"plan-7","move_seq":1,"kind":"relocate","sku":"SKU-1001","from_bin":"A-01","to_bin":"B-02"}  | rejects | 0     | 0       |
+      | {"plan_id":"plan-7","move_seq":1,"kind":"Relocate","sku":"SKU-1001","from_bin":"A-01"}                  | rejects | 0     | 0       |
+      | {"plan_id":"plan-7","move_seq":1,"kind":"Relocate","sku":"SKU-1001","to_bin":"B-02"}                    | rejects | 0     | 0       |
+      | {"plan_id":"plan-7","move_seq":1,"kind":"Assign","sku":"SKU-1001","from_bin":"A-01"}                    | rejects | 0     | 0       |
+      | {"plan_id":"plan-7","move_seq":1,"kind":"Vacate","sku":"SKU-1001","to_bin":"B-02"}                      | rejects | 0     | 0       |
+      | {"plan_id":"plan-7","move_seq":1,"kind":"Relocate","sku":"SKU-1001","from_bin":"A-01","to_bin":"A-01"}  | rejects | 0     | 0       |
+      | {"plan_id":" ","move_seq":1,"kind":"Relocate","sku":"SKU-1001","from_bin":"A-01","to_bin":"B-02"}       | rejects | 0     | 0       |
+      | {"plan_id":"plan-7","move_seq":1,"kind":"Relocate","sku":" ","from_bin":"A-01","to_bin":"B-02"}         | rejects | 0     | 0       |
+      | {"plan_id":"plan-7","move_seq":0,"kind":"Relocate","sku":"SKU-1001","from_bin":"A-01","to_bin":"B-02"}  | accepts | 1     | 1       |
+      | {"plan_id":"plan-7","move_seq":1,"kind":"Assign","sku":"SKU-1001","from_bin":"R-07","to_bin":"B-02"}    | accepts | 1     | 1       |
+      | {"plan_id":"plan-7","move_seq":1,"kind":"Vacate","sku":"SKU-1001","from_bin":"A-01","to_bin":"R-07"}    | accepts | 1     | 1       |
 
   @bdd
   Scenario Outline: A move released on the wrong path is rejected and creates no task
