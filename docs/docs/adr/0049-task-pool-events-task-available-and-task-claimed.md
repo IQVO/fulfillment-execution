@@ -136,3 +136,7 @@ time on re-entry after a lease expiry.
   task that cannot be found yields no message.
 - Out of scope: the REPLENISH task type, consuming `InterleavingHintIssued`, the
   hint tie-break inside `claimNext`, and any REST change.
+
+## Addendum (2026-11-13): current state
+
+The scope above, "one kind of task only: a RELOCATE task", has widened. A REPLENISH task is announced with both bins ([ADR-0050](./0050-replenish-tasks-execute-pick-face-replenishment.md)), and a PICK whose plan carries both a site and a pick face is announced too ([ADR-0062](./0062-pick-tasks-are-announced-to-the-open-task-pool.md)); see `Task.Placement()` in `internal/domain/task/placement.go:32`. A task with no determinable location is still not announced (`internal/adapters/outbound/kafka/task_pool_events.go:66`).

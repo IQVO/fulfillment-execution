@@ -49,3 +49,7 @@ payloads as-is.
 - Standards (ADR 0004) stay frozen; whether batched picks beating a
   single-pick standard warrants a revision is a human decision after wave 4
   data.
+
+## Addendum (2026-11-13): current state
+
+Built and on `develop` (PR #280): `tasks.work_started_at` is migration `0026_task_work_started_at`; `Task.StartWork` and `Task.DurationBase` are in `internal/domain/task/task.go:319` and `:338`; `CompleteTask` starts the next member's clock (`internal/application/usecases/complete_task.go:119`); and `duration_seconds` is measured from `DurationBase()` (`internal/adapters/outbound/kafka/publisher_encode.go:32`). The Status line above is unchanged.

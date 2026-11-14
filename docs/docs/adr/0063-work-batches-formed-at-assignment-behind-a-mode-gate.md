@@ -96,3 +96,7 @@ task X from `ClaimNext` must receive a walk anchored on X.
   fleet behaves exactly as before this ADR.
 - Wave 4 (shadow) decides whether `on` ever happens; if average batch size
   stays near 1, the plan says stop there.
+
+## Addendum (2026-11-13): current state
+
+Built and on `develop` (PR #280), behind `PICK_BATCH_MODE` (default `off`): the `WorkBatch` aggregate (`internal/domain/workbatch/workbatch.go:154`, `Form`), `FormWorkBatch` (`internal/application/usecases/form_work_batch.go:125`), tables from migration `0027_work_batch`, and `POST /stations/{stationId}/work-batches`. `WorkBatchFormed`, `WorkBatchCompleted` and `WorkBatchAbandoned` are published on both topics only with mode `on` (`internal/adapters/outbound/kafka/publisher.go:387`, `analytics_publisher.go:142`, `apis/asyncapi.yaml`). The `shadow` value parses, but `FormWorkBatch` answers `ErrBatchModeOff` for every mode except `on` (`form_work_batch.go:126`): the shadow compute-only path is not built. No sibling consumes the three events yet (`x-no-consumer-reason` in `apis/asyncapi.yaml`). The Status line above is unchanged.

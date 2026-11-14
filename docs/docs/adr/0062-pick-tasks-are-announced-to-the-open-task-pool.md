@@ -86,3 +86,7 @@ pinned here as consumed, independently of the producing branch:
   testcontainers tests.
 - Rollback: revert the deploy; `tasks.pick_site_id` is nullable and unused
   by older code. No data migration needed in either direction.
+
+## Addendum (2026-11-13): current state
+
+Built and on `develop` (PR #279): `Task.Placement()` returns a placement for a PICK with both a site and a pick face, and none otherwise (`internal/domain/task/placement.go:32`, `pickPlacement` at `:65`); `tasks.pick_site_id` is migration `0025_task_pick_site_id`; the `TaskAvailable` description in `apis/asyncapi.yaml` states that a sited PICK is announced. The Status line above is unchanged.
