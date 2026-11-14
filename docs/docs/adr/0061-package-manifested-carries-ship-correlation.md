@@ -132,3 +132,14 @@ left out of `ShipmentConfirmed.orders[]` and counted in analytics.
 - Legacy manifests (published before this change) never carry the
   correlation fields; downstream backfills, if any, are the consumer's
   concern.
+
+## Addendum (2026-11-14): `site_id` and `cpt` now have sources
+
+[ADR 0065](./0065-the-orders-site-travels-from-work-released-to-package-manifested.md)
+lands the site source this record waited for: the order's site travels from
+`WorkReleased.site_id` to the PICK tasks, the rebin PACK task inherits it, and
+`PackageManifested` publishes it as `site_id`. It also changes two statements
+above. `site_id` is no longer "declared-but-always-omitted" (it is omitted only
+when the order named no site), and "No SLAM task, no `cpt`" no longer holds:
+with no SLAM task, which is every customer order, `cpt` is the PACK task's CPT.
+Everything else here is unchanged.

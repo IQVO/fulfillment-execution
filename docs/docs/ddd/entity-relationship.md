@@ -3,7 +3,7 @@ id: entity-relationship
 title: Entity-relationship diagram
 sidebar_label: Entity-relationship diagram
 sidebar_position: 16
-description: ER diagrams of the final Fulfillment Execution schemas — the OLTP database after migrations 0001 to 0027 and the separate analytics database after analytics migrations 0001 and 0002 — with the table-to-aggregate mapping.
+description: ER diagrams of the final Fulfillment Execution schemas — the OLTP database after migrations 0001 to 0028 and the separate analytics database after analytics migrations 0001 and 0002 — with the table-to-aggregate mapping.
 ---
 
 # Entity-relationship diagram
@@ -13,7 +13,7 @@ startup:
 
 - **OLTP** (`DATABASE_URL`, migrated over `MIGRATIONS_DATABASE_URL` when
   set — [ADR-0031](../adr/0031-migrations-direct-postgres-connection.md))
-  — `migrations/0001` to `0027`, applied by `cmd/execution`, `cmd/mcp` and `cmd/a2a` (each runs the migrations at boot).
+  — `migrations/0001` to `0028`, applied by `cmd/execution`, `cmd/mcp` and `cmd/a2a` (each runs the migrations at boot).
 - **Analytics** (`ANALYTICS_DATABASE_URL`) — `migrations/analytics/0001`
   and `0002`, applied by `cmd/fulfillment-projector` and read by
   `cmd/fulfillment-reports` ([ADR-0012](../adr/0012-analytical-data-product.md)).
@@ -28,7 +28,7 @@ meaning without it. Every other link is held by id. The logical links are
 explained below the diagrams — each one crosses an aggregate boundary, which
 is exactly why it is held by id and not by a constraint.
 
-## OLTP schema (final, after 0027)
+## OLTP schema (final, after 0028)
 
 ```mermaid
 erDiagram
@@ -50,7 +50,7 @@ erDiagram
         text site_id "0014, nullable"
         text sku "0014, nullable"
         integer quantity "0014, nullable"
-        text source_order_id "0016, nullable - order id from WorkReleased.ref, order work only"
+        text source_order_id "0016, nullable, partial index where not null (0028) - order id from WorkReleased.ref, order work only"
         integer source_line_no "0017, nullable - order line from WorkReleased.line_no, order work only"
         text relocation_plan_id "0019, nullable - present means RELOCATE work"
         integer relocation_move_seq "0019, nullable"
@@ -81,6 +81,7 @@ erDiagram
         text break_pick_task_id "0023, nullable - the EACH pick that found only the case"
         text pick_site_id "0025, nullable - site the PICK plan is worked at"
         timestamptz work_started_at "0026, nullable - NULL means the claim time; set only for work batch members"
+        text order_site_id "0028, nullable - the fulfillment site the order named (WorkReleased.site_id on order work; the rebin PACK task inherits it from the order's PICK tasks); published as PackageManifested.site_id"
     }
     stations {
         text id PK
@@ -195,7 +196,7 @@ erDiagram
     }
 ```
 
-Source: `migrations/0001_init.up.sql` to `migrations/0027_work_batch.up.sql`,
+Source: `migrations/0001_init.up.sql` to `migrations/0028_task_order_site_id.up.sql`,
 applied in order; `0018_drop_domain_events` removed the legacy `domain_events` table
 ([ADR-0045](../adr/0045-drop-legacy-domain-events-table.md)); `schema_migrations` is golang-migrate's own table
 (`internal/adapters/outbound/postgres/migrate.go`). Array columns are shown
