@@ -295,6 +295,29 @@ jobs:
       - name: govulncheck
         run: govulncheck ./...
 
+  # ============================================================
+  # CLASSIFICATION: CONTRACT DRIFT (pinned producer specs)
+  # ============================================================
+  # Every contract test in this repo validates against a byte-copy of a
+  # producer's spec registered in contracts/pinned.json. A copy nobody
+  # refreshes keeps the tests green while the producer moves on, so this
+  # job re-reads each producer's develop and fails on any byte difference.
+  # The producer repos are public; a producer that cannot be read fails the
+  # job (exit 2), never passes it.
+  pinned-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Pins equal the producer's develop
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/harness/pinned_contract_gate.py
+      - name: The gate's own tests
+        run: python3 scripts/harness/test_pinned_contract_gate.py
+
   mutation:
     runs-on: ubuntu-latest
     permissions:
@@ -597,7 +620,7 @@ jobs:
   docker-publish:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: [lint, complexity, test, bdd, contract, integration, mutation-fast, vuln, api-lint, arch-test, evals-tests]
+    needs: [lint, complexity, test, bdd, contract, integration, mutation-fast, vuln, api-lint, arch-test, evals-tests, pinned-contracts]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read

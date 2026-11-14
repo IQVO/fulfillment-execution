@@ -1,0 +1,53 @@
+{
+  "_doc": "Every contract copy this repo pins from a producer, and the producer branch it must equal. scripts/harness/pinned_contract_gate.py fails when a copy differs from the producer's develop. Refresh = copy the file, never edit it. The two IQVO/fulfillment-execution pins are SELF-pins: this repo's own reports REST spec (the mcp tool's intra-repo client, REPORTS_BASE_URL) and its own AsyncAPI (the analytics projector consuming this repo's own warehouse.fulfillment.analytics stream) — intentional, not a gate-script mistake.",
+  "pins": [
+    {
+      "local": "internal/adapters/outbound/facilitylayout/testdata/facility-layout.openapi.yaml",
+      "repo": "IQVO/facility-layout",
+      "path": "apis/openapi.yaml",
+      "ref": "develop"
+    },
+    {
+      "local": "internal/adapters/outbound/inventorystorage/testdata/inventory-storage.openapi.yaml",
+      "repo": "IQVO/inventory-storage",
+      "path": "apis/openapi.yaml",
+      "ref": "develop"
+    },
+    {
+      "local": "internal/adapters/inbound/mcp/testdata/fulfillment-execution.openapi-reports.yaml",
+      "repo": "IQVO/fulfillment-execution",
+      "path": "apis/openapi-reports.yaml",
+      "ref": "develop"
+    },
+    {
+      "local": "internal/adapters/inbound/kafka/testdata/wes-work-planning.asyncapi.yaml",
+      "repo": "IQVO/wes-work-planning",
+      "path": "apis/asyncapi.yaml",
+      "ref": "develop"
+    },
+    {
+      "local": "internal/adapters/inbound/kafka/testdata/product-master.asyncapi.yaml",
+      "repo": "IQVO/product-master",
+      "path": "apis/asyncapi.yaml",
+      "ref": "develop"
+    },
+    {
+      "local": "internal/adapters/inbound/kafka/testdata/task-interleaving.asyncapi.yaml",
+      "repo": "IQVO/task-interleaving",
+      "path": "apis/asyncapi.yaml",
+      "ref": "develop"
+    },
+    {
+      "local": "internal/adapters/outbound/kafkacatalog/testdata/process-path-management.asyncapi.yaml",
+      "repo": "IQVO/process-path-management",
+      "path": "apis/asyncapi.yaml",
+      "ref": "develop"
+    },
+    {
+      "local": "internal/adapters/inbound/kafka/testdata/fulfillment-execution.asyncapi.yaml",
+      "repo": "IQVO/fulfillment-execution",
+      "path": "apis/asyncapi.yaml",
+      "ref": "develop"
+    }
+  ]
+}
