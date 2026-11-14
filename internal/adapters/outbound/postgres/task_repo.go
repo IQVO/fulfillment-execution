@@ -32,7 +32,7 @@ const taskInsertSQL = `
 	INSERT INTO tasks (` + taskColumns + `)
 	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
 	        $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37,
-	        $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48)
+	        $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49)
 	ON CONFLICT (id) DO UPDATE SET
 		task_type = EXCLUDED.task_type,
 		status = EXCLUDED.status,
@@ -80,15 +80,16 @@ const taskInsertSQL = `
 		break_sku = EXCLUDED.break_sku,
 		break_loose_bin = EXCLUDED.break_loose_bin,
 		break_pick_task_id = EXCLUDED.break_pick_task_id,
-		work_started_at = EXCLUDED.work_started_at
+		work_started_at = EXCLUDED.work_started_at,
+		order_site_id = EXCLUDED.order_site_id
 `
 
 // taskInsertArgs builds taskInsertSQL's arguments in taskColumns' order: the
-// base block, then the relocation, replenishment and pick tails, and
-// work_started_at last. It exists so Save spreads one built slice into Exec
-// — the inline nested-append form this replaces passed the whole slice as a
-// SINGLE argument (the ... landed on an inner append), which pgx rejects as
-// "mismatched param and argument count".
+// base block, then the relocation, replenishment and pick tails, then
+// work_started_at and order_site_id last. It exists so Save spreads one
+// built slice into Exec — the inline nested-append form this replaces passed
+// the whole slice as a SINGLE argument (the ... landed on an inner append),
+// which pgx rejects as "mismatched param and argument count".
 func taskInsertArgs(t *task.Task) []any {
 	var leaseStationId *string
 	var leaseExpiry *time.Time
@@ -116,7 +117,7 @@ func taskInsertArgs(t *task.Task) []any {
 	args = append(args, relocationColumnsOf(t).values()...)
 	args = append(args, replenishmentColumnsOf(t).values()...)
 	args = append(args, pickColumnsOf(t).values()...)
-	return append(args, t.WorkStartedAt())
+	return append(args, t.WorkStartedAt(), nullableString(t.OrderSiteId()))
 }
 
 func (r *TaskRepo) Save(ctx context.Context, t *task.Task) error {
@@ -129,14 +130,15 @@ func (r *TaskRepo) Save(ctx context.Context, t *task.Task) error {
 // ADR 0047) and the replenishment_* / replenished_* columns (migration
 // 0020, ADR 0050) and the pick_* / break_* columns (migration 0023, ADR
 // 0054; pick_site_id added by migration 0025, ADR 0062) and work_started_at
-// (migration 0026, ADR 0064) come last.
+// (migration 0026, ADR 0064) and order_site_id (migration 0028, ADR 0065)
+// come last.
 const taskColumns = `id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at, ` +
 	`transfer_ref, demand_id, work_kind, site_id, sku, quantity, source_order_id, source_line_no, ` +
 	`relocation_plan_id, relocation_move_seq, relocation_kind, relocation_sku, relocation_from_bin, relocation_to_bin, ` +
 	`relocated_quantity, relocated_from_bin, relocated_to_bin, ` +
 	`replenishment_request_id, replenishment_sku, replenishment_from_bin, replenishment_to_bin, replenishment_quantity, replenishment_priority, ` +
 	`replenished_quantity, replenished_from_bin, replenished_to_bin, ` +
-	`pick_sku, pick_quantity, pick_unit, pick_from_bin, pick_site_id, picked_eaches, break_lpn, break_sku, break_loose_bin, break_pick_task_id, work_started_at`
+	`pick_sku, pick_quantity, pick_unit, pick_from_bin, pick_site_id, picked_eaches, break_lpn, break_sku, break_loose_bin, break_pick_task_id, work_started_at, order_site_id`
 
 func (r *TaskRepo) FindById(ctx context.Context, id shared.TaskId) (*task.Task, error) {
 	row := querierFrom(ctx, r.pool).QueryRow(ctx, `
@@ -242,6 +244,25 @@ func (r *TaskRepo) FindByOrderRef(ctx context.Context, orderRef shared.OrderRef)
 		SELECT `+taskColumns+`
 		FROM tasks WHERE order_ref = $1
 	`, string(orderRef))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanTasks(rows)
+}
+
+// FindBySourceOrderId returns every task released for the upstream order
+// sourceOrderId, ordered by id (idx_tasks_source_order_id, migration 0028).
+// A NULL source_order_id never matches, so "" finds nothing.
+func (r *TaskRepo) FindBySourceOrderId(ctx context.Context, sourceOrderId string) ([]*task.Task, error) {
+	if sourceOrderId == "" {
+		return nil, nil
+	}
+	rows, err := querierFrom(ctx, r.pool).Query(ctx, `
+		SELECT `+taskColumns+`
+		FROM tasks WHERE source_order_id = $1
+		ORDER BY id
+	`, sourceOrderId)
 	if err != nil {
 		return nil, err
 	}

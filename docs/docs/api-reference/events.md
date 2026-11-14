@@ -99,6 +99,15 @@ it too. The valid range is 1..2147483647 (32-bit); on the consumed
 `WorkReleased` a larger value is ignored (the task's line stays unknown), not
 rejected.
 
+On the consumed `WorkReleased`, `site_id` of order work (no `transfer_ref`) is
+the fulfillment site the order named: it is kept on the task as its order site
+(`tasks.order_site_id`), the rebin PACK task inherits it from the order's PICK
+tasks, and `PackageManifested` publishes it as `site_id`
+([ADR-0065](../adr/0065-the-orders-site-travels-from-work-released-to-package-manifested.md)).
+Like `line_no`, an absent or malformed value (anything but `^[A-Z0-9]+$`) is
+ignored, not rejected: the task is created without a site. On transfer work
+`site_id` stays the transfer fact's site and nothing else.
+
 ## Channels
 
 | Channel | Direction | Content |
@@ -121,7 +130,7 @@ per service via `KAFKA_BROKERS`.
 | `com.warehouse.wes.fulfillment-execution.task.TaskClaimed` | `task_id`, `task_type`, `station_id`, `claimed_at` ([ADR-0049](../adr/0049-task-pool-events-task-available-and-task-claimed.md)) | task-interleaving |
 | `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` | `task_id`, `station_id`, `work_unit_id`, `associate_id`, `duration_seconds`, `task_type`, `order_ref`? ([ADR-0040](../adr/0040-task-completed-carries-order-ref.md)), `line_no`? ([ADR-0041](../adr/0041-task-completed-carries-line-no.md)), `batch_id`?, `batch_size`? ([ADR-0063](../adr/0063-work-batches-formed-at-assignment-behind-a-mode-gate.md), omitted on every non-batched completion) | wes-work-planning, labor-performance, inventory-storage (pick confirmation) |
 | `com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed` | `task_id`, `order_ref`, `task_type`, `cpt` | order-management |
-| `com.warehouse.wes.fulfillment-execution.package.PackageManifested` | `package_id`, `order_ref`, `source_order_id`?, `cpt`?, `weight_g`?, `site_id`? ([ADR-0061](../adr/0061-package-manifested-carries-ship-correlation.md)) | order-management |
+| `com.warehouse.wes.fulfillment-execution.package.PackageManifested` | `package_id`, `order_ref`, `source_order_id`?, `cpt`? (the SLAM task's CPT, else the PACK task's), `weight_g`?, `site_id`? (the order's fulfillment site, omitted when the order named none) ([ADR-0061](../adr/0061-package-manifested-carries-ship-correlation.md), [ADR-0065](../adr/0065-the-orders-site-travels-from-work-released-to-package-manifested.md)) | order-management, outbound-shipping |
 | `com.warehouse.wes.fulfillment-execution.package.PackageDiverted` | `package_id` | exception-management (planned) ([ADR-0053](../adr/0053-promote-package-exception-facts-to-integration-topic.md)) |
 | `com.warehouse.wes.fulfillment-execution.package.WeightDiscrepancyDetected` | `package_id`, `expected_g`, `actual_g` | exception-management (planned) ([ADR-0053](../adr/0053-promote-package-exception-facts-to-integration-topic.md)) |
 | `com.warehouse.wes.fulfillment-execution.transfer.TransferPicked` / `TransferDispatched` / `TransferArrived` | `transfer_ref`, `demand_id`?, `work_unit_id`, `task_id`, `work_kind`, `site_id`?, `sku`?, `quantity`? (key and `subject` = the completing task id) | network-inventory-planning's transfer saga |

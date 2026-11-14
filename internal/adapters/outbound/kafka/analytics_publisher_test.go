@@ -74,6 +74,10 @@ func (fakeTaskRepo) FindPageByOrderRef(context.Context, shared.OrderRef, shared.
 	return nil, nil
 }
 
+func (fakeTaskRepo) FindBySourceOrderId(context.Context, string) ([]*task.Task, error) {
+	return nil, nil
+}
+
 func TestAnalyticsPublisher_PublishesEachEventType(t *testing.T) {
 	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	for _, tt := range eachEventTypeCases(at) {

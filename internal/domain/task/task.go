@@ -209,6 +209,15 @@ type Task struct {
 	// DurationBase), so duration_seconds keeps its exact pre-batching
 	// meaning and bytes.
 	workStartedAt *time.Time
+	// orderSiteId is the fulfillment site the ORDER this task's work was
+	// released for named (WorkReleased.site_id on order work, which
+	// order-management copies from OrderAllocated.site_id). It is NOT the
+	// transfer block's SiteId and NOT the pick plan's SiteId. Empty for
+	// transfer work, work released without a site, REST/MCP-created tasks,
+	// and every row written before migration 0028. The rebin PACK task
+	// inherits it from the order's PICK tasks (ArriveAtRebin), and
+	// PackageManifested publishes it as site_id.
+	orderSiteId string
 }
 
 // New creates a task in the Pending state, ready for the pool. fragile is a

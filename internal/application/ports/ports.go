@@ -52,6 +52,16 @@ type TaskRepo interface {
 	// GET /tasks?orderRef=: at most limit tasks with id > afterId (afterId ""
 	// means the first page), ordered by id ascending.
 	FindPageByOrderRef(ctx context.Context, orderRef shared.OrderRef, afterId shared.TaskId, limit int) ([]*task.Task, error)
+	// FindBySourceOrderId returns every task released for the upstream order
+	// sourceOrderId (Task.SourceOrderId: the bare order-management order id,
+	// WorkReleased.ref on order work), ordered by id ascending so a caller
+	// that takes "the first" gets a deterministic answer. Unlike
+	// FindByOrderRef it matches across the order's per-line work units
+	// ("<order>-line-<n>"). An unknown id, and the empty string (a task with
+	// no source order is not found by it), return an empty slice, not an
+	// error. ArriveAtRebin reads it to give the order's PACK task the site
+	// of the order's PICK tasks (ADR 0065).
+	FindBySourceOrderId(ctx context.Context, sourceOrderId string) ([]*task.Task, error)
 }
 
 // StationRepo persists and retrieves Station aggregates.

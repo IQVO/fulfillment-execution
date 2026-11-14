@@ -108,13 +108,16 @@ func (p *Publisher) encodeTaskCPTMissed(ev shared.TaskCPTMissed) ([]Encoded, err
 // lookup error or unresolvable task leaves the optional fields omitted
 // rather than failing the publish — the pre-ADR-0061 payload ships). The
 // actual SLAM weight rides the domain event itself (RunSlam measured it).
+// ADR 0065 adds the order's site_id and the PACK task's CPT as the cpt
+// when no SLAM task exists.
 func (p *Publisher) encodePackageManifested(ctx context.Context, ev shared.PackageManifested) ([]Encoded, error) {
-	sourceOrderId, cpt := p.manifestCorrelation(ctx, ev.OrderRef)
+	facts := p.manifestCorrelation(ctx, ev.OrderRef)
 	data := PackageManifestedData{
 		PackageId:     string(ev.PackageId),
 		OrderRef:      string(ev.OrderRef),
-		SourceOrderId: sourceOrderId,
-		Cpt:           cpt,
+		SiteId:        facts.siteId,
+		SourceOrderId: facts.sourceOrderId,
+		Cpt:           facts.cpt,
 		WeightG:       ev.WeightG,
 	}
 	enc, err := p.encodeIntegration(entityPackage, "PackageManifested", string(ev.PackageId), ev.OccurredAt(), data)
@@ -124,11 +127,22 @@ func (p *Publisher) encodePackageManifested(ctx context.Context, ev shared.Packa
 	return []Encoded{enc}, nil
 }
 
-// manifestCorrelation resolves a manifest's source_order_id and cpt from
-// the tasks sharing its orderRef (ADR 0061). The SLAM task is the leg a
-// manifest is measured against — the same correlation the analytics
-// on-time-to-CPT KPI uses (pickSlamTask, ADR-0026) — so its CPT becomes
-// the payload's cpt. source_order_id prefers a correlated task's
+// manifestFacts is what manifestCorrelation resolves for one manifest; every
+// field is "" when unknown, which the payload omits.
+type manifestFacts struct {
+	siteId, sourceOrderId, cpt string
+}
+
+// manifestCorrelation resolves a manifest's site_id, source_order_id and cpt
+// from the tasks sharing its orderRef (ADR 0061, ADR 0065). The SLAM task is
+// the leg a manifest is measured against — the same correlation the
+// analytics on-time-to-CPT KPI uses (pickSlamTask, ADR-0026) — so its CPT
+// becomes the payload's cpt; when the order has no SLAM task (every customer
+// order: its package is sealed from the rebin PACK task) the PACK task's CPT,
+// the order's promise date, is the cpt instead (pickPackTask). site_id is the
+// order's fulfillment site: the first non-empty Task.OrderSiteId of the SLAM
+// task, then of the PACK task (the rebin PACK task inherits it from the
+// order's PICK tasks). source_order_id prefers a correlated task's
 // Task.SourceOrderId (WorkReleased.ref on the release path; the rebin
 // PACK task's stamp on the consolidation path), checking the SLAM leg
 // first, then the PACK task the package was sealed for. When the order's
@@ -136,37 +150,39 @@ func (p *Publisher) encodePackageManifested(ctx context.Context, ev shared.Packa
 // ArriveAtRebin stamp), the rebin caller convention applies: the
 // package's orderRef IS the bare order id, and a trailing "-line-N"
 // work-unit suffix is stripped defensively (stripWorkUnitSuffix). When
-// nothing correlates at all (no repo, lookup error, no tasks) both
-// returns are "" and the payload keeps its exact pre-ADR-0061 bytes
-// (omit-when-unknown).
-func (p *Publisher) manifestCorrelation(ctx context.Context, orderRef shared.OrderRef) (sourceOrderId, cpt string) {
+// nothing correlates at all (no repo, lookup error, no tasks) every field is
+// "" and the payload keeps its exact pre-ADR-0061 bytes (omit-when-unknown).
+func (p *Publisher) manifestCorrelation(ctx context.Context, orderRef shared.OrderRef) manifestFacts {
 	if p.Tasks == nil {
-		return "", ""
+		return manifestFacts{}
 	}
 	tasks, err := p.Tasks.FindByOrderRef(ctx, orderRef)
 	if err != nil {
-		return "", ""
+		return manifestFacts{}
 	}
-	if slam := pickSlamTask(tasks); slam != nil {
-		if id := slam.SourceOrderId(); id != "" {
-			sourceOrderId = id
-		}
-		cpt = slam.CPT().Time().UTC().Format(time.RFC3339)
+	var facts manifestFacts
+	slam, pack := pickSlamTask(tasks), pickPackTask(tasks)
+	if slam != nil {
+		facts.sourceOrderId = slam.SourceOrderId()
+		facts.cpt = slam.CPT().Time().UTC().Format(time.RFC3339)
+	} else if pack != nil && !pack.CPT().Time().IsZero() {
+		facts.cpt = pack.CPT().Time().UTC().Format(time.RFC3339)
 	}
-	if sourceOrderId == "" {
+	facts.siteId = firstOrderSite(slam, pack)
+	if facts.sourceOrderId == "" {
 		for _, t := range tasks {
 			if t.Type() == task.Pack {
 				if id := t.SourceOrderId(); id != "" {
-					sourceOrderId = id
+					facts.sourceOrderId = id
 					break
 				}
 			}
 		}
 	}
-	if sourceOrderId == "" && len(tasks) > 0 {
-		sourceOrderId = stripWorkUnitSuffix(string(orderRef))
+	if facts.sourceOrderId == "" && len(tasks) > 0 {
+		facts.sourceOrderId = stripWorkUnitSuffix(string(orderRef))
 	}
-	return sourceOrderId, cpt
+	return facts
 }
 
 // workUnitSuffixRx matches the trailing "-line-N" of a per-line work

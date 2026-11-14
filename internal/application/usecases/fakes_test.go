@@ -26,6 +26,7 @@ type errTaskRepo struct {
 	failFindClaimableByType bool
 	failFindAllClaimed      bool
 	failFindOpenPastCPT     bool
+	failFindBySourceOrderId bool
 }
 
 func newErrTaskRepo() *errTaskRepo {
@@ -67,6 +68,13 @@ func (r *errTaskRepo) FindAllClaimed(ctx context.Context) ([]*task.Task, error) 
 		return nil, errFake
 	}
 	return r.TaskRepo.FindAllClaimed(ctx)
+}
+
+func (r *errTaskRepo) FindBySourceOrderId(ctx context.Context, sourceOrderId string) ([]*task.Task, error) {
+	if r.failFindBySourceOrderId {
+		return nil, errFake
+	}
+	return r.TaskRepo.FindBySourceOrderId(ctx, sourceOrderId)
 }
 
 func (r *errTaskRepo) FindOpenPastCPT(ctx context.Context, now time.Time) ([]*task.Task, error) {

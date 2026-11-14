@@ -43,6 +43,11 @@ type WorkReleasedRequest struct {
 	// CaseBreak is the sealed-case break of work released on the BREAK_CASE
 	// path (WorkReleased.case_break, ADR 0054); nil for every other release.
 	CaseBreak *task.CaseBreak
+	// SiteId is the raw WorkReleased.site_id of a non-transfer release (a
+	// transfer's site rides inside Transfer; the consumer leaves this empty
+	// for it). Only order work keeps it, as the task's order site (ADR
+	// 0065): a malformed value is ignored with a WARN, never an error.
+	SiteId string
 }
 
 // ApplyWorkReleased applies one WorkReleased occurrence exactly once
@@ -186,7 +191,9 @@ func (uc *ApplyWorkReleased) createTask(ctx context.Context, req WorkReleasedReq
 		sourceOrderId = ""
 		sourceLineNo = 0
 	}
-	_, err := uc.CreateTask.ExecuteReleaseWithPick(ctx, taskType, cpt, orderRef, required, req.Fragile, req.GiftWrap, sourceOrderId, sourceLineNo, req.Transfer, req.Pick)
+	// The order's site is order-only too (ADR 0065): a transfer's site is
+	// inside its transfer block and nothing is stamped on top of it.
+	_, err := uc.CreateTask.ExecuteReleaseWithPickAtSite(ctx, taskType, cpt, orderRef, required, req.Fragile, req.GiftWrap, sourceOrderId, sourceLineNo, req.Transfer, req.Pick, uc.orderSite(ctx, req))
 	return err
 }
 

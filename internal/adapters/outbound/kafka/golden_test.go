@@ -150,8 +150,8 @@ func TestGolden_Integration_PackageManifested(t *testing.T) {
 // ship-correlation fields — source_order_id from the SLAM task's
 // Task.SourceOrderId (release path), cpt from that task's CPT (the same
 // SLAM-leg correlation as the analytics on-time-to-CPT KPI), weight_g from
-// the domain event (RunSlam's actual measurement). site_id has no source
-// yet and stays omitted.
+// the domain event (RunSlam's actual measurement). The SLAM task here carries
+// no order site, so site_id stays omitted (ADR 0065: a task's site fills it).
 func TestGolden_Integration_PackageManifested_Correlation(t *testing.T) {
 	tasks := memory.NewTaskRepo()
 	cpt := goldenAt.Add(30 * time.Minute)
@@ -183,8 +183,9 @@ func TestGolden_Integration_PackageManifested_Correlation(t *testing.T) {
 // (a PACK task created before the ArriveAtRebin stamp, e.g. at deploy
 // time), the package's orderRef IS the bare order id by caller convention
 // — a trailing "-line-N" work-unit suffix is stripped defensively, and a
-// bare id passes through unchanged. No SLAM task among them means no cpt
-// either (omit-when-unknown).
+// bare id passes through unchanged. No SLAM task among them, so the cpt is
+// the PACK task's own CPT (ADR 0065: the order's promise date); the PACK
+// task here carries no site, so site_id stays omitted.
 func TestGolden_Integration_PackageManifested_RebinFallback(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -213,7 +214,7 @@ func TestGolden_Integration_PackageManifested_RebinFallback(t *testing.T) {
 				"time":"2026-09-30T15:00:00Z",
 				"datacontenttype":"application/json",
 				"dataschema":"urn:warehouse:fulfillment-execution:events:PackageManifested:v1",
-				"data":{"package_id":"pkg-1029","order_ref":"`+tc.orderRef+`","source_order_id":"`+tc.want+`","weight_g":980}
+				"data":{"package_id":"pkg-1029","order_ref":"`+tc.orderRef+`","source_order_id":"`+tc.want+`","cpt":"2026-09-30T16:00:00Z","weight_g":980}
 			}`)
 		})
 	}

@@ -85,6 +85,9 @@ func (projectorTasks) FindByOrderRef(context.Context, shared.OrderRef) ([]*task.
 func (projectorTasks) FindPageByOrderRef(context.Context, shared.OrderRef, shared.TaskId, int) ([]*task.Task, error) {
 	return nil, nil
 }
+func (projectorTasks) FindBySourceOrderId(context.Context, string) ([]*task.Task, error) {
+	return nil, nil
+}
 
 // stopOnSignal delivers SIGTERM to this process until run() returns, so the
 // test sees the entry point's real shutdown path (waitForShutdown drains on

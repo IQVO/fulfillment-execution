@@ -138,12 +138,16 @@ type TaskCPTMissedData struct {
 //     task by ArriveAtRebin); when no correlated task carries one, the
 //     package's orderRef is the bare order id by rebin caller convention
 //     and a trailing "-line-N" work-unit suffix is stripped defensively.
-//   - cpt: the manifest's SLAM task's CPT, RFC3339, the same SLAM-leg
-//     correlation as the analytics on-time-to-CPT KPI.
+//   - cpt: the manifest's SLAM task's CPT, RFC3339 (UTC), the same
+//     SLAM-leg correlation as the analytics on-time-to-CPT KPI; when the
+//     order has no SLAM task (every customer order) the rebin PACK task's
+//     CPT, the order's promise date (ADR 0065).
 //   - weight_g: the actual SLAM weigh-check measurement in grams (the
 //     domain event carries it from RunSlam).
-//   - site_id: reserved; no source exists in the order-work chain yet, so
-//     it is omitted until a later wave lands one (see ADR 0061).
+//   - site_id: the order's fulfillment site (ADR 0065): WorkReleased.site_id
+//     kept on the order work, inherited by the rebin PACK task from the
+//     order's PICK tasks, read from the manifest's SLAM task, else its PACK
+//     task. Omitted when the order named none.
 type PackageManifestedData struct {
 	PackageId string `json:"package_id"`
 	OrderRef  string `json:"order_ref"`
