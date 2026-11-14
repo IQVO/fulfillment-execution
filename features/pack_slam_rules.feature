@@ -46,30 +46,26 @@ Feature: The Pack and SLAM rules of the Package aggregate
   # --- SealPackage: idempotent on the task id, guarded by the claim ---------------------
 
   @bdd
-  Scenario: A retried seal answers the package sealed first and seals nothing twice
+  Scenario: A retried seal answers the package sealed first, even after the lease lapsed, and seals nothing twice
     Given a "PACK" Task for order "order-1" with a CPT 60 minutes from now requiring capabilities "pack"
     And Station "pack-01" has claimed the next "PACK" Task
     When Station "pack-01" seals a Package for the claimed Task with scanned contents "sku-1,sku-2"
     Then the response status is 201
     And the response field "id" is "pkg-1"
+    When the Package is read back
+    Then the Package reads back with status "SEALED" for order "order-1"
     When Station "pack-01" seals a Package for the claimed Task with scanned contents "sku-9"
     Then the response status is 201
     And the response field "id" is "pkg-1"
     And the sealed Package holds scanned contents "sku-1,sku-2"
-    And exactly 1 "PackageSealed" domain event is recorded
-    When the packages for order "order-1" are looked up
-    Then the package lookup returns 1 package for order "order-1"
-
-  @bdd
-  Scenario: A seal retried after the lease lapsed still answers the package sealed first
-    Given a "PACK" Task for order "order-1" with a CPT 60 minutes from now requiring capabilities "pack"
-    And Station "pack-01" has claimed the next "PACK" Task
-    And Station "pack-01" sealed a Package for the claimed Task with scanned contents "sku-1"
     When the clock advances by 6 minutes
-    And Station "pack-01" seals a Package for the claimed Task with scanned contents "sku-1"
+    And Station "pack-01" seals a Package for the claimed Task with scanned contents "sku-1,sku-2"
     Then the response status is 201
     And the response field "id" is "pkg-1"
     And exactly 1 "PackageSealed" domain event is recorded
+    When the packages for order "order-1" are looked up
+    Then the package lookup returns 1 package for order "order-1"
+    And no "LabelApplied" domain event is recorded
 
   @bdd
   Scenario: Another station cannot seal a package for a task whose claim it does not hold
@@ -92,7 +88,7 @@ Feature: The Pack and SLAM rules of the Package aggregate
     And no "PackageSealed" domain event is recorded
 
   @bdd
-  Scenario Outline: The seal is allowed until the lease expiry instant and refused from it
+  Scenario Outline: Seal is allowed until the lease expiry instant and refused from it
     Given a "PACK" Task for order "order-1" with a CPT 60 minutes from now requiring capabilities "pack"
     And Station "pack-01" has claimed the next "PACK" Task
     When the clock advances by <seconds> seconds
@@ -104,15 +100,6 @@ Feature: The Pack and SLAM rules of the Package aggregate
       | seconds | status | sealed |
       | 299     | 201    | 1      |
       | 300     | 409    | 0      |
-
-  @bdd
-  Scenario: A sealed carton awaiting its weigh-check reads back as SEALED
-    Given a "PACK" Task for order "order-1" with a CPT 60 minutes from now requiring capabilities "pack"
-    And Station "pack-01" has claimed the next "PACK" Task
-    And Station "pack-01" sealed a Package for the claimed Task with scanned contents "sku-1"
-    When the Package is read back
-    Then the Package reads back with status "SEALED" for order "order-1"
-    And no "LabelApplied" domain event is recorded
 
   # --- sort lane (ADR-0010) --------------------------------------------------------------
 
