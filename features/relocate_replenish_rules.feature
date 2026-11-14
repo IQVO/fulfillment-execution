@@ -193,6 +193,21 @@ Feature: Relocate and replenish work: the operator confirms what was physically 
       | repl-01  | replenish  | REPLENISH | 0        | work planning has released a REPLENISH request "req-9001" of 24 units of SKU "SKU-2002" from bin "WH1-RES-C07-02" to bin "WH1-FWD-A01-01" with priority "NORMAL" as work unit "wu-1" |
       | repl-01  | replenish  | REPLENISH | -3       | work planning has released a REPLENISH request "req-9001" of 24 units of SKU "SKU-2002" from bin "WH1-RES-C07-02" to bin "WH1-FWD-A01-01" with priority "NORMAL" as work unit "wu-1" |
 
+  @bdd
+  Scenario Outline: A scanned bin without a count never completes a move task
+    Given a Station "<station>" is registered with capabilities "<capability>"
+    And <release>
+    And Station "<station>" has claimed the next "<type>" Task
+    When Station "<station>" completes the claimed Task with the confirmation {"fromBin":"WH1-FWD-A01-01"}
+    Then the response status is 422
+    And the "<type>" Task for order "wu-1" has status "CLAIMED"
+    And no "TaskCompleted" domain event is recorded
+
+    Examples:
+      | station  | capability | type      | release                                                                                                                                                                              |
+      | reloc-01 | relocate   | RELOCATE  | work planning has released a RELOCATE move "Relocate" of SKU "SKU-1001" in plan "plan-7" step 3 as work unit "wu-1" from bin "WH1-FWD-A01-01" to bin "WH1-FWD-B02-04"                 |
+      | repl-01  | replenish  | REPLENISH | work planning has released a REPLENISH request "req-9001" of 24 units of SKU "SKU-2002" from bin "WH1-FWD-A01-01" to bin "WH1-FWD-B02-04" with priority "NORMAL" as work unit "wu-1" |
+
   # --- completing a REPLENISH task (ADR-0050) ----------------------------------------
 
   @bdd

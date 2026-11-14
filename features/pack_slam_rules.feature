@@ -146,6 +146,7 @@ Feature: The Pack and SLAM rules of the Package aggregate
       | 3       | 5       | flammable liquid with an oxidizer                       |
       | 5       | 3       | the same pair in the other scan order                   |
       | 2       | 3       | divisions collapse to the conservative worst case       |
+      | 3       | 2       | the same pair in the other scan order                   |
 
   @bdd
   Scenario Outline: Hazard classes the regulation lets share a carton are sealed into a hazmat-lane package
@@ -161,7 +162,9 @@ Feature: The Pack and SLAM rules of the Package aggregate
       | class_a | class_b | rule                                              |
       | 3       | 3       | two items of one class                            |
       | 3       | 8       | flammable liquid with a corrosive                 |
+      | 8       | 3       | the same pair in the other scan order             |
       | 9       | 3       | class 9 is broadly compatible                     |
+      | 3       | 9       | the same pair in the other scan order             |
       | 9       | 9       | two class 9 items                                 |
 
   @bdd
@@ -222,6 +225,16 @@ Feature: The Pack and SLAM rules of the Package aggregate
     And the sealed Package is fragile false, gift wrap false and routed to the "STANDARD" lane
 
   @bdd
+  Scenario: Only the Hazmat tag makes a hazard class count, whatever class a classification carries
+    Given product-master classifies SKU "sku-stray" as Fragile only with a stray DOT hazard class 3
+    And product-master classifies SKU "sku-oxidizer" under DOT hazard class 5
+    And a "PACK" Task for order "order-1" with a CPT 60 minutes from now requiring capabilities "pack"
+    And Station "pack-01" has claimed the next "PACK" Task
+    When Station "pack-01" seals a Package for the claimed Task with scanned contents "sku-stray,sku-oxidizer"
+    Then the response status is 201
+    And the sealed Package is fragile false, gift wrap false and routed to the "HAZMAT_LANE" lane
+
+  @bdd
   Scenario: A newer classification of a SKU replaces the one the copy holds
     Given product-master classifies SKU "sku-flammable" under DOT hazard class 3
     And product-master classifies SKU "sku-oxidizer" under DOT hazard class 5
@@ -232,11 +245,16 @@ Feature: The Pack and SLAM rules of the Package aggregate
     Then the response status is 201
 
   @bdd
-  Scenario: A stale classification delivered late never replaces a newer one
+  Scenario Outline: A classification that is not newer than the stored one never replaces it
     Given product-master classifies SKU "sku-oxidizer" under DOT hazard class 5
     And product-master reclassifies SKU "sku-flammable" under DOT hazard class 9 as version 2 in event "reclassified-2"
-    And product-master reclassifies SKU "sku-flammable" under DOT hazard class 3 as version 1 in event "late-1"
+    And product-master reclassifies SKU "sku-flammable" under DOT hazard class 3 as version <late_version> in event "late-1"
     And a "PACK" Task for order "order-1" with a CPT 60 minutes from now requiring capabilities "pack"
     And Station "pack-01" has claimed the next "PACK" Task
     When Station "pack-01" seals a Package for the claimed Task with scanned contents "sku-flammable,sku-oxidizer"
     Then the response status is 201
+
+    Examples:
+      | late_version |
+      | 1            |
+      | 2            |

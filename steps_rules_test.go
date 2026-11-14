@@ -369,6 +369,10 @@ func (w *world) productMasterFragileOnly(sku string) error {
 	return w.productMasterPublishes("classified-"+sku, sku, []string{"Fragile"}, 0, 1)
 }
 
+func (w *world) productMasterFragileWithStrayClass(sku string, class int) error {
+	return w.productMasterPublishes("classified-"+sku, sku, []string{"Fragile"}, class, 1)
+}
+
 // --- integration encoder -------------------------------------------------------
 
 func (w *world) recordedEventsAreEncoded() error {
@@ -516,6 +520,7 @@ func (w *world) registerRulesSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^product-master reclassifies SKU "([^"]*)" under DOT hazard class (\d+) as version (\d+) in event "([^"]*)"$`, w.productMasterReclassifies)
 	sc.Step(`^product-master classifies SKU "([^"]*)" as Hazmat without a DOT hazard class$`, w.productMasterHazmatNoClass)
 	sc.Step(`^product-master classifies SKU "([^"]*)" as Fragile only$`, w.productMasterFragileOnly)
+	sc.Step(`^product-master classifies SKU "([^"]*)" as Fragile only with a stray DOT hazard class (\d+)$`, w.productMasterFragileWithStrayClass)
 
 	sc.Step(`^the recorded events are encoded for the integration topic$`, w.recordedEventsAreEncoded)
 	sc.Step(`^the integration topic carries (\d+) "([^"]*)" messages?$`, w.integrationTopicCarries)
