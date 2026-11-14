@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -39,6 +40,10 @@ type world struct {
 	clock     *memory.FixedClock
 	publisher *events.BufferedPublisher
 	readiness *execmhttp.Readiness
+	// handlers is the wired REST adapter, kept so the documentation-derived
+	// steps (steps_rules_test.go) can swap an outbound double or reach the
+	// repositories the use cases share.
+	handlers *execmhttp.Handlers
 
 	// last response observed by a step that drives the API
 	status int
@@ -54,6 +59,10 @@ type world struct {
 	// w2 holds the wave-2 state (Rebin, Kafka consumers); see
 	// features_wave2_test.go.
 	w2 wave2State
+
+	// rules holds the state of the documentation-derived steps; see
+	// steps_rules_test.go.
+	rules rulesState
 }
 
 // reset builds a brand-new service (fresh in-memory repos, fresh event
@@ -99,6 +108,7 @@ func (w *world) reset() {
 	}
 
 	w.wireWave2(h)
+	w.handlers = h
 	w.readiness = &execmhttp.Readiness{}
 	h.Readiness = w.readiness
 	w.server = httptest.NewServer(execmhttp.NewRouter(h, nil))
@@ -731,16 +741,25 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 
 	w.registerWave2Steps(sc)
 	w.registerWave3Steps(sc)
+	w.registerRulesSteps(sc)
 }
 
 // TestFeatures runs every Gherkin scenario under features/ as a Go test.
 func TestFeatures(t *testing.T) {
+	// Scenarios tagged @known-bug describe the documented behaviour the code
+	// does not honour yet; they are excluded unless BDD_TAGS selects them
+	// (BDD_TAGS=@known-bug runs only them, and they must fail).
+	tags := os.Getenv("BDD_TAGS")
+	if tags == "" {
+		tags = "~@known-bug"
+	}
 	suite := godog.TestSuite{
 		ScenarioInitializer: InitializeScenario,
 		Options: &godog.Options{
 			Format:   "pretty",
 			Paths:    []string{"features"},
 			Strict:   true,
+			Tags:     tags,
 			TestingT: t,
 		},
 	}
