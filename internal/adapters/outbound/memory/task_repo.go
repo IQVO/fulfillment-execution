@@ -182,6 +182,28 @@ func (r *TaskRepo) FindByOrderRef(_ context.Context, orderRef shared.OrderRef) (
 	return result, nil
 }
 
+// FindBySourceOrderId returns copies of every task released for the upstream
+// order sourceOrderId, ordered by id like the Postgres query. "" matches
+// nothing: a task with no source order is not found by it.
+func (r *TaskRepo) FindBySourceOrderId(_ context.Context, sourceOrderId string) ([]*task.Task, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var result []*task.Task
+	if sourceOrderId == "" {
+		return result, nil
+	}
+	for _, t := range r.tasks {
+		if t.SourceOrderId() == sourceOrderId {
+			result = append(result, cloneTask(t))
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Id() < result[j].Id()
+	})
+	return result, nil
+}
+
 // cloneTask returns an independent copy of t, the way every Postgres read
 // rehydrates a fresh aggregate. Handing callers the stored pointer let two
 // concurrent ClaimNext calls mutate ONE task (a data race, and a claim
@@ -204,5 +226,5 @@ func cloneTask(t *task.Task) *task.Task {
 	}
 	return task.RehydrateTransfer(t.Id(), t.Type(), t.Status(), t.CPT(), t.OrderRef(), t.RequiredCapabilities(), lease, t.Fragile(), t.GiftWrap(), claimedAt, transfer).WithSourceOrderId(t.SourceOrderId()).WithSourceLineNo(t.SourceLineNo()).
 		WithRelocation(t.Relocation(), t.RelocationResult()).WithReplenishment(t.Replenishment(), t.ReplenishmentResult()).
-		WithPickPlan(t.PickPlan(), t.PickedEaches()).WithCaseBreak(t.CaseBreak()).WithWorkStartedAt(t.WorkStartedAt())
+		WithPickPlan(t.PickPlan(), t.PickedEaches()).WithCaseBreak(t.CaseBreak()).WithWorkStartedAt(t.WorkStartedAt()).WithOrderSiteId(t.OrderSiteId())
 }
