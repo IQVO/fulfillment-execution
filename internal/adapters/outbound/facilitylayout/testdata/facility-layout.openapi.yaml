@@ -1,0 +1,3854 @@
+openapi: 3.0.3
+info:
+  title: Facility Layout API
+  version: "1.0.0"
+  description: >
+    The system of record for **where things physically are in the building**,
+    for the warehouse-systems platform. This bounded context owns a site's
+    structural hierarchy — Site → Area → Zone → Aisle → Bay → Level →
+    Position — and the coded storage slots inside it. It is the "warehouse
+    map" that every other context reads and none of them writes.
+
+
+    Its aggregates are **Site** (a physical facility, the root of the
+    hierarchy), **Zone** (a behavioral classification scoped to a Site,
+    bundling the Area and Zone code segments, carrying a TemperatureClass and
+    a Hazmat flag), **Aisle** (a physical corridor scoped to a Zone, carrying
+    the SequenceHint that gives downstream travel-path planning its
+    walk-order input), **LocationType** + **PlacementRule** (which kinds of
+    slot are legal in which zones), and **LocationSlot** (the coded leaf
+    location, whose identity IS its LocationCode).
+
+
+    A LocationCode is a value object, never free text: seven typed segments,
+    hyphen-joined coarsest to finest, each non-empty and `[A-Z0-9]` only —
+    for example `WH1-STOR-AMB-A07-03-02-B`. Registering a slot is a
+    chain-of-custody check, not a bare insert: the Site/Zone/Aisle chain the
+    code implies must resolve to existing, Active aggregates, and the slot's
+    LocationType must satisfy every PlacementRule applicable to its Zone.
+    That is the mechanism which prevents "ambient product in the frozen
+    zone" — enforced once, at registration time, rather than re-checked by
+    every caller.
+
+
+    Out of this service's boundary: it does NOT own occupancy, stock,
+    reservations or inventory of any kind (that is `inventory-storage`'s
+    Bin/StockUnit aggregates); it does not pick, pack, ship or route
+    associates; and it never mutates another context's data. It is an Open
+    Host Service whose domain events are its Published Language; the other
+    four services are downstream Conformists to it.
+
+
+    Error responses across this API use RFC 7807
+    (`application/problem+json`) Problem Details.
+  contact:
+    name: Facility Layout (Generic Subdomain)
+servers:
+  - url: http://localhost:8080
+    description: Local development
+tags:
+  - name: Sites
+    description: >
+      Physical facilities/buildings. A Site is the root of the location
+      hierarchy and the first segment of every LocationCode inside it; no
+      Zone, Aisle or LocationSlot can exist without one.
+  - name: Zones
+    description: >
+      Behavioral classifications scoped to a Site (ambient, chilled, frozen,
+      hazmat, forward-pick, reserve), bundling a LocationCode's Area and Zone
+      segments. Zones are not cosmetic: their TemperatureClass and Hazmat
+      flag are exactly what PlacementRules match on.
+  - name: Aisles
+    description: >
+      Physical corridors scoped to a Zone. An Aisle carries a SequenceHint —
+      its walk-order position, the concrete travel-distance input WES-tier
+      planning needs — and a Direction (one-way or two-way).
+  - name: Location Types
+    description: >
+      Reusable classifications of physical slot shape/kind (PalletRack,
+      Shelf, ToteWall, BulkFloor, Staging, Amnesty), each carrying the
+      default capacity envelope its slots inherit.
+  - name: Placement Rules
+    description: >
+      Declarations of which LocationTypes are legal in which Zones. Deny
+      always wins; declaring any Allow rule for a zone turns that zone into
+      an allow-list. This is the enforcement point that keeps incompatible
+      storage out of a zone.
+  - name: Locations
+    description: >
+      The coded leaf slots themselves — registering, reading,
+      decommissioning, and bulk-importing a whole building's layout from a
+      structured export. Also exposes a slot's resolved
+      hazmat/temperature-class classification (`GET
+      /locations/{locationCode}/classification`): the concrete realization
+      of this context's Open Host Service / Published Language for
+      cross-context placement validation (see `ecosystem/consuming-this-service`
+      and ADR-0008).
+  - name: Layout
+    description: >
+      The readable, drawable projections: a Site's full nested structure
+      (optionally rendered server-side as an SVG floor plan) and a Zone's 2D
+      grid. These are projections assembled across the aggregates, never
+      separately stored state.
+  - name: Health
+    description: Liveness probe.
+
+paths:
+  /healthz:
+    get:
+      operationId: getHealthz
+      summary: Liveness probe
+      description: >
+        Returns 200 with a static status body if the process is up. Does not
+        check downstream dependencies (e.g. Postgres) — it is a liveness
+        check, not a readiness check.
+      tags: [Health]
+      responses:
+        "200":
+          description: Service is alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+              example:
+                status: ok
+
+  /readyz:
+    get:
+      operationId: getReadyz
+      summary: Readiness probe
+      description: >-
+        Returns 200 while the process is accepting traffic, 503 once
+        graceful shutdown (ADR-0020) has begun: readiness is flipped to
+        not-ready as the FIRST step of the shutdown sequence, before the
+        listener closes, so a Kubernetes readinessProbe gets a window to
+        stop routing new requests during the drain. Like /healthz it does
+        not check downstream dependencies.
+      tags: [Health]
+      responses:
+        "200":
+          description: Service is ready to accept traffic.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ready
+              example:
+                status: ready
+        "503":
+          description: Service is draining (shutdown in progress).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: draining
+              example:
+                status: draining
+
+  /sites:
+    post:
+      operationId: registerSite
+      summary: Register a physical facility
+      description: >
+        Adds a Site to the warehouse map. The site code becomes the first
+        segment of every LocationCode inside the facility, so it must be
+        uppercase alphanumeric and unique across the service. Site code
+        uniqueness is enforced here in the application layer rather than in
+        the aggregate: a single aggregate cannot see its siblings. A newly
+        registered Site is Active, and publishes SiteRegistered.
+
+
+        `siteRole` (ADR-0037) is optional: omitted means `UNSPECIFIED`. An
+        unknown role is 422 `invalid-site-role`. The role never sets the
+        transfer capability (ADR-0035 stays the only writer; see
+        `GET /site-roles/transfer-defaults` for the per-role defaults).
+
+
+        `gln` (ADR-0045) is an optional GS1 Global Location Number. It must be
+        13 digits ending in the GS1 mod-10 check digit (otherwise 422
+        `invalid-gln`) and a GLN identifies exactly one location across sites,
+        zones and slots (otherwise 409 `gln-already-assigned`). A site
+        registered without a `gln` is exactly as valid as before.
+      tags: [Sites]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterSiteRequest"
+            example:
+              siteCode: ABE8
+              name: ABE8 - Non-Sortable Fulfillment Center (Breinigsville, PA)
+              siteRole: NON_SORTABLE_FC
+              gln: "4006381333931"
+      responses:
+        "201":
+          description: Site registered.
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+            Location:
+              description: Path of the newly created Site.
+              schema:
+                type: string
+                example: /sites/WH1
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Site"
+              example:
+                siteCode: ABE8
+                name: ABE8 - Non-Sortable Fulfillment Center (Breinigsville, PA)
+                status: Active
+                siteRole: NON_SORTABLE_FC
+                gln: "4006381333931"
+        "400":
+          description: >
+            Malformed input, or the Idempotency-Key header is absent
+            (`idempotency-key-required`) or not 1-128 printable ASCII
+            characters (`idempotency-key-invalid`) (ADR 0019).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                malformed:
+                  summary: Malformed input
+                  value:
+                    type: https://errors.facility-layout.warehouse-systems.dev/malformed-request-body
+                    title: The request body is not valid JSON
+                    status: 400
+                    detail: invalid character 'x' looking for beginning of value
+                    instance: /sites
+                idempotencyKeyRequired:
+                  summary: Idempotency-Key header absent
+                  value:
+                    type: https://errors.facility-layout.warehouse-systems.dev/idempotency-key-required
+                    title: Idempotency-Key header is required
+                    status: 400
+                    detail: This endpoint changes state and requires a caller-supplied Idempotency-Key header so a retried request is never applied twice.
+                    instance: /sites
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          description: >
+            The `siteRole` is not one of the known site roles
+            (`invalid-site-role`, ADR-0037), or the `gln` is not 13 digits
+            with a valid GS1 check digit (`invalid-gln`, ADR-0045).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                invalidGln:
+                  summary: Wrong GS1 check digit
+                  value:
+                    type: https://errors.facility-layout.warehouse-systems.dev/invalid-gln
+                    title: GLN must be 13 digits ending in the GS1 mod-10 check digit
+                    status: 422
+                    detail: gln must be 13 digits ending in the GS1 mod-10 check digit
+                    instance: /sites
+                invalidSiteRole:
+                  summary: Unknown site role
+                  value:
+                    type: https://errors.facility-layout.warehouse-systems.dev/invalid-site-role
+                    title: Site role must be one of the known site roles
+                    status: 422
+                    detail: 'site role must be one of the known site roles: "Fulfillment Center"'
+                    instance: /sites
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      operationId: listSites
+      summary: List every registered site
+      description: >
+        Returns every Site on the warehouse map, ordered by site code,
+        including sites that have been decommissioned (their status says so).
+        This is a read model over the Site repository; it performs no writes
+        and publishes no events.
+        Keyset-paginated: `limit` and `cursor`; follow `nextCursor` until it is absent.
+      tags: [Sites]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Every registered site, ordered by code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SitePage"
+              example:
+                items:
+                  - siteCode: ABE8
+                    name: ABE8 - Non-Sortable Fulfillment Center (Breinigsville, PA)
+                    status: Active
+                    siteRole: NON_SORTABLE_FC
+                  - siteCode: WH2
+                    name: Fulfilment Centre Two
+                    status: Decommissioned
+                    siteRole: UNSPECIFIED
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /sites/{siteCode}:
+    get:
+      operationId: getSite
+      summary: Get one site
+      description: >
+        Returns a single Site by its code. This is the URL the Location
+        header of a successful registerSite points at.
+      tags: [Sites]
+      parameters:
+        - $ref: "#/components/parameters/SiteCode"
+      responses:
+        "200":
+          description: The site.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Site"
+              example:
+                siteCode: WH1
+                name: Fulfilment Centre One
+                status: Active
+                siteRole: UNSPECIFIED
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /sites/{siteCode}/role:
+    put:
+      operationId: setSiteRole
+      summary: Set a site's role in the fulfilment network
+      description: >
+        Sets the site's role (ADR-0037). When the role differs from the
+        current one, SiteRoleChanged (new and previous role) is published
+        through the transactional outbox. Repeating the current role is an
+        idempotent no-op: 200, no event, so no Idempotency-Key is needed.
+        `UNSPECIFIED` cannot be assigned, and an unknown or missing role is
+        422 `invalid-site-role`.
+
+
+        A role change NEVER changes the site's transfer capability: that
+        stays the explicit `PUT /sites/{siteCode}/transfer-capability`
+        command (ADR-0035). Optimistic concurrency: a concurrent change of
+        the same site loses with 409 `concurrent-modification`; a
+        decommissioned site's role is frozen (409 `site-not-active`).
+      tags: [Sites]
+      parameters:
+        - $ref: "#/components/parameters/SiteCode"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetSiteRoleRequest"
+            example:
+              siteRole: DELIVERY_STATION
+      responses:
+        "200":
+          description: The site after the change (or unchanged, for a repeat).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Site"
+              example:
+                siteCode: DAT3
+                name: DAT3 - Delivery Station (Atlanta, GA)
+                status: Active
+                siteRole: DELIVERY_STATION
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            The site is decommissioned (`site-not-active`), or another
+            writer changed it between this request's read and write
+            (`concurrent-modification`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.facility-layout.warehouse-systems.dev/concurrent-modification
+                title: The resource was modified by another writer; re-fetch and retry
+                status: 409
+                detail: aggregate was concurrently modified; reload and retry
+                instance: /sites/WH1/role
+        "422":
+          description: >
+            The role is missing, `UNSPECIFIED`, or not one of the known site
+            roles (`invalid-site-role`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.facility-layout.warehouse-systems.dev/invalid-site-role
+                title: Site role must be one of the known site roles
+                status: 422
+                detail: 'site role must be one of the known site roles: "UNSPECIFIED" cannot be assigned'
+                instance: /sites/WH1/role
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /site-roles/transfer-defaults:
+    get:
+      operationId: listSiteRoleTransferDefaults
+      summary: The default transfer capability of every site role
+      description: >
+        Read-only table (ADR-0037): for every assignable site role, whether
+        a site of that role should be an inter-site transfer origin and/or
+        destination. It is the ONE source of truth the warehouse-infra seed
+        and operators read instead of hard-coding it. It is a default only:
+        nothing applies it automatically, a role change never flips
+        capability, and capability is set with
+        `PUT /sites/{siteCode}/transfer-capability` (ADR-0035).
+        `UNSPECIFIED` has no row: an unclassified site's capability is left
+        as it is. Rows are in a stable display order.
+        Keyset-paginated: `limit` and `cursor`; follow `nextCursor` until it is absent.
+      tags: [Sites]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: One row per assignable site role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteRoleTransferDefaultPage"
+              example:
+                items:
+                  - siteRole: NON_SORTABLE_FC
+                    transferOriginEnabled: true
+                    transferDestinationEnabled: true
+                  - siteRole: MICRO_FC
+                    transferOriginEnabled: false
+                    transferDestinationEnabled: true
+                  - siteRole: INBOUND_CROSS_DOCK
+                    transferOriginEnabled: true
+                    transferDestinationEnabled: false
+                  - siteRole: DELIVERY_STATION
+                    transferOriginEnabled: false
+                    transferDestinationEnabled: false
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /sites/{siteCode}/transfer-capability:
+    get:
+      operationId: getSiteTransferCapability
+      summary: Get a site's transfer capability
+      description: >
+        Returns whether the site may act as the origin (donates stock) and/or
+        the destination (receives stock) of an inter-warehouse transfer, and
+        the revision of its last published SiteCapabilityChanged (ADR-0035).
+        A site whose capability was never set is capable of nothing at
+        revision 0 — exactly how network-inventory-planning treats a site it
+        has never heard about.
+      tags: [Sites]
+      parameters:
+        - $ref: "#/components/parameters/SiteCode"
+      responses:
+        "200":
+          description: The site's current transfer capability.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteTransferCapability"
+              example:
+                siteCode: WH1
+                transferOriginEnabled: true
+                transferDestinationEnabled: false
+                capabilityRevision: 3
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      operationId: setSiteTransferCapability
+      summary: Set a site's transfer capability
+      description: >
+        Replaces the site's transfer capability with the full snapshot in the
+        body (ADR-0035). When the snapshot differs from the current one — or
+        no snapshot was ever published — the site's capabilityRevision
+        advances by exactly one and SiteCapabilityChanged is published
+        through the transactional outbox with that revision. Repeating the
+        current snapshot is an idempotent no-op: 200, same revision, no
+        event, so no Idempotency-Key is needed.
+
+
+        Optimistic concurrency (ADR-0025, extended to Site by ADR-0035): a
+        concurrent change of the same site loses with 409
+        `concurrent-modification`; re-read and retry. A decommissioned
+        site's capability is frozen (409 `site-not-active`).
+      tags: [Sites]
+      parameters:
+        - $ref: "#/components/parameters/SiteCode"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetSiteTransferCapabilityRequest"
+            example:
+              transferOriginEnabled: true
+              transferDestinationEnabled: false
+      responses:
+        "200":
+          description: The site's transfer capability after the change (or unchanged, for a repeat).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteTransferCapability"
+              example:
+                siteCode: WH1
+                transferOriginEnabled: true
+                transferDestinationEnabled: false
+                capabilityRevision: 1
+        "400":
+          description: >
+            The body is not JSON, or a field is omitted, null or not a
+            boolean (`missing-transfer-capability-field`): the body is a
+            full snapshot and an absent field is never read as false.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.facility-layout.warehouse-systems.dev/missing-transfer-capability-field
+                title: transferOriginEnabled and transferDestinationEnabled are both required booleans
+                status: 400
+                detail: transferOriginEnabled and transferDestinationEnabled are both required booleans
+                instance: /sites/WH1/transfer-capability
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            The site is decommissioned (`site-not-active`), or another
+            writer changed it between this request's read and write
+            (`concurrent-modification`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.facility-layout.warehouse-systems.dev/concurrent-modification
+                title: The resource was modified by another writer; re-fetch and retry
+                status: 409
+                detail: aggregate was concurrently modified; reload and retry
+                instance: /sites/WH1/transfer-capability
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /sites/{siteCode}/zones:
+    post:
+      operationId: registerZone
+      summary: Register a behavioral zone inside a site's area
+      description: >
+        Adds a Zone scoped to the given Site. The zone's identity is
+        `SITE-AREA-ZONE` (e.g. `WH1-STOR-AMB`), which is exactly the first
+        three segments of every LocationCode inside it. A Zone cannot be
+        registered against an unknown or non-Active Site. The TemperatureClass
+        and Hazmat flag set here are what PlacementRules match on later, so
+        they are behavioral, not descriptive. Publishes ZoneRegistered.
+
+
+        `gln` (ADR-0045) is an optional GS1 Global Location Number: 13 digits
+        with a valid mod-10 check digit (422 `invalid-gln`), unique across
+        every site, zone and slot (409 `gln-already-assigned`).
+      tags: [Zones]
+      parameters:
+        - $ref: "#/components/parameters/SiteCode"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterZoneRequest"
+            examples:
+              frozenStorage:
+                summary: A frozen storage zone
+                value:
+                  areaCode: STOR
+                  zoneCode: FRZ
+                  temperatureClass: Frozen
+                  hazmat: false
+              withGln:
+                summary: A zone carrying a GS1 Global Location Number (ADR-0045)
+                value:
+                  areaCode: YARD
+                  zoneCode: NORTH
+                  temperatureClass: Ambient
+                  hazmat: false
+                  gln: "5412345000013"
+              casePickFaces:
+                summary: A case-pick (CPK) zone, a convention on the free-form zone code (ADR 0042)
+                value:
+                  areaCode: STOR
+                  zoneCode: CPK
+                  temperatureClass: Ambient
+                  hazmat: false
+      responses:
+        "201":
+          description: Zone registered.
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+            Location:
+              description: Path of the newly created Zone.
+              schema:
+                type: string
+                example: /zones/WH1-STOR-FRZ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Zone"
+              example:
+                zoneId: WH1-STOR-FRZ
+                siteCode: WH1
+                areaCode: STOR
+                zoneCode: FRZ
+                temperatureClass: Frozen
+                hazmat: false
+                status: Active
+                bayPitchM: 1.2
+                levelPitchM: 1.5
+                gln: "5412345000013"
+        "400":
+          description: >
+            Malformed input, or the Idempotency-Key header is absent
+            (`idempotency-key-required`) or not 1-128 printable ASCII
+            characters (`idempotency-key-invalid`) (ADR 0019).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                malformed:
+                  value:
+                    type: https://errors.facility-layout.warehouse-systems.dev/malformed-location-code
+                    title: Malformed location code
+                    status: 400
+                    detail: "location code must have exactly 7 hyphen-joined segments (site-area-zone-aisle-bay-level-position): got 4 segments in \"WH1-STOR-AMB-A07\""
+                    instance: /locations
+                idempotencyKeyRequired:
+                  value:
+                    type: https://errors.facility-layout.warehouse-systems.dev/idempotency-key-required
+                    title: Idempotency-Key header is required
+                    status: 400
+                    detail: This endpoint changes state and requires a caller-supplied Idempotency-Key header so a retried request is never applied twice.
+                    instance: /sites
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          description: >
+            Semantically invalid: a placement-rule violation, a `gln` that is
+            not 13 digits with a valid GS1 check digit (`invalid-gln`), an
+            unknown `spotKind` (`unknown-spot-kind`), or a `spotKind` on a
+            location whose role is not Yard (`spot-kind-not-allowed`)
+            (ADR-0045).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                spotKindNotAllowed:
+                  summary: spotKind sent for a dock door
+                  value:
+                    type: https://errors.facility-layout.warehouse-systems.dev/spot-kind-not-allowed
+                    title: spotKind may only be set on a Yard location
+                    status: 422
+                    detail: spotKind may only be set on a Yard location
+                    instance: /locations
+                semantic:
+                  value:
+                    type: https://errors.facility-layout.warehouse-systems.dev/placement-rule-violated
+                    title: Location type is not legal in this zone
+                    status: 422
+                    detail: "location type violates a placement rule for this zone: Shelf is denied in zone WH1-STOR-FRZ by rule [RULE-FRZ-NO-SHELF: Deny Shelf where temperatureClass=Frozen]"
+                    instance: /locations
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      operationId: listZones
+      summary: List a site's zones
+      description: >
+        Returns every Zone in the given Site, ordered by zone id. Answers 404
+        if the site itself is unknown, rather than an empty list, so a caller
+        can tell "no zones yet" apart from "no such site".
+        Keyset-paginated: `limit` and `cursor`; follow `nextCursor` until it is absent.
+      tags: [Zones]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/SiteCode"
+      responses:
+        "200":
+          description: The site's zones, ordered by zone id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZonePage"
+              example:
+                items:
+                  - zoneId: WH1-RCV-AMB
+                    siteCode: WH1
+                    areaCode: RCV
+                    zoneCode: AMB
+                    temperatureClass: Ambient
+                    hazmat: false
+                    status: Active
+                    bayPitchM: 1.2
+                    levelPitchM: 1.5
+                  - zoneId: WH1-STOR-AMB
+                    siteCode: WH1
+                    areaCode: STOR
+                    zoneCode: AMB
+                    temperatureClass: Ambient
+                    hazmat: false
+                    status: Active
+                    bayPitchM: 1.2
+                    levelPitchM: 1.5
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /sites/{siteCode}/layout:
+    get:
+      operationId: getSiteLayout
+      x-pagination-exempt: view
+      summary: Get a site's full drawable layout
+      description: >
+        The primary "draw the warehouse" endpoint. Returns the whole
+        structure of one Site as a single nested document — zones → aisles →
+        location slots — with every slot's exploded coordinates, type,
+        capacity and status. Zones come back ordered by id, aisles in
+        SequenceHint **walk order** (not registration order), and slots
+        ordered bay → level → position, so a frontend can render a floor plan
+        directly with no client-side joining or sorting.
+
+
+        With `?format=svg` the identical read model is rendered server-side
+        as a minimal SVG floor plan (one coloured band per zone, one row of
+        rects per aisle, colour = temperature class / hazmat) that a human
+        can curl straight into a `.svg` file and open in a browser.
+
+
+        This is a PROJECTION assembled by querying across the aggregates, not
+        separately stored state. It performs no writes and publishes no
+        events.
+      tags: [Layout]
+      parameters:
+        - $ref: "#/components/parameters/SiteCode"
+        - name: format
+          in: query
+          required: false
+          description: >
+            Response representation. Omit (or use `json`) for the nested JSON
+            document; use `svg` to receive an `image/svg+xml` floor plan of
+            the same data.
+          schema:
+            type: string
+            enum: [json, svg]
+            default: json
+          example: svg
+      responses:
+        "200":
+          description: >
+            The site's full layout, as nested JSON or as an SVG floor plan
+            depending on the `format` query parameter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteLayout"
+              example:
+                site:
+                  siteCode: WH1
+                  name: Fulfilment Centre One
+                  status: Active
+                  siteRole: UNSPECIFIED
+                fixedStructures: []
+                zones:
+                  - zoneId: WH1-STOR-AMB
+                    siteCode: WH1
+                    areaCode: STOR
+                    zoneCode: AMB
+                    temperatureClass: Ambient
+                    hazmat: false
+                    status: Active
+                    aisles:
+                      - aisleId: WH1-STOR-AMB-A07
+                        zoneId: WH1-STOR-AMB
+                        aisleCode: A07
+                        sequenceHint: 7
+                        direction: TwoWay
+                        status: Active
+                        slots:
+                          - locationCode: WH1-STOR-AMB-A07-03-02-B
+                            zoneId: WH1-STOR-AMB
+                            aisleId: WH1-STOR-AMB-A07
+                            coordinates:
+                              site: WH1
+                              area: STOR
+                              zone: AMB
+                              aisle: A07
+                              bay: "03"
+                              level: "02"
+                              position: B
+                            locationType: PalletRack
+                            role: Storage
+                            capacity:
+                              maxWeightKg: 1200
+                              maxVolumeM3: 2.4
+                            status: Active
+                totals:
+                  zones: 1
+                  aisles: 1
+                  slots: 1
+            image/svg+xml:
+              schema:
+                type: string
+                description: A standalone SVG document.
+              example: |
+                <svg xmlns="http://www.w3.org/2000/svg" width="640" height="240" viewBox="0 0 640 240">
+                  <title>WH1 facility layout</title>
+                </svg>
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /sites/{siteCode}/locations:
+    get:
+      operationId: listLocationsByRole
+      summary: List a site's locations by role
+      description: >
+        Answers "where are this site's dock doors" (or any other
+        LocationRole) without walking the full nested site layout
+        (ADR-0016). Results are ordered zone → aisle → bay → level →
+        position, like getSiteLayout's slots.
+        Keyset-paginated: `limit` and `cursor`; follow `nextCursor` until it is absent.
+      tags: [Layout]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/SiteCode"
+        - name: role
+          in: query
+          required: true
+          description: The LocationRole to filter on.
+          schema:
+            $ref: "#/components/schemas/LocationRole"
+          example: Dock
+      responses:
+        "200":
+          description: Every LocationSlot at the site with the requested role, possibly empty.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LocationSlotPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /sites/{siteCode}/structures:
+    post:
+      operationId: registerFixedStructure
+      summary: Register a fixed structure
+      description: >
+        Adds a site-scoped physical obstacle — a wall, column, office,
+        conveyor, or other fixed object — to the warehouse map (ADR-0017).
+        A FixedStructure is not a location: nothing can be stowed at it.
+        The site must already exist. Publishes FixedStructureRegistered.
+      tags: [Layout]
+      parameters:
+        - $ref: "#/components/parameters/SiteCode"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterFixedStructureRequest"
+      responses:
+        "201":
+          description: The registered structure.
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+            Location:
+              schema:
+                type: string
+              description: The URL of the newly registered structure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FixedStructure"
+        "400":
+          description: >
+            Malformed input, or the Idempotency-Key header is absent
+            (`idempotency-key-required`) or not 1-128 printable ASCII
+            characters (`idempotency-key-invalid`) (ADR 0019).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                malformed:
+                  value:
+                    type: https://errors.facility-layout.warehouse-systems.dev/malformed-location-code
+                    title: Malformed location code
+                    status: 400
+                    detail: "location code must have exactly 7 hyphen-joined segments (site-area-zone-aisle-bay-level-position): got 4 segments in \"WH1-STOR-AMB-A07\""
+                    instance: /locations
+                idempotencyKeyRequired:
+                  value:
+                    type: https://errors.facility-layout.warehouse-systems.dev/idempotency-key-required
+                    title: Idempotency-Key header is required
+                    status: 400
+                    detail: This endpoint changes state and requires a caller-supplied Idempotency-Key header so a retried request is never applied twice.
+                    instance: /sites
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          description: >
+            Semantically invalid.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                semantic:
+                  value:
+                    type: https://errors.facility-layout.warehouse-systems.dev/placement-rule-violated
+                    title: Location type is not legal in this zone
+                    status: 422
+                    detail: "location type violates a placement rule for this zone: Shelf is denied in zone WH1-STOR-FRZ by rule [RULE-FRZ-NO-SHELF: Deny Shelf where temperatureClass=Frozen]"
+                    instance: /locations
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    get:
+      operationId: listFixedStructures
+      summary: List a site's fixed structures
+      description: >
+        Returns every FixedStructure registered at a site, ordered by id (ADR-0017).
+        Keyset-paginated: `limit` and `cursor`; follow `nextCursor` until it is absent.
+      tags: [Layout]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/SiteCode"
+      responses:
+        "200":
+          description: Every fixed structure at the site, possibly empty.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FixedStructurePage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /zones/{zoneId}:
+    get:
+      operationId: getZone
+      summary: Get one zone
+      description: >
+        Returns a single Zone by its id (`SITE-AREA-ZONE`). This is the URL
+        the Location header of a successful registerZone points at.
+      tags: [Zones]
+      parameters:
+        - $ref: "#/components/parameters/ZoneId"
+      responses:
+        "200":
+          description: The zone.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Zone"
+              example:
+                zoneId: WH1-STOR-AMB
+                siteCode: WH1
+                areaCode: STOR
+                zoneCode: AMB
+                temperatureClass: Ambient
+                hazmat: false
+                status: Active
+                bayPitchM: 1.2
+                levelPitchM: 1.5
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /zones/{zoneId}/grid:
+    get:
+      operationId: getZoneGrid
+      x-pagination-exempt: view
+      summary: Get a zone as a 2D renderable grid
+      description: >
+        The second "draw the warehouse" endpoint. Returns one Zone's slots as
+        an explicit matrix: rows are Levels, columns are (Aisle, Bay) pairs
+        in aisle SequenceHint walk order, and `rows[i].cells` is
+        index-aligned with `columns`. A cell is literal JSON `null` wherever
+        the rack has a gap; otherwise it lists the Positions at that
+        coordinate. A UI iterates rows × columns and paints — no client-side
+        layout maths.
+
+
+        Like the site layout this is a pure projection: no writes, no events.
+      tags: [Layout]
+      parameters:
+        - $ref: "#/components/parameters/ZoneId"
+      responses:
+        "200":
+          description: The zone's slots as a level × (aisle, bay) matrix.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ZoneGrid"
+              example:
+                zone:
+                  zoneId: WH1-STOR-AMB
+                  siteCode: WH1
+                  areaCode: STOR
+                  zoneCode: AMB
+                  temperatureClass: Ambient
+                  hazmat: false
+                  status: Active
+                  bayPitchM: 1.2
+                  levelPitchM: 1.5
+                columns:
+                  - aisleId: WH1-STOR-AMB-A07
+                    aisleCode: A07
+                    bay: "03"
+                    sequenceHint: 7
+                  - aisleId: WH1-STOR-AMB-A09
+                    aisleCode: A09
+                    bay: "01"
+                    sequenceHint: 9
+                levels: ["01", "02"]
+                rows:
+                  - level: "01"
+                    cells:
+                      - positions:
+                          - locationCode: WH1-STOR-AMB-A07-03-01-A
+                            position: A
+                            locationType: PalletRack
+                            role: Storage
+                            status: Active
+                      - positions:
+                          - locationCode: WH1-STOR-AMB-A09-01-01-A
+                            position: A
+                            locationType: Shelf
+                            role: Storage
+                            status: Active
+                  - level: "02"
+                    cells:
+                      - positions:
+                          - locationCode: WH1-STOR-AMB-A07-03-02-A
+                            position: A
+                            locationType: PalletRack
+                            role: Storage
+                            status: Active
+                          - locationCode: WH1-STOR-AMB-A07-03-02-B
+                            position: B
+                            locationType: PalletRack
+                            role: Storage
+                            status: Active
+                      - null
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /zones/{zoneId}/aisles:
+    post:
+      operationId: registerAisle
+      summary: Register a physical corridor inside a zone
+      description: >
+        Adds an Aisle scoped to the given Zone. Its identity is the zone id
+        plus the aisle code (e.g. `WH1-STOR-AMB-A07`), the first four
+        segments of every LocationCode inside it. The SequenceHint is the
+        aisle's walk-order position — lower comes earlier on the route — and
+        is the concrete travel-distance input downstream WES planning
+        consumes. An Aisle cannot be registered against an unknown or
+        non-Active Zone. Publishes AisleRegistered.
+      tags: [Aisles]
+      parameters:
+        - $ref: "#/components/parameters/ZoneId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterAisleRequest"
+            example:
+              aisleCode: A07
+              sequenceHint: 7
+              direction: TwoWay
+      responses:
+        "201":
+          description: Aisle registered.
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+            Location:
+              description: Path of the newly created Aisle.
+              schema:
+                type: string
+                example: /zones/WH1-STOR-AMB/aisles/A07
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Aisle"
+              example:
+                aisleId: WH1-STOR-AMB-A07
+                zoneId: WH1-STOR-AMB
+                aisleCode: A07
+                sequenceHint: 7
+                direction: TwoWay
+                status: Active
+        "400":
+          description: >
+            Malformed input, or the Idempotency-Key header is absent
+            (`idempotency-key-required`) or not 1-128 printable ASCII
+            characters (`idempotency-key-invalid`) (ADR 0019).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                malformed:
+                  value:
+                    type: https://errors.facility-layout.warehouse-systems.dev/malformed-location-code
+                    title: Malformed location code
+                    status: 400
+                    detail: "location code must have exactly 7 hyphen-joined segments (site-area-zone-aisle-bay-level-position): got 4 segments in \"WH1-STOR-AMB-A07\""
+                    instance: /locations
+                idempotencyKeyRequired:
+                  value:
+                    type: https://errors.facility-layout.warehouse-systems.dev/idempotency-key-required
+                    title: Idempotency-Key header is required
+                    status: 400
+                    detail: This endpoint changes state and requires a caller-supplied Idempotency-Key header so a retried request is never applied twice.
+                    instance: /sites
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          description: >
+            Semantically invalid.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                semantic:
+                  value:
+                    type: https://errors.facility-layout.warehouse-systems.dev/placement-rule-violated
+                    title: Location type is not legal in this zone
+                    status: 422
+                    detail: "location type violates a placement rule for this zone: Shelf is denied in zone WH1-STOR-FRZ by rule [RULE-FRZ-NO-SHELF: Deny Shelf where temperatureClass=Frozen]"
+                    instance: /locations
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      operationId: listAisles
+      summary: List a zone's aisles in walk order
+      description: >
+        Returns every Aisle in the given Zone, ordered by SequenceHint then
+        aisle code — that is, in the order an associate would walk them.
+        Answers 404 if the zone itself is unknown.
+        Keyset-paginated: `limit` and `cursor`; follow `nextCursor` until it is absent.
+      tags: [Aisles]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/ZoneId"
+      responses:
+        "200":
+          description: The zone's aisles, in walk order.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AislePage"
+              example:
+                items:
+                  - aisleId: WH1-STOR-AMB-A07
+                    zoneId: WH1-STOR-AMB
+                    aisleCode: A07
+                    sequenceHint: 7
+                    direction: TwoWay
+                    status: Active
+                  - aisleId: WH1-STOR-AMB-A09
+                    zoneId: WH1-STOR-AMB
+                    aisleCode: A09
+                    sequenceHint: 9
+                    direction: OneWay
+                    status: Active
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /zones/{zoneId}/aisles/{aisleCode}:
+    get:
+      operationId: getAisle
+      summary: Get one aisle
+      description: >
+        Returns a single Aisle by its zone id and aisle code. This is the URL
+        the Location header of a successful registerAisle points at.
+      tags: [Aisles]
+      parameters:
+        - $ref: "#/components/parameters/ZoneId"
+        - name: aisleCode
+          in: path
+          required: true
+          description: The aisle segment of a LocationCode.
+          schema:
+            type: string
+            pattern: "^[A-Z0-9]+$"
+          example: A07
+      responses:
+        "200":
+          description: The aisle.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Aisle"
+              example:
+                aisleId: WH1-STOR-AMB-A07
+                zoneId: WH1-STOR-AMB
+                aisleCode: A07
+                sequenceHint: 7
+                direction: TwoWay
+                status: Active
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /zones/{zoneId}/aisles/{aisleCode}/geometry:
+    put:
+      operationId: setAisleGeometry
+      summary: Set an aisle's travel centreline
+      description: >
+        Records an aisle's straight-line travel centreline (ADR-0017), used
+        by the travel graph as this aisle's walkable path. The aisle must
+        already exist and must not be Decommissioned. Publishes
+        AisleGeometryUpdated.
+      tags: [Aisles]
+      parameters:
+        - $ref: "#/components/parameters/ZoneId"
+        - name: aisleCode
+          in: path
+          required: true
+          description: The aisle segment of a LocationCode.
+          schema:
+            type: string
+            pattern: "^[A-Z0-9]+$"
+          example: A07
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetAisleGeometryRequest"
+      responses:
+        "200":
+          description: The aisle, with its new centreline.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Aisle"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /zones/{zoneId}/cross-aisles:
+    post:
+      operationId: registerCrossAisle
+      summary: Register a connection between two aisles
+      description: >
+        Adds a CrossAisle (ADR-0017): a zone-scoped connection between two of
+        its aisles at a bay ordinal — physically, a walkway a picker can
+        cross between them without walking to either aisle's end. Both aisle
+        codes must already exist as Aisles in the named zone. A connection
+        between the same two aisles at the same bay is rejected as a
+        duplicate regardless of which side is named "from". Publishes
+        CrossAisleRegistered.
+      tags: [Aisles]
+      parameters:
+        - $ref: "#/components/parameters/ZoneId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterCrossAisleRequest"
+            example:
+              fromAisle: A07
+              toAisle: A08
+              atBay: "02"
+      responses:
+        "201":
+          description: Cross-aisle registered.
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CrossAisle"
+              example:
+                zoneId: WH1-STOR-AMB
+                fromAisle: A07
+                toAisle: A08
+                atBay: "02"
+                active: true
+        "400":
+          description: >
+            Malformed input, or the Idempotency-Key header is absent
+            (`idempotency-key-required`) or not 1-128 printable ASCII
+            characters (`idempotency-key-invalid`) (ADR 0019).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                malformed:
+                  value:
+                    type: https://errors.facility-layout.warehouse-systems.dev/malformed-location-code
+                    title: Malformed location code
+                    status: 400
+                    detail: "location code must have exactly 7 hyphen-joined segments (site-area-zone-aisle-bay-level-position): got 4 segments in \"WH1-STOR-AMB-A07\""
+                    instance: /locations
+                idempotencyKeyRequired:
+                  value:
+                    type: https://errors.facility-layout.warehouse-systems.dev/idempotency-key-required
+                    title: Idempotency-Key header is required
+                    status: 400
+                    detail: This endpoint changes state and requires a caller-supplied Idempotency-Key header so a retried request is never applied twice.
+                    instance: /sites
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          description: >
+            Semantically invalid.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                semantic:
+                  value:
+                    type: https://errors.facility-layout.warehouse-systems.dev/placement-rule-violated
+                    title: Location type is not legal in this zone
+                    status: 422
+                    detail: "location type violates a placement rule for this zone: Shelf is denied in zone WH1-STOR-FRZ by rule [RULE-FRZ-NO-SHELF: Deny Shelf where temperatureClass=Frozen]"
+                    instance: /locations
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      operationId: listCrossAisles
+      summary: List a zone's cross-aisles
+      description: >
+        Returns every declared CrossAisle (ADR-0017) in the zone — its
+        zone-scoped connections between two of its aisles at a bay ordinal —
+        ordered by from-aisle, to-aisle, bay. A read model: it reflects what
+        was registered, including inactive (decommissioned) connections, so
+        a consumer can discover the declared connections without deriving
+        them from the travel graph's edges.
+        Keyset-paginated: `limit` and `cursor`; follow `nextCursor` until it is absent.
+      tags: [Aisles]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/ZoneId"
+      responses:
+        "200":
+          description: The zone's cross-aisles (an empty array when none).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CrossAislePage"
+              example:
+                items:
+                  - zoneId: WH1-STOR-AMB
+                    fromAisle: A07
+                    toAisle: A08
+                    atBay: "02"
+                    active: true
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /zones/{zoneId}/travel-graph:
+    get:
+      operationId: getZoneTravelGraph
+      x-pagination-exempt: view
+      summary: Get one zone's travel graph
+      description: >
+        Returns one zone's travel graph (ADR-0017) as every waypoint (aisle +
+        bay) and every directed, weighted edge between them, built fresh
+        from the zone's aisles, registered slots, and active cross-aisles.
+        An edge's metresM is derived from an aisle's real centreline
+        geometry when set, or from the zone's bay pitch otherwise (flagged
+        estimated). This context reports map TOPOLOGY only — never travel
+        time or congestion, which remain wes-work-planning's concern.
+      tags: [Layout]
+      parameters:
+        - $ref: "#/components/parameters/ZoneId"
+      responses:
+        "200":
+          description: The zone's travel graph.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TravelGraph"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /location-types:
+    post:
+      operationId: registerLocationType
+      summary: Register a reusable slot classification
+      description: >
+        Defines a LocationType — a kind of physical slot such as PalletRack,
+        Shelf, ToteWall, BulkFloor, Staging or Amnesty (where a damaged or
+        mismatched item is set aside during stow) — together with the default
+        capacity envelope its slots inherit unless they override it. Both
+        capacity dimensions must be strictly positive: a slot that can hold
+        nothing is not a slot. Publishes LocationTypeRegistered.
+      tags: [Location Types]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterLocationTypeRequest"
+            example:
+              name: PalletRack
+              defaultCapacity:
+                maxWeightKg: 1200
+                maxVolumeM3: 2.4
+      responses:
+        "201":
+          description: Location type registered.
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+            Location:
+              description: Path of the newly created LocationType.
+              schema:
+                type: string
+                example: /location-types/PalletRack
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LocationType"
+              example:
+                name: PalletRack
+                role: Storage
+                defaultCapacity:
+                  maxWeightKg: 1200
+                  maxVolumeM3: 2.4
+        "400":
+          description: >
+            Malformed input, or the Idempotency-Key header is absent
+            (`idempotency-key-required`) or not 1-128 printable ASCII
+            characters (`idempotency-key-invalid`) (ADR 0019).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                malformed:
+                  value:
+                    type: https://errors.facility-layout.warehouse-systems.dev/malformed-location-code
+                    title: Malformed location code
+                    status: 400
+                    detail: "location code must have exactly 7 hyphen-joined segments (site-area-zone-aisle-bay-level-position): got 4 segments in \"WH1-STOR-AMB-A07\""
+                    instance: /locations
+                idempotencyKeyRequired:
+                  value:
+                    type: https://errors.facility-layout.warehouse-systems.dev/idempotency-key-required
+                    title: Idempotency-Key header is required
+                    status: 400
+                    detail: This endpoint changes state and requires a caller-supplied Idempotency-Key header so a retried request is never applied twice.
+                    instance: /sites
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          description: >
+            Semantically invalid.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                semantic:
+                  value:
+                    type: https://errors.facility-layout.warehouse-systems.dev/placement-rule-violated
+                    title: Location type is not legal in this zone
+                    status: 422
+                    detail: "location type violates a placement rule for this zone: Shelf is denied in zone WH1-STOR-FRZ by rule [RULE-FRZ-NO-SHELF: Deny Shelf where temperatureClass=Frozen]"
+                    instance: /locations
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      operationId: listLocationTypes
+      summary: List every registered location type
+      description: >
+        Returns every LocationType, ordered by name, with its default
+        capacity envelope. PlacementRules reference these by name, so this is
+        the vocabulary a rule author picks from.
+        Keyset-paginated: `limit` and `cursor`; follow `nextCursor` until it is absent.
+      tags: [Location Types]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Every location type, ordered by name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LocationTypePage"
+              example:
+                items:
+                  - name: Amnesty
+                    role: Storage
+                    defaultCapacity:
+                      maxWeightKg: 30
+                      maxVolumeM3: 0.2
+                  - name: PalletRack
+                    role: Storage
+                    defaultCapacity:
+                      maxWeightKg: 1200
+                      maxVolumeM3: 2.4
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /location-types/{name}:
+    get:
+      operationId: getLocationType
+      summary: Get one location type
+      description: >
+        Returns a single LocationType by name. This is the URL the Location
+        header of a successful registerLocationType points at.
+      tags: [Location Types]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: The location type's name.
+          schema:
+            type: string
+          example: PalletRack
+      responses:
+        "200":
+          description: The location type.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LocationType"
+              example:
+                name: PalletRack
+                role: Storage
+                defaultCapacity:
+                  maxWeightKg: 1200
+                  maxVolumeM3: 2.4
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /placement-rules:
+    post:
+      operationId: definePlacementRule
+      summary: Declare which location types are legal in which zones
+      description: >
+        Defines a PlacementRule: a LocationType, an Effect (Allow or Deny),
+        and a zone predicate matching on zoneCode, temperatureClass and/or
+        hazmat. Every field set on the predicate must match for it to apply
+        (AND semantics); unset fields are wildcards; at least one must be set.
+
+
+        Evaluation at slot-registration time runs in order: any matching Deny
+        rule naming the slot's LocationType rejects it (Deny always wins); if
+        any matching Allow rule exists for the zone at all, the zone becomes
+        an allow-list and the LocationType must be named by one of them;
+        otherwise the zone is unconstrained. The rejection error always names
+        the specific rule violated.
+
+
+        The referenced LocationType must already exist. Publishes
+        PlacementRuleDefined.
+      tags: [Placement Rules]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DefinePlacementRuleRequest"
+            example:
+              ruleId: RULE-FRZ-NO-SHELF
+              locationType: Shelf
+              effect: Deny
+              zone:
+                temperatureClass: Frozen
+      responses:
+        "201":
+          description: Placement rule defined.
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+            Location:
+              description: Path of the newly created PlacementRule.
+              schema:
+                type: string
+                example: /placement-rules/RULE-FRZ-NO-SHELF
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlacementRule"
+              example:
+                ruleId: RULE-FRZ-NO-SHELF
+                locationType: Shelf
+                effect: Deny
+                zone:
+                  temperatureClass: Frozen
+                description: "RULE-FRZ-NO-SHELF: Deny Shelf where temperatureClass=Frozen"
+        "400":
+          description: >
+            Malformed input, or the Idempotency-Key header is absent
+            (`idempotency-key-required`) or not 1-128 printable ASCII
+            characters (`idempotency-key-invalid`) (ADR 0019).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                malformed:
+                  value:
+                    type: https://errors.facility-layout.warehouse-systems.dev/malformed-location-code
+                    title: Malformed location code
+                    status: 400
+                    detail: "location code must have exactly 7 hyphen-joined segments (site-area-zone-aisle-bay-level-position): got 4 segments in \"WH1-STOR-AMB-A07\""
+                    instance: /locations
+                idempotencyKeyRequired:
+                  value:
+                    type: https://errors.facility-layout.warehouse-systems.dev/idempotency-key-required
+                    title: Idempotency-Key header is required
+                    status: 400
+                    detail: This endpoint changes state and requires a caller-supplied Idempotency-Key header so a retried request is never applied twice.
+                    instance: /sites
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          description: >
+            Semantically invalid.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                semantic:
+                  value:
+                    type: https://errors.facility-layout.warehouse-systems.dev/placement-rule-violated
+                    title: Location type is not legal in this zone
+                    status: 422
+                    detail: "location type violates a placement rule for this zone: Shelf is denied in zone WH1-STOR-FRZ by rule [RULE-FRZ-NO-SHELF: Deny Shelf where temperatureClass=Frozen]"
+                    instance: /locations
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      operationId: listPlacementRules
+      summary: List every defined placement rule
+      description: >
+        Returns every PlacementRule, ordered by rule id, each with a
+        human-readable description of what it constrains. This is the full
+        rule set a slot registration is evaluated against.
+        Keyset-paginated: `limit` and `cursor`; follow `nextCursor` until it is absent.
+      tags: [Placement Rules]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Every placement rule, ordered by id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlacementRulePage"
+              example:
+                items:
+                  - ruleId: RULE-FRZ-NO-SHELF
+                    locationType: Shelf
+                    effect: Deny
+                    zone:
+                      temperatureClass: Frozen
+                    description: "RULE-FRZ-NO-SHELF: Deny Shelf where temperatureClass=Frozen"
+                  - ruleId: RULE-HAZ-ONLY-RACK
+                    locationType: PalletRack
+                    effect: Allow
+                    zone:
+                      zoneCode: HAZ
+                    description: "RULE-HAZ-ONLY-RACK: Allow PalletRack where zoneCode=HAZ"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /placement-rules/{ruleId}:
+    get:
+      operationId: getPlacementRule
+      summary: Get one placement rule
+      description: >
+        Returns a single PlacementRule by its id. This is the URL the
+        Location header of a successful definePlacementRule points at.
+      tags: [Placement Rules]
+      parameters:
+        - name: ruleId
+          in: path
+          required: true
+          description: The placement rule's id.
+          schema:
+            type: string
+          example: RULE-HAZ-ONLY-RACK
+      responses:
+        "200":
+          description: The placement rule.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlacementRule"
+              example:
+                ruleId: RULE-HAZ-ONLY-RACK
+                locationType: PalletRack
+                effect: Allow
+                zone:
+                  zoneCode: HAZ
+                description: "RULE-HAZ-ONLY-RACK: Allow PalletRack where zoneCode=HAZ"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /locations:
+    post:
+      operationId: registerLocationSlot
+      summary: Register one coded location slot
+      description: >
+        The core operation of this service. Registering a LocationSlot is a
+        chain-of-custody check, not a bare insert: the Site, Zone and Aisle
+        implied by the LocationCode's segments must all resolve to existing,
+        Active aggregates (404 if any link is missing, 409 if one exists but
+        is no longer Active), and the slot's LocationType must satisfy every
+        PlacementRule applicable to its Zone (422, naming the violated rule,
+        if not). There are no orphan slots, ever.
+
+
+        `capacityOverride` is optional; omit it to inherit the LocationType's
+        default envelope. The LocationCode is the slot's identity, so
+        re-registering one already in use is a 409 — including when the
+        existing slot is Decommissioned, since decommission is one-way and a
+        retired code is never resurrected by re-registration. Publishes
+        LocationSlotRegistered.
+
+
+        `gln` (ADR-0045) is an optional GS1 Global Location Number for a dock
+        door or a yard spot: 13 digits with a valid mod-10 check digit (422
+        `invalid-gln`), unique across every site, zone and slot (409
+        `gln-already-assigned`). `spotKind` (ADR-0045) classifies a yard spot
+        (`PARKING`, `HOLDING`, `REEFER_PLUG`, `HAZMAT`, `STAGING_LANE`) and is
+        only legal when the LocationType's role is `Yard`: on any other role
+        it is 422 `spot-kind-not-allowed`; an unknown value is 422
+        `unknown-spot-kind`. Neither field can be changed after registration
+        in this version. Omit both and the request behaves exactly as before.
+      tags: [Locations]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterLocationSlotRequest"
+            examples:
+              storageBin:
+                summary: A storage bin without the optional identity fields
+                value:
+                  locationCode: WH1-STOR-AMB-A07-03-02-B
+                  locationType: PalletRack
+              yardSpot:
+                summary: A refrigerated-trailer yard spot with a GLN (ADR-0045)
+                value:
+                  locationCode: WH1-YARD-NORTH-Y01-01-01-A
+                  locationType: YardSpot
+                  gln: "4006381333931"
+                  spotKind: REEFER_PLUG
+      responses:
+        "201":
+          description: Location slot registered.
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+            Location:
+              description: Path of the newly created LocationSlot.
+              schema:
+                type: string
+                example: /locations/WH1-STOR-AMB-A07-03-02-B
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LocationSlot"
+              example:
+                locationCode: WH1-STOR-AMB-A07-03-02-B
+                zoneId: WH1-STOR-AMB
+                aisleId: WH1-STOR-AMB-A07
+                coordinates:
+                  site: WH1
+                  area: STOR
+                  zone: AMB
+                  aisle: A07
+                  bay: "03"
+                  level: "02"
+                  position: B
+                locationType: PalletRack
+                role: Storage
+                capacity:
+                  maxWeightKg: 1200
+                  maxVolumeM3: 2.4
+                status: Active
+        "400":
+          description: >
+            Malformed input, or the Idempotency-Key header is absent
+            (`idempotency-key-required`) or not 1-128 printable ASCII
+            characters (`idempotency-key-invalid`) (ADR 0019).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                malformed:
+                  summary: Malformed location code
+                  value:
+                    type: https://errors.facility-layout.warehouse-systems.dev/malformed-location-code
+                    title: Malformed location code
+                    status: 400
+                    detail: "location code must have exactly 7 hyphen-joined segments (site-area-zone-aisle-bay-level-position): got 4 segments in \"WH1-STOR-AMB-A07\""
+                    instance: /locations
+                idempotencyKeyRequired:
+                  value:
+                    type: https://errors.facility-layout.warehouse-systems.dev/idempotency-key-required
+                    title: Idempotency-Key header is required
+                    status: 400
+                    detail: This endpoint changes state and requires a caller-supplied Idempotency-Key header so a retried request is never applied twice.
+                    instance: /sites
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          description: >
+            Semantically invalid.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                semantic:
+                  value:
+                    type: https://errors.facility-layout.warehouse-systems.dev/placement-rule-violated
+                    title: Location type is not legal in this zone
+                    status: 422
+                    detail: "location type violates a placement rule for this zone: Shelf is denied in zone WH1-STOR-FRZ by rule [RULE-FRZ-NO-SHELF: Deny Shelf where temperatureClass=Frozen]"
+                    instance: /locations
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /location-imports:
+    post:
+      operationId: importFacilityLayout
+      summary: Bulk-import a whole building's layout
+      description: >
+        The bootstrap mechanism: takes a JSON array of fully-specified rows
+        (a site/area/zone/aisle/bay/level/position address plus a
+        LocationType) and loads a real warehouse's layout in one reproducible
+        call, creating the Site, Zone and Aisle structure on first sight. A
+        row naming structure that already exists reuses it and never mutates
+        it, so an import cannot silently redefine a zone's temperature class.
+
+
+        Validation is **atomic per row** with partial success reported per
+        row: every row is processed, and the report says exactly which rows
+        failed and why. A 500-row export with 3 bad rows still creates the
+        other 497.
+
+
+        This answers 200 OK, not 201: a bulk import is a partial-success
+        report over many rows, not the creation of one addressable resource,
+        so there is no single Location to hand back. Publishes one
+        FacilityLayoutImported carrying the counts, plus the usual per-entity
+        registration events as structure is created.
+
+
+        The import is a batch-job noun (`/location-imports`, REST API
+        guideline 1.3 e) and is idempotent: a retry with the same
+        Idempotency-Key replays the stored report with
+        `Idempotency-Replayed: true` instead of importing twice.
+      tags: [Locations]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              minItems: 1
+              items:
+                $ref: "#/components/schemas/ImportRow"
+            example:
+              - siteCode: WH1
+                siteName: Fulfilment Centre One
+                areaCode: STOR
+                zoneCode: AMB
+                temperatureClass: Ambient
+                hazmat: false
+                aisleCode: A07
+                sequenceHint: 7
+                direction: TwoWay
+                bay: "03"
+                level: "02"
+                position: B
+                locationType: PalletRack
+              - siteCode: WH1
+                areaCode: STOR
+                zoneCode: FRZ
+                temperatureClass: Frozen
+                hazmat: false
+                aisleCode: A02
+                sequenceHint: 2
+                direction: TwoWay
+                bay: "01"
+                level: "01"
+                position: A
+                locationType: Shelf
+      responses:
+        "200":
+          description: >
+            The import report. Rows that failed are listed individually with
+            the reason; rows that succeeded were really created.
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportReport"
+              example:
+                rowsSubmitted: 2
+                slotsImported: 1
+                rowsRejected: 1
+                results:
+                  - index: 0
+                    locationCode: WH1-STOR-AMB-A07-03-02-B
+                    succeeded: true
+                  - index: 1
+                    locationCode: WH1-STOR-FRZ-A02-01-01-A
+                    succeeded: false
+                    error: "location type violates a placement rule for this zone: Shelf is denied in zone WH1-STOR-FRZ by rule [RULE-FRZ-NO-SHELF: Deny Shelf where temperatureClass=Frozen]"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /locations/{locationCode}:
+    get:
+      operationId: getLocationSlot
+      summary: Get one location slot
+      description: >
+        Returns a single LocationSlot by its LocationCode, with the code
+        exploded into its seven typed coordinate segments so a renderer does
+        not have to re-parse it. A code that is not seven `[A-Z0-9]` segments
+        is a 400, not a 404 — it could never identify a slot.
+      tags: [Locations]
+      parameters:
+        - $ref: "#/components/parameters/LocationCode"
+      responses:
+        "200":
+          description: The location slot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LocationSlot"
+              example:
+                locationCode: WH1-STOR-AMB-A07-03-02-B
+                zoneId: WH1-STOR-AMB
+                aisleId: WH1-STOR-AMB-A07
+                coordinates:
+                  site: WH1
+                  area: STOR
+                  zone: AMB
+                  aisle: A07
+                  bay: "03"
+                  level: "02"
+                  position: B
+                locationType: PalletRack
+                role: Storage
+                capacity:
+                  maxWeightKg: 1200
+                  maxVolumeM3: 2.4
+                status: Active
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /locations/{locationCode}/geometry:
+    put:
+      operationId: setLocationGeometry
+      summary: Set a location slot's physical geometry
+      description: >
+        Records a coded slot's physical position, footprint, and
+        (optionally) an explicit pick-sequence override (ADR-0017). The slot
+        must already exist and must not be Decommissioned. Publishes
+        LocationGeometryUpdated.
+      tags: [Locations]
+      parameters:
+        - $ref: "#/components/parameters/LocationCode"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetLocationGeometryRequest"
+      responses:
+        "200":
+          description: The location slot, with its new geometry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LocationSlot"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /locations/{locationCode}/handling-unit:
+    put:
+      operationId: declareLocationHandlingUnit
+      summary: Declare a location slot's handling unit
+      description: >
+        Sets or changes the unit of handling (EACH, CASE or PALLET) the slot
+        accepts (ADR-0040). The slot must already exist and must not be
+        Decommissioned. Naturally idempotent (same body, same state), like
+        the geometry PUT, so it takes no Idempotency-Key. Publishes
+        LocationSlotHandlingUnitDeclared. inventory-storage uses the value
+        to decide whether a sealed case may be stowed in the bin.
+      tags: [Locations]
+      parameters:
+        - $ref: "#/components/parameters/LocationCode"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeclareHandlingUnitRequest"
+      responses:
+        "200":
+          description: The location slot, with its handling unit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LocationSlot"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /locations/{locationCode}/classification:
+    get:
+      operationId: getLocationClassification
+      summary: Get a location slot's resolved hazmat/temperature-class attributes
+      description: >
+        Resolves a LocationSlot's LocationCode to its parent Zone (the
+        same Site/Area/Zone/Aisle chain-of-custody resolution
+        `POST /locations` performs) and returns that Zone's `hazmat` and
+        `temperatureClass` attributes. This is a deliberately cheap,
+        denormalized read: it does not return the rest of the LocationSlot
+        or Zone shape, only what a cross-context caller needs to validate
+        placement of a classified product (e.g. `inventory-storage`
+        checking that a Hazmat SKU only lands in a hazmat-rated Zone, or a
+        TemperatureSensitive SKU only lands in a Zone with a matching
+        TemperatureClass) without duplicating Zone data of its own.
+
+
+        This context remains the sole source of truth for these
+        attributes — Zone already carries `Hazmat` and `TemperatureClass`;
+        this endpoint is the concrete realization of this context's Open
+        Host Service / Published Language for that purpose (see ADR-0008).
+
+
+        A code that is not seven `[A-Z0-9]` segments is a 400, not a 404 —
+        it could never identify a slot. An unknown location code, or one
+        whose slot exists but whose zone cannot be resolved, is a 404.
+      tags: [Locations]
+      parameters:
+        - $ref: "#/components/parameters/LocationCode"
+      responses:
+        "200":
+          description: The slot's resolved classification.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LocationClassification"
+              example:
+                hazmat: true
+                temperatureClass: Frozen
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /locations/{locationCode}/decommissionings:
+    post:
+      operationId: decommissionLocationSlot
+      summary: Permanently retire a location slot
+      description: >
+        Marks the slot Decommissioned. This is a genuine domain command, not
+        a CRUD update, which is why it is modelled as a transition resource
+        (`decommissionings`) of the slot rather than a PATCH (REST API
+        guideline 1.3 d). A retry with the same Idempotency-Key replays the
+        stored 204 with `Idempotency-Replayed: true` instead of answering 409.
+
+
+        The transition is **one-way** in v1: there is no reactivation use
+        case, calling it twice is a 409, and re-registering the same
+        LocationCode afterwards is rejected as a duplicate rather than
+        quietly resurrecting the slot. Publishes LocationSlotDecommissioned.
+        Returns 204 with no body — there is nothing to say beyond "done".
+      tags: [Locations]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/LocationCode"
+      responses:
+        "204":
+          description: Slot decommissioned. No body.
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /distance:
+    get:
+      operationId: estimateTravelDistance
+      x-pagination-exempt: view
+      summary: Compute the shortest travel distance between two locations
+      description: >
+        Computes the shortest travel distance, in metres, between two coded
+        locations over the pure-domain travel graph (ADR-0017): Dijkstra's
+        algorithm honouring one-way aisles and active cross-aisles. The
+        result is flagged `estimated` when any leg of the route used a
+        zone's bay-pitch fallback instead of real aisle centreline geometry.
+
+        Same-zone requests route over the zone's travel graph. Cross-zone
+        requests are honoured only when BOTH locations carry recorded
+        position geometry: the answer is the straight-line (beeline)
+        distance between the two positions, always flagged `estimated`
+        because it is a lower bound, not a routed path. When either
+        endpoint lacks geometry the request is refused (422, does not
+        guess) — the travel graph is per-zone, so no honest routed
+        cross-zone path exists yet.
+
+        This context reports map TOPOLOGY only: travel TIME, congestion,
+        and route choice under load remain wes-work-planning's concern,
+        never this one's.
+      tags: [Layout]
+      parameters:
+        - name: from
+          in: query
+          required: true
+          description: The seven-segment LocationCode to travel from.
+          schema:
+            type: string
+            pattern: "^[A-Z0-9]+(-[A-Z0-9]+){6}$"
+          example: WH1-STOR-AMB-A07-01-01-A
+        - name: to
+          in: query
+          required: true
+          description: The seven-segment LocationCode to travel to.
+          schema:
+            type: string
+            pattern: "^[A-Z0-9]+(-[A-Z0-9]+){6}$"
+          example: WH1-STOR-AMB-A09-03-01-A
+      responses:
+        "200":
+          description: The shortest travel distance and route.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TravelDistance"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+  parameters:
+    SiteCode:
+      name: siteCode
+      in: path
+      required: true
+      description: The site's code — the first segment of every LocationCode inside it.
+      schema:
+        type: string
+        pattern: "^[A-Z0-9]+$"
+      example: WH1
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: >-
+        Caller-generated key (a UUID per logical submit, 1-128 printable
+        ASCII characters) that makes a retried POST safe (ADR 0019, ADR 0044).
+        Clients MUST always send it: the service runs on Postgres in every
+        deployment (ADR 0039), so the header is always enforced and an absent
+        key is answered 400 `idempotency-key-required`, a malformed one 400
+        `idempotency-key-invalid`. A replay with the same key, method, path and
+        body returns the original response verbatim plus the response header
+        `Idempotency-Replayed: true`; the same key with a different method,
+        path or body is 409 `idempotency-key-reused`. The key is global (not
+        per route).
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+        example: 5b0f6a0e-6a41-4c63-9f33-0c8f5c1d2a77
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Page size, 1-500 (default 100). An empty, repeated, non-integer or out-of-range value is 400 `invalid-limit`.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 500
+        default: 100
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: >-
+        Opaque page token: the `nextCursor` of the previous page, with the
+        same filters repeated. A token that does not decode is 400
+        `invalid-cursor`. Any query parameter the collection does not declare
+        is 400 `unknown-query-parameter`.
+      schema:
+        type: string
+    ZoneId:
+      name: zoneId
+      in: path
+      required: true
+      description: >
+        The zone's id, `SITE-AREA-ZONE` — exactly the first three segments of
+        every LocationCode inside it.
+      schema:
+        type: string
+        pattern: "^[A-Z0-9]+-[A-Z0-9]+-[A-Z0-9]+$"
+      example: WH1-STOR-AMB
+    LocationCode:
+      name: locationCode
+      in: path
+      required: true
+      description: >
+        The slot's full seven-segment code,
+        `SITE-AREA-ZONE-AISLE-BAY-LEVEL-POSITION`.
+      schema:
+        type: string
+        pattern: "^[A-Z0-9]+(-[A-Z0-9]+){6}$"
+      example: WH1-STOR-AMB-A07-03-02-B
+
+  headers:
+    IdempotencyReplayed:
+      description: >-
+        `true` when this response is the stored answer of an earlier request
+        with the same Idempotency-Key; never present on the first execution.
+      schema:
+        type: string
+        enum: ["true"]
+
+  responses:
+    BadRequest:
+      description: >
+        Malformed input: a body that is not valid JSON, a location code that
+        is not seven `[A-Z0-9]` segments, a missing required identifier, a
+        query parameter outside its documented enum, an invalid `limit` /
+        `cursor` or an undeclared query parameter on a paged collection, or a
+        missing / malformed Idempotency-Key on a POST.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          examples:
+            malformedLocationCode:
+              value:
+                type: https://errors.facility-layout.warehouse-systems.dev/malformed-location-code
+                title: Malformed location code
+                status: 400
+                detail: "location code must have exactly 7 hyphen-joined segments (site-area-zone-aisle-bay-level-position): got 4 segments in \"WH1-STOR-AMB-A07\""
+                instance: /locations
+            idempotencyKeyRequired:
+              value:
+                type: https://errors.facility-layout.warehouse-systems.dev/idempotency-key-required
+                title: Idempotency-Key header is required
+                status: 400
+                detail: This endpoint changes state and requires a caller-supplied Idempotency-Key header so a retried request is never applied twice.
+                instance: /location-imports
+            idempotencyKeyInvalid:
+              value:
+                type: https://errors.facility-layout.warehouse-systems.dev/idempotency-key-invalid
+                title: Idempotency-Key header is invalid
+                status: 400
+                detail: The Idempotency-Key header must be 1-128 printable ASCII characters (a client-generated UUID per logical submit).
+                instance: /location-imports
+            invalidLimit:
+              value:
+                type: https://errors.facility-layout.warehouse-systems.dev/invalid-limit
+                title: limit must be an integer between 1 and 500
+                status: 400
+                detail: limit must be an integer between 1 and 500
+                instance: /sites
+            invalidCursor:
+              value:
+                type: https://errors.facility-layout.warehouse-systems.dev/invalid-cursor
+                title: cursor is not a valid page token
+                status: 400
+                detail: invalid cursor
+                instance: /sites
+            unknownQueryParameter:
+              value:
+                type: https://errors.facility-layout.warehouse-systems.dev/unknown-query-parameter
+                title: the collection does not declare this query parameter
+                status: 400
+                detail: "unknown query parameter: after"
+                instance: /sites
+    NotFound:
+      description: The named site, zone, aisle, slot, location type or placement rule does not exist.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://errors.facility-layout.warehouse-systems.dev/site-not-found
+            title: Site not found
+            status: 404
+            detail: site not found
+            instance: /sites/NOPE
+    Conflict:
+      description: >
+        A state conflict: a code already taken, a GS1 Global Location Number
+        already assigned to another location (`gln-already-assigned`,
+        ADR-0045), a parent that exists but is no longer Active, or a slot
+        already decommissioned. On a POST it is
+        also the answer to an Idempotency-Key reused with a different method,
+        path or body (`idempotency-key-reused`); the problem type tells the
+        two apart.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          examples:
+            duplicateLocationCode:
+              value:
+                type: https://errors.facility-layout.warehouse-systems.dev/duplicate-location-code
+                title: A location slot with this code already exists
+                status: 409
+                detail: a location slot with this code already exists
+                instance: /locations
+            glnAlreadyAssigned:
+              value:
+                type: https://errors.facility-layout.warehouse-systems.dev/gln-already-assigned
+                title: This GLN is already assigned to another location
+                status: 409
+                detail: this GLN is already assigned to another location
+                instance: /locations
+            idempotencyKeyReused:
+              value:
+                type: https://errors.facility-layout.warehouse-systems.dev/idempotency-key-reused
+                title: Idempotency-Key was already used with a different request
+                status: 409
+                detail: The Idempotency-Key header on this request was already used with a different method, path or body. Use a new Idempotency-Key for a genuinely different request.
+                instance: /sites
+    UnprocessableEntity:
+      description: >
+        Semantically invalid: a non-positive capacity, an unknown enum value,
+        or a PlacementRule violation.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://errors.facility-layout.warehouse-systems.dev/placement-rule-violated
+            title: Location type is not legal in this zone
+            status: 422
+            detail: "location type violates a placement rule for this zone: Shelf is denied in zone WH1-STOR-FRZ by rule [RULE-FRZ-NO-SHELF: Deny Shelf where temperatureClass=Frozen]"
+            instance: /locations
+    InternalError:
+      description: An unexpected failure, e.g. the datastore is unavailable.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://errors.facility-layout.warehouse-systems.dev/internal-error
+            title: An unexpected internal error occurred
+            status: 500
+            detail: "connection refused"
+            instance: /sites
+
+  schemas:
+    Problem:
+      type: object
+      description: RFC 7807 Problem Details. Every error response in this API uses this shape.
+      required: [type, title, status, detail]
+      properties:
+        type:
+          type: string
+          format: uri
+          description: >
+            A URI identifying the error CATEGORY. It is an identifier, not a
+            link — it does not need to resolve.
+          example: https://errors.facility-layout.warehouse-systems.dev/placement-rule-violated
+        title:
+          type: string
+          description: A fixed, human-readable summary of the error category.
+          example: Location type is not legal in this zone
+        status:
+          type: integer
+          format: int32
+          description: The HTTP status code, duplicated in the body per RFC 7807.
+          example: 422
+        detail:
+          type: string
+          description: The specific message for this occurrence.
+          example: "location type violates a placement rule for this zone: Shelf is denied in zone WH1-STOR-FRZ by rule [RULE-FRZ-NO-SHELF: Deny Shelf where temperatureClass=Frozen]"
+        instance:
+          type: string
+          description: The request path that produced the error.
+          example: /locations
+
+    Status:
+      type: string
+      description: >
+        The lifecycle state shared by every structural aggregate.
+        Decommission is one-way in v1. UnderMaintenance is a legal persisted
+        state that the read models render; no v1 use case sets it.
+      enum: [Active, UnderMaintenance, Decommissioned]
+      example: Active
+
+    TemperatureClass:
+      type: string
+      description: A zone's thermal behaviour. PlacementRules match on it.
+      enum: [Ambient, Chilled, Frozen]
+      example: Ambient
+
+    Direction:
+      type: string
+      description: Whether an aisle may be traversed in one direction only or both.
+      enum: [OneWay, TwoWay]
+      example: TwoWay
+
+    Capacity:
+      type: object
+      description: A slot's physical envelope. Both dimensions must be strictly positive.
+      required: [maxWeightKg, maxVolumeM3]
+      properties:
+        maxWeightKg:
+          type: number
+          format: double
+          minimum: 0
+          exclusiveMinimum: true
+          description: Maximum weight in kilograms.
+          example: 1200
+        maxVolumeM3:
+          type: number
+          format: double
+          minimum: 0
+          exclusiveMinimum: true
+          description: Maximum volume in cubic metres.
+          example: 2.4
+
+    ResolvedCapacity:
+      type: object
+      description: >
+        A capacity envelope as it appears on a READ model. Identical to
+        Capacity except that both dimensions may be 0: a LocationType (and a
+        slot of that type) whose role does not require capacity — Dock,
+        Yard, WorkCenter, QC, Shipping — legitimately reports 0/0, the
+        service's way of saying "this location holds nothing by design".
+        Requests still use Capacity, whose dimensions are strictly positive
+        wherever a capacity is supplied at all.
+      required: [maxWeightKg, maxVolumeM3]
+      properties:
+        maxWeightKg:
+          type: number
+          format: double
+          minimum: 0
+          description: Maximum weight in kilograms.
+          example: 1200
+        maxVolumeM3:
+          type: number
+          format: double
+          minimum: 0
+          description: Maximum volume in cubic metres.
+          example: 2.4
+
+    Coordinates:
+      type: object
+      description: >
+        A LocationCode exploded into its seven typed segments, so a renderer
+        can position a slot without re-parsing the code.
+      required: [site, area, zone, aisle, bay, level, position]
+      properties:
+        site:
+          type: string
+          description: The physical facility.
+          example: WH1
+        area:
+          type: string
+          description: Coarse functional area (STOR, RCV, PACK, STAGE).
+          example: STOR
+        zone:
+          type: string
+          description: Behavioral class within the area (AMB, CHL, FRZ, HAZ, FWD, RSV, CPK). CPK = case-pick faces whose capacity slotting plans in cases (a convention on this free-form string, not validated here; ADR 0042).
+          example: AMB
+        aisle:
+          type: string
+          description: Physical corridor.
+          example: A07
+        bay:
+          type: string
+          description: Bay/section along the aisle.
+          example: "03"
+        level:
+          type: string
+          description: Vertical level/shelf.
+          example: "02"
+        position:
+          type: string
+          description: Left-to-right slot on that level.
+          example: B
+
+    Gln:
+      type: string
+      pattern: "^[0-9]{13}$"
+      description: >
+        A GS1 Global Location Number (ADR-0045): 13 digits whose last digit is
+        the GS1 mod-10 check digit of the first twelve (weights 3 and 1,
+        alternating from the right). The pattern only checks the shape; the
+        check digit is verified by the service (422 `invalid-gln`). A GLN
+        identifies exactly one site, zone or slot (409 `gln-already-assigned`).
+        Optional everywhere; omitted when none was recorded.
+      example: "4006381333931"
+
+    SpotKind:
+      type: string
+      enum: [PARKING, HOLDING, REEFER_PLUG, HAZMAT, STAGING_LANE]
+      description: >
+        What a yard spot is for (ADR-0045). Only meaningful on a slot whose
+        role is `Yard`; omitted when none was recorded.
+      example: REEFER_PLUG
+
+    Site:
+      type: object
+      description: A physical facility/building — the root of the location hierarchy.
+      required: [siteCode, name, status, siteRole]
+      properties:
+        siteCode:
+          type: string
+          description: Uppercase alphanumeric code, unique across the service.
+          example: WH1
+        name:
+          type: string
+          description: Human-readable facility name.
+          example: Fulfilment Centre One
+        status:
+          $ref: "#/components/schemas/Status"
+        siteRole:
+          $ref: "#/components/schemas/SiteRole"
+        gln:
+          $ref: "#/components/schemas/Gln"
+
+    SiteRole:
+      type: string
+      description: >
+        The site's role in the fulfilment network (ADR-0037). `UNSPECIFIED`
+        means nobody classified the site yet; it is the registration default
+        and cannot be assigned by `PUT /sites/{siteCode}/role`.
+      enum: [UNSPECIFIED, ROBOTICS_SORTABLE_FC, NON_SORTABLE_FC, TRADITIONAL_SORTABLE_FC, SUB_SAME_DAY_FC, FRESH_GROCERY_FC, XL_FC, SOFT_LINES_SORTABLE_FC, MICRO_FC, SIMULATED_FC, INBOUND_CROSS_DOCK, NATIONAL_INBOUND_CROSS_DOCK, RETURNS_CENTER, SORTATION_CENTER, DELIVERY_STATION, AIR_HUB_GATEWAY]
+      example: NON_SORTABLE_FC
+
+    SetSiteRoleRequest:
+      type: object
+      description: The role to assign; required, and never UNSPECIFIED.
+      required: [siteRole]
+      properties:
+        siteRole:
+          type: string
+          enum: [ROBOTICS_SORTABLE_FC, NON_SORTABLE_FC, TRADITIONAL_SORTABLE_FC, SUB_SAME_DAY_FC, FRESH_GROCERY_FC, XL_FC, SOFT_LINES_SORTABLE_FC, MICRO_FC, SIMULATED_FC, INBOUND_CROSS_DOCK, NATIONAL_INBOUND_CROSS_DOCK, RETURNS_CENTER, SORTATION_CENTER, DELIVERY_STATION, AIR_HUB_GATEWAY]
+          example: DELIVERY_STATION
+
+    SiteRoleTransferDefault:
+      type: object
+      description: The default transfer capability of one site role (ADR-0037).
+      required: [siteRole, transferOriginEnabled, transferDestinationEnabled]
+      properties:
+        siteRole:
+          $ref: "#/components/schemas/SiteRole"
+        transferOriginEnabled:
+          type: boolean
+          description: Sites of this role should be allowed to donate stock.
+          example: true
+        transferDestinationEnabled:
+          type: boolean
+          description: Sites of this role should be allowed to receive stock.
+          example: true
+
+    SiteTransferCapability:
+      type: object
+      description: >
+        A site's transfer capability (ADR-0035) and the revision of the last
+        SiteCapabilityChanged published for it. The revision only ever
+        increases per site; 0 means no snapshot was ever published.
+      required: [siteCode, transferOriginEnabled, transferDestinationEnabled, capabilityRevision]
+      properties:
+        siteCode:
+          type: string
+          example: WH1
+        transferOriginEnabled:
+          type: boolean
+          description: The site may donate stock to another site.
+          example: true
+        transferDestinationEnabled:
+          type: boolean
+          description: The site may receive stock from another site.
+          example: false
+        capabilityRevision:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Revision of the last published SiteCapabilityChanged for this site.
+          example: 1
+
+    SetSiteTransferCapabilityRequest:
+      type: object
+      description: The full capability snapshot; both fields are required.
+      required: [transferOriginEnabled, transferDestinationEnabled]
+      properties:
+        transferOriginEnabled:
+          type: boolean
+          description: Whether the site may donate stock to another site.
+          example: true
+        transferDestinationEnabled:
+          type: boolean
+          description: Whether the site may receive stock from another site.
+          example: false
+
+    RegisterSiteRequest:
+      type: object
+      required: [siteCode, name]
+      properties:
+        siteCode:
+          type: string
+          pattern: "^[A-Z0-9]+$"
+          description: Uppercase alphanumeric code. Becomes the first LocationCode segment.
+          example: WH1
+        name:
+          type: string
+          minLength: 1
+          description: Human-readable facility name.
+          example: Fulfilment Centre One
+        siteRole:
+          $ref: "#/components/schemas/SiteRole"
+        gln:
+          $ref: "#/components/schemas/Gln"
+
+    Zone:
+      type: object
+      description: >
+        A behavioral classification scoped to a Site, bundling the Area and
+        Zone code segments into one aggregate.
+      required: [zoneId, siteCode, areaCode, zoneCode, temperatureClass, hazmat, status, bayPitchM, levelPitchM]
+      properties:
+        zoneId:
+          type: string
+          description: "`SITE-AREA-ZONE` — the first three segments of every LocationCode inside it."
+          example: WH1-STOR-AMB
+        siteCode:
+          type: string
+          description: The Site this zone is scoped to.
+          example: WH1
+        areaCode:
+          type: string
+          description: Coarse functional area segment.
+          example: STOR
+        zoneCode:
+          type: string
+          description: Behavioral zone segment.
+          example: AMB
+        temperatureClass:
+          $ref: "#/components/schemas/TemperatureClass"
+        hazmat:
+          type: boolean
+          description: Whether the zone is rated for hazardous materials.
+          example: false
+        status:
+          $ref: "#/components/schemas/Status"
+        bayPitchM:
+          type: number
+          format: double
+          description: >
+            The zone's effective bay pitch (ADR-0017): the explicit override
+            when one was set at registration, else the service default
+            (1.2 m). Used only by the travel graph's estimated-distance
+            fallback when aisle centreline geometry is missing.
+          example: 1.2
+        levelPitchM:
+          type: number
+          format: double
+          description: >
+            The zone's effective level pitch (ADR-0017): the explicit
+            override when one was set at registration, else the service
+            default (1.5 m). Used only by the travel graph's estimated
+            vertical spacing between adjacent levels.
+          example: 1.5
+        gln:
+          $ref: "#/components/schemas/Gln"
+
+    RegisterZoneRequest:
+      type: object
+      required: [areaCode, zoneCode, temperatureClass]
+      properties:
+        areaCode:
+          type: string
+          pattern: "^[A-Z0-9]+$"
+          description: Coarse functional area, e.g. STOR, RCV, PACK, STAGE.
+          example: STOR
+        zoneCode:
+          type: string
+          pattern: "^[A-Z0-9]+$"
+          description: Behavioral zone, e.g. AMB, CHL, FRZ, HAZ, FWD, RSV, CPK. CPK = case-pick faces whose capacity slotting plans in cases. Free-form, so any [A-Z0-9]+ code is accepted and none is validated against a list (ADR 0042).
+          example: FRZ
+        temperatureClass:
+          $ref: "#/components/schemas/TemperatureClass"
+        hazmat:
+          type: boolean
+          nullable: true
+          default: false
+          description: >
+            Whether this zone is rated for hazardous materials. JSON null is
+            accepted and means the same as false (the default).
+          example: false
+        bayPitchM:
+          type: number
+          format: double
+          nullable: true
+          exclusiveMinimum: true
+          minimum: 0
+          description: >
+            Optional bay-pitch override for the travel graph's
+            estimated-distance fallback (ADR-0017). Omitted (or null) keeps
+            the service default (1.2 m). Must be sent together with
+            `levelPitchM`: a one-sided pitch is rejected 422 `invalid-pitch`.
+          example: 1.5
+        levelPitchM:
+          type: number
+          format: double
+          nullable: true
+          exclusiveMinimum: true
+          minimum: 0
+          description: >
+            Optional level-pitch override for the travel graph's estimated
+            vertical spacing (ADR-0017). Omitted (or null) keeps the service
+            default (1.5 m). Must be sent together with `bayPitchM`: a
+            one-sided pitch is rejected 422 `invalid-pitch`.
+          example: 2.0
+        gln:
+          $ref: "#/components/schemas/Gln"
+
+    Point3D:
+      type: object
+      description: >
+        A position in the site's local coordinate frame, in metres
+        (ADR-0017). Z must be non-negative (height above floor level).
+      required: [xM, yM, zM]
+      properties:
+        xM: { type: number, format: double, example: 12.5 }
+        yM: { type: number, format: double, example: 7.25 }
+        zM: { type: number, format: double, minimum: 0, example: 0 }
+
+    Dimensions:
+      type: object
+      description: A rectangular footprint's extent, in metres (ADR-0017). All three must be strictly positive.
+      required: [widthM, depthM, heightM]
+      properties:
+        widthM: { type: number, format: double, exclusiveMinimum: true, minimum: 0, example: 1.2 }
+        depthM: { type: number, format: double, exclusiveMinimum: true, minimum: 0, example: 0.9 }
+        heightM: { type: number, format: double, exclusiveMinimum: true, minimum: 0, example: 2.4 }
+
+    Segment:
+      type: object
+      description: A straight-line travel centreline between two distinct points (ADR-0017).
+      required: [start, end]
+      properties:
+        start: { $ref: "#/components/schemas/Point3D" }
+        end: { $ref: "#/components/schemas/Point3D" }
+
+    Rect:
+      type: object
+      description: A rectangular footprint — an origin position plus its extent (ADR-0017).
+      required: [origin, size]
+      properties:
+        origin: { $ref: "#/components/schemas/Point3D" }
+        size: { $ref: "#/components/schemas/Dimensions" }
+
+    FixedStructureKind:
+      type: string
+      description: What kind of physical obstacle a FixedStructure represents (ADR-0017).
+      enum: [Wall, Column, Office, Conveyor, Other]
+
+    FixedStructure:
+      type: object
+      description: A site-scoped physical obstacle drawn on the warehouse map — not a location; nothing can be stowed at it (ADR-0017).
+      required: [id, siteCode, kind, origin, size, label]
+      properties:
+        id: { type: string, example: STR-1 }
+        siteCode: { type: string, example: WH1 }
+        kind: { $ref: "#/components/schemas/FixedStructureKind" }
+        origin: { $ref: "#/components/schemas/Point3D" }
+        size: { $ref: "#/components/schemas/Dimensions" }
+        label: { type: string, example: North wall }
+
+    RegisterFixedStructureRequest:
+      type: object
+      required: [kind, footprint, label]
+      properties:
+        id:
+          type: string
+          nullable: true
+          description: >
+            Caller-supplied opaque id. A UUID is minted when omitted or null;
+            an empty string is treated the same as omitted.
+          example: STR-1
+        kind: { $ref: "#/components/schemas/FixedStructureKind" }
+        footprint: { $ref: "#/components/schemas/Rect" }
+        label:
+          type: string
+          minLength: 1
+          example: North wall
+
+    SetLocationGeometryRequest:
+      type: object
+      required: [position, dimensions]
+      properties:
+        position: { $ref: "#/components/schemas/Point3D" }
+        dimensions: { $ref: "#/components/schemas/Dimensions" }
+        pickSequence:
+          type: integer
+          format: int64
+          nullable: true
+          minimum: 0
+          description: Optional explicit pick-path override for this slot. JSON null is treated as omitted.
+          example: 42
+
+    HandlingUnit:
+      type: string
+      enum: [EACH, CASE, PALLET]
+      description: >
+        The unit of handling a slot accepts (ADR-0040). Absent on a slot
+        means none was recorded.
+      example: CASE
+
+    DeclareHandlingUnitRequest:
+      type: object
+      required: [handlingUnit]
+      properties:
+        handlingUnit:
+          $ref: "#/components/schemas/HandlingUnit"
+
+    SetAisleGeometryRequest:
+      type: object
+      required: [centreline]
+      properties:
+        centreline: { $ref: "#/components/schemas/Segment" }
+
+    Aisle:
+      type: object
+      description: A physical corridor scoped to a Zone.
+      required: [aisleId, zoneId, aisleCode, sequenceHint, direction, status]
+      properties:
+        aisleId:
+          type: string
+          description: "`SITE-AREA-ZONE-AISLE` — the first four LocationCode segments."
+          example: WH1-STOR-AMB-A07
+        zoneId:
+          type: string
+          description: The Zone this aisle is scoped to.
+          example: WH1-STOR-AMB
+        aisleCode:
+          type: string
+          description: The aisle segment.
+          example: A07
+        sequenceHint:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Walk-order position. Lower comes earlier on the route.
+          example: 7
+        direction:
+          $ref: "#/components/schemas/Direction"
+        status:
+          $ref: "#/components/schemas/Status"
+        centreline:
+          allOf:
+            - $ref: "#/components/schemas/Segment"
+          description: The aisle's travel centreline, when set (ADR-0017). Absent until SetAisleGeometry is called.
+
+    RegisterAisleRequest:
+      type: object
+      required: [aisleCode, sequenceHint, direction]
+      properties:
+        aisleCode:
+          type: string
+          pattern: "^[A-Z0-9]+$"
+          description: The aisle segment of a LocationCode.
+          example: A07
+        sequenceHint:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Walk-order position for travel-path optimization.
+          example: 7
+        direction:
+          $ref: "#/components/schemas/Direction"
+
+    CrossAisle:
+      type: object
+      description: >
+        A zone-scoped connection between two of its aisles at a bay ordinal
+        (ADR-0017): physically, a walkway a picker can cross between them
+        without walking to either aisle's end.
+      required: [zoneId, fromAisle, toAisle, atBay, active]
+      properties:
+        zoneId:
+          type: string
+          description: The Zone this cross-aisle is scoped to.
+          example: WH1-STOR-AMB
+        fromAisle:
+          type: string
+          description: One end's aisle code.
+          example: A07
+        toAisle:
+          type: string
+          description: The other end's aisle code.
+          example: A08
+        atBay:
+          type: string
+          description: The bay ordinal the connection is made at.
+          example: "02"
+        active:
+          type: boolean
+          description: False once the cross-aisle has been decommissioned.
+          example: true
+
+    RegisterCrossAisleRequest:
+      type: object
+      required: [fromAisle, toAisle, atBay]
+      properties:
+        fromAisle:
+          type: string
+          description: One end's aisle code. Must already exist in the named zone.
+          example: A07
+        toAisle:
+          type: string
+          description: The other end's aisle code. Must already exist in the named zone, and must differ from fromAisle.
+          example: A08
+        atBay:
+          type: string
+          description: The bay ordinal to connect them at.
+          example: "02"
+
+    TravelNode:
+      type: object
+      description: One aisle/bay waypoint on the travel graph (ADR-0017).
+      required: [aisleId, bay]
+      properties:
+        aisleId:
+          type: string
+          example: WH1-STOR-AMB-A07
+        bay:
+          type: string
+          example: "02"
+
+    TravelEdge:
+      type: object
+      description: One directed, weighted connection between two waypoints on the travel graph.
+      required: [from, to, metresM, estimated]
+      properties:
+        from:
+          $ref: "#/components/schemas/TravelNode"
+        to:
+          $ref: "#/components/schemas/TravelNode"
+        metresM:
+          type: number
+          format: double
+          description: The edge's length in metres.
+          example: 1.2
+        estimated:
+          type: boolean
+          description: True when this length came from a zone's bay pitch rather than real aisle centreline geometry.
+          example: false
+
+    TravelGraph:
+      type: object
+      description: >
+        One Zone's full travel graph (ADR-0017): every waypoint and every
+        directed edge between them, built fresh from its aisles, registered
+        slots, and active cross-aisles.
+      required: [nodes, edges]
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/TravelNode"
+        edges:
+          type: array
+          items:
+            $ref: "#/components/schemas/TravelEdge"
+
+    TravelDistance:
+      type: object
+      description: >
+        The outcome of a GET /distance query: the shortest path's total
+        length, whether any leg was estimated rather than measured, and the
+        ordered waypoints traversed (ADR-0017).
+      required: [metresM, estimated, route]
+      properties:
+        metresM:
+          type: number
+          format: double
+          description: The route's total length in metres.
+          example: 4.4
+        estimated:
+          type: boolean
+          description: True when any leg of the route used a zone's bay pitch rather than real geometry.
+          example: true
+        route:
+          type: array
+          items:
+            $ref: "#/components/schemas/TravelNode"
+          description: The ordered waypoints traversed, including both endpoints.
+
+    LocationRole:
+      type: string
+      description: >
+        What a location on the map is FOR (ADR-0016). Storage is the
+        default and only role that existed before this ADR; the rest cover
+        non-storage functional locations that previously had no place on
+        the map at all.
+      enum: [Storage, Dock, Yard, WorkCenter, Drop, Staging, QC, Consolidation, Shipping]
+      example: Storage
+
+    LocationType:
+      type: object
+      description: A reusable classification of slot shape/kind with a role and a default capacity envelope.
+      required: [name, role, defaultCapacity]
+      properties:
+        name:
+          type: string
+          description: >
+            The type's name. PalletRack, Shelf, ToteWall, BulkFloor, Staging
+            and Amnesty are the fleet's established vocabulary, but any name
+            is accepted.
+          example: PalletRack
+        role:
+          $ref: "#/components/schemas/LocationRole"
+        defaultCapacity:
+          allOf:
+            - $ref: "#/components/schemas/ResolvedCapacity"
+          description: >
+            Required for a role whose RequiresCapacity() is true (Storage,
+            Staging, Drop, Consolidation). Reported as 0/0 for Dock, Yard,
+            WorkCenter, QC, Shipping, which need no capacity envelope.
+
+    RegisterLocationTypeRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          description: The type's name.
+          example: PalletRack
+        role:
+          allOf:
+            - $ref: "#/components/schemas/LocationRole"
+          description: Defaults to Storage when omitted.
+        defaultCapacity:
+          allOf:
+            - $ref: "#/components/schemas/Capacity"
+          description: >
+            Required for a role whose RequiresCapacity() is true. Omit for
+            Dock, Yard, WorkCenter, QC, or Shipping.
+
+    ZonePredicate:
+      type: object
+      minProperties: 1
+      description: >
+        Selects the zones a PlacementRule applies to. Every field set must
+        match (AND); unset fields are wildcards; at least one must be set —
+        an empty predicate constrains nothing and is rejected with 422.
+      properties:
+        zoneCode:
+          type: string
+          minLength: 1
+          description: Match only zones with this zone code. An empty string is not a predicate — it is rejected like an absent one.
+          example: HAZ
+        temperatureClass:
+          $ref: "#/components/schemas/TemperatureClass"
+        hazmat:
+          type: boolean
+          description: Match only zones whose hazmat flag equals this value.
+          example: true
+
+    PlacementRule:
+      type: object
+      description: Declares a LocationType legal (Allow) or illegal (Deny) in matching zones.
+      required: [ruleId, locationType, effect, zone, description]
+      properties:
+        ruleId:
+          type: string
+          description: The rule's identity. Named verbatim in the rejection error it causes.
+          example: RULE-HAZ-ONLY-RACK
+        locationType:
+          type: string
+          description: The LocationType this rule constrains.
+          example: PalletRack
+        effect:
+          type: string
+          enum: [Allow, Deny]
+          description: >
+            Deny always wins. Any Allow rule matching a zone turns that zone
+            into an allow-list.
+          example: Allow
+        zone:
+          $ref: "#/components/schemas/ZonePredicate"
+        description:
+          type: string
+          description: Human-readable rendering of the rule, as it appears in error details.
+          example: "RULE-HAZ-ONLY-RACK: Allow PalletRack where zoneCode=HAZ"
+
+    DefinePlacementRuleRequest:
+      type: object
+      required: [ruleId, locationType, effect, zone]
+      properties:
+        ruleId:
+          type: string
+          minLength: 1
+          description: The rule's identity.
+          example: RULE-FRZ-NO-SHELF
+        locationType:
+          type: string
+          minLength: 1
+          description: An already-registered LocationType name.
+          example: Shelf
+        effect:
+          type: string
+          enum: [Allow, Deny]
+          description: Allow or Deny.
+          example: Deny
+        zone:
+          $ref: "#/components/schemas/ZonePredicate"
+
+    LocationSlot:
+      type: object
+      description: >
+        The coded leaf location. Its identity IS its LocationCode. It owns
+        whether the code exists, is active, and is legal for a given kind of
+        storage unit — never what is stored in it.
+      required: [locationCode, zoneId, aisleId, coordinates, locationType, role, capacity, status]
+      properties:
+        locationCode:
+          type: string
+          description: The canonical seven-segment code.
+          example: WH1-STOR-AMB-A07-03-02-B
+        zoneId:
+          type: string
+          description: The Zone the code resolves to.
+          example: WH1-STOR-AMB
+        aisleId:
+          type: string
+          description: The Aisle the code resolves to.
+          example: WH1-STOR-AMB-A07
+        coordinates:
+          $ref: "#/components/schemas/Coordinates"
+        locationType:
+          type: string
+          description: The slot's LocationType.
+          example: PalletRack
+        role:
+          $ref: "#/components/schemas/LocationRole"
+        dockFlow:
+          type: string
+          enum: [Inbound, Outbound, Both]
+          description: Set only when role is Dock (ADR-0016).
+          example: Outbound
+        activities:
+          type: array
+          items:
+            type: string
+            enum: [Pack, Sort, QC, VAS, Deconsolidate, Receive, Kit]
+          description: Set only when role is WorkCenter (ADR-0016).
+          example: [Pack, VAS]
+        capacity:
+          $ref: "#/components/schemas/ResolvedCapacity"
+        status:
+          $ref: "#/components/schemas/Status"
+        position:
+          allOf:
+            - $ref: "#/components/schemas/Point3D"
+          description: The slot's physical position, when set (ADR-0017). Absent until SetLocationGeometry is called.
+        dimensions:
+          allOf:
+            - $ref: "#/components/schemas/Dimensions"
+          description: The slot's physical footprint, when set (ADR-0017). Absent until SetLocationGeometry is called.
+        pickSequence:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Explicit pick-path override, when set (ADR-0017).
+          example: 42
+        handlingUnit:
+          $ref: "#/components/schemas/HandlingUnit"
+        gln:
+          $ref: "#/components/schemas/Gln"
+        spotKind:
+          $ref: "#/components/schemas/SpotKind"
+
+    LocationClassification:
+      type: object
+      description: >
+        The resolved subset of a LocationSlot's parent Zone attributes that
+        a cross-context caller needs to validate placement of a classified
+        product — nothing else about the slot or the zone. Zone remains the
+        source of truth for `hazmat` and `temperatureClass`; this is a
+        denormalized, read-only projection of it, not a new aggregate.
+      required: [hazmat, temperatureClass]
+      properties:
+        hazmat:
+          type: boolean
+          description: The parent Zone's Hazmat flag.
+          example: true
+        temperatureClass:
+          $ref: "#/components/schemas/TemperatureClass"
+
+    RegisterLocationSlotRequest:
+      type: object
+      required: [locationCode, locationType]
+      properties:
+        locationCode:
+          type: string
+          pattern: "^[A-Z0-9]+(-[A-Z0-9]+){6}$"
+          description: >
+            The full seven-segment code. Its Site/Area/Zone/Aisle segments
+            must resolve to existing, Active aggregates.
+          example: WH1-STOR-AMB-A07-03-02-B
+        locationType:
+          type: string
+          minLength: 1
+          description: An already-registered LocationType name.
+          example: PalletRack
+        dockFlow:
+          type: string
+          enum: [Inbound, Outbound, Both]
+          description: Required when the LocationType's role is Dock; rejected for every other role.
+          example: Outbound
+        activities:
+          type: array
+          items:
+            type: string
+            enum: [Pack, Sort, QC, VAS, Deconsolidate, Receive, Kit]
+          description: Required (non-empty) when the LocationType's role is WorkCenter; rejected for every other role.
+          example: [Pack, VAS]
+        capacityOverride:
+          allOf:
+            - $ref: "#/components/schemas/Capacity"
+          description: >
+            Optional. Omit to inherit the LocationType's default envelope.
+        handlingUnit:
+          $ref: "#/components/schemas/HandlingUnit"
+        gln:
+          $ref: "#/components/schemas/Gln"
+        spotKind:
+          $ref: "#/components/schemas/SpotKind"
+
+    ImportRow:
+      type: object
+      description: >
+        One fully-specified row of a facility layout export. Structural
+        parents named by a row are created on first sight; a row naming
+        existing structure reuses it and never mutates it.
+      required: [siteCode, areaCode, zoneCode, temperatureClass, aisleCode, bay, level, position, locationType]
+      properties:
+        siteCode:
+          type: string
+          pattern: "^[A-Z0-9]+$"
+          description: The facility.
+          example: WH1
+        siteName:
+          type: string
+          description: Optional human name, used only if the Site is created by this row. Defaults to siteCode.
+          example: Fulfilment Centre One
+        areaCode:
+          type: string
+          pattern: "^[A-Z0-9]+$"
+          description: Coarse functional area.
+          example: STOR
+        zoneCode:
+          type: string
+          pattern: "^[A-Z0-9]+$"
+          description: Behavioral zone.
+          example: AMB
+        temperatureClass:
+          $ref: "#/components/schemas/TemperatureClass"
+        hazmat:
+          type: boolean
+          default: false
+          description: Used only if the Zone is created by this row.
+          example: false
+        aisleCode:
+          type: string
+          pattern: "^[A-Z0-9]+$"
+          description: Physical corridor.
+          example: A07
+        sequenceHint:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Used only if the Aisle is created by this row.
+          example: 7
+        direction:
+          allOf:
+            - $ref: "#/components/schemas/Direction"
+          description: Used only if the Aisle is created by this row. Defaults to TwoWay.
+        bay:
+          type: string
+          pattern: "^[A-Z0-9]+$"
+          description: Bay/section along the aisle.
+          example: "03"
+        level:
+          type: string
+          pattern: "^[A-Z0-9]+$"
+          description: Vertical level/shelf.
+          example: "02"
+        position:
+          type: string
+          pattern: "^[A-Z0-9]+$"
+          description: Left-to-right slot on that level.
+          example: B
+        locationType:
+          type: string
+          description: An already-registered LocationType name.
+          example: PalletRack
+        dockFlow:
+          type: string
+          enum: [Inbound, Outbound, Both]
+          description: Required when the row's LocationType role is Dock; rejected for every other role.
+          example: Outbound
+        activities:
+          type: array
+          items:
+            type: string
+            enum: [Pack, Sort, QC, VAS, Deconsolidate, Receive, Kit]
+          description: Required (non-empty) when the row's LocationType role is WorkCenter; rejected for every other role.
+          example: [Pack, VAS]
+        capacityOverride:
+          allOf:
+            - $ref: "#/components/schemas/Capacity"
+          description: Optional per-row override of the LocationType's default envelope.
+
+    ImportRowResult:
+      type: object
+      description: The outcome of one imported row.
+      required: [index, locationCode, succeeded]
+      properties:
+        index:
+          type: integer
+          format: int32
+          description: The row's zero-based position in the submitted array.
+          example: 1
+        locationCode:
+          type: string
+          description: >
+            The row's location code, best-effort. Empty when the row's
+            segments were too malformed to build one.
+          example: WH1-STOR-FRZ-A02-01-01-A
+        succeeded:
+          type: boolean
+          description: Whether the slot was created.
+          example: false
+        error:
+          type: string
+          description: Present only when the row was rejected; says exactly why.
+          example: "location type violates a placement rule for this zone: Shelf is denied in zone WH1-STOR-FRZ by rule [RULE-FRZ-NO-SHELF: Deny Shelf where temperatureClass=Frozen]"
+
+    ImportReport:
+      type: object
+      description: The full outcome of a bulk import, with per-row detail.
+      required: [rowsSubmitted, slotsImported, rowsRejected, results]
+      properties:
+        rowsSubmitted:
+          type: integer
+          format: int32
+          description: How many rows the request carried.
+          example: 500
+        slotsImported:
+          type: integer
+          format: int32
+          description: How many slots were created.
+          example: 497
+        rowsRejected:
+          type: integer
+          format: int32
+          description: How many rows failed validation.
+          example: 3
+        results:
+          type: array
+          description: One entry per submitted row, in submission order.
+          items:
+            $ref: "#/components/schemas/ImportRowResult"
+
+    AisleLayout:
+      type: object
+      description: One Aisle and every LocationSlot inside it, ordered bay → level → position.
+      required: [aisleId, zoneId, aisleCode, sequenceHint, direction, status, slots]
+      properties:
+        aisleId:
+          type: string
+          description: The aisle's id.
+          example: WH1-STOR-AMB-A07
+        zoneId:
+          type: string
+          description: The Zone this aisle is scoped to.
+          example: WH1-STOR-AMB
+        aisleCode:
+          type: string
+          description: The aisle segment.
+          example: A07
+        sequenceHint:
+          type: integer
+          format: int64
+          description: Walk-order position.
+          example: 7
+        direction:
+          $ref: "#/components/schemas/Direction"
+        status:
+          $ref: "#/components/schemas/Status"
+        slots:
+          type: array
+          description: The aisle's slots, ordered bay → level → position.
+          items:
+            $ref: "#/components/schemas/LocationSlot"
+
+    ZoneLayout:
+      type: object
+      description: One Zone and every Aisle inside it, in walk order.
+      required: [zoneId, siteCode, areaCode, zoneCode, temperatureClass, hazmat, status, aisles]
+      properties:
+        zoneId:
+          type: string
+          description: The zone's id.
+          example: WH1-STOR-AMB
+        siteCode:
+          type: string
+          description: The Site this zone is scoped to.
+          example: WH1
+        areaCode:
+          type: string
+          description: Coarse functional area segment.
+          example: STOR
+        zoneCode:
+          type: string
+          description: Behavioral zone segment.
+          example: AMB
+        temperatureClass:
+          $ref: "#/components/schemas/TemperatureClass"
+        hazmat:
+          type: boolean
+          description: Whether the zone is rated for hazardous materials.
+          example: false
+        status:
+          $ref: "#/components/schemas/Status"
+        aisles:
+          type: array
+          description: The zone's aisles, in SequenceHint walk order.
+          items:
+            $ref: "#/components/schemas/AisleLayout"
+
+    SiteLayoutTotals:
+      type: object
+      description: Counts across the whole layout, so a client can size its canvas up front.
+      required: [zones, aisles, slots]
+      properties:
+        zones:
+          type: integer
+          format: int32
+          example: 2
+        aisles:
+          type: integer
+          format: int32
+          example: 3
+        slots:
+          type: integer
+          format: int32
+          example: 5
+
+    SiteLayout:
+      type: object
+      description: >
+        The full nested, drawable structure of one Site: zones → aisles →
+        slots, pre-grouped and pre-ordered for direct rendering. Also
+        carries the site's fixed structures (ADR-0017): walls, columns,
+        offices, and other physical obstacles that are not locations.
+      required: [site, zones, fixedStructures, totals]
+      properties:
+        site:
+          $ref: "#/components/schemas/Site"
+        zones:
+          type: array
+          description: The site's zones, ordered by zone id.
+          items:
+            $ref: "#/components/schemas/ZoneLayout"
+        fixedStructures:
+          type: array
+          description: The site's fixed structures, ordered by id (ADR-0017).
+          items:
+            $ref: "#/components/schemas/FixedStructure"
+        totals:
+          $ref: "#/components/schemas/SiteLayoutTotals"
+
+    GridColumn:
+      type: object
+      description: >
+        One (Aisle, Bay) column of a zone grid, carrying the aisle's
+        walk-order hint so a renderer can label or space columns by travel
+        order.
+      required: [aisleId, aisleCode, bay, sequenceHint]
+      properties:
+        aisleId:
+          type: string
+          example: WH1-STOR-AMB-A07
+        aisleCode:
+          type: string
+          example: A07
+        bay:
+          type: string
+          example: "03"
+        sequenceHint:
+          type: integer
+          format: int64
+          example: 7
+
+    GridPosition:
+      type: object
+      description: One slot inside a grid cell.
+      required: [locationCode, position, locationType, role, status]
+      properties:
+        locationCode:
+          type: string
+          example: WH1-STOR-AMB-A07-03-02-B
+        position:
+          type: string
+          description: The position segment — the slot's left-to-right place on the level.
+          example: B
+        locationType:
+          type: string
+          example: PalletRack
+        role:
+          $ref: "#/components/schemas/LocationRole"
+        status:
+          $ref: "#/components/schemas/Status"
+
+    GridCell:
+      type: object
+      nullable: true
+      description: >
+        The slots at one (Aisle, Bay, Level) coordinate — usually several,
+        one per Position. `null` instead of this object means a gap in the rack.
+      required: [positions]
+      properties:
+        positions:
+          type: array
+          description: The slots at this coordinate, ordered by position.
+          items:
+            $ref: "#/components/schemas/GridPosition"
+
+    GridRow:
+      type: object
+      description: One Level of the grid. `cells` is index-aligned with the grid's `columns`.
+      required: [level, cells]
+      properties:
+        level:
+          type: string
+          description: The level segment this row represents.
+          example: "02"
+        cells:
+          type: array
+          description: >
+            One entry per grid column, in the same order. A `null` entry is a
+            gap in the rack.
+          items:
+            $ref: "#/components/schemas/GridCell"
+
+    ZoneGrid:
+      type: object
+      description: >
+        One Zone's slots as an explicit 2D matrix a UI can iterate and paint:
+        rows are Levels, columns are (Aisle, Bay) pairs in walk order.
+      required: [zone, columns, levels, rows]
+      properties:
+        zone:
+          $ref: "#/components/schemas/Zone"
+        columns:
+          type: array
+          description: (Aisle, Bay) pairs in aisle SequenceHint order.
+          items:
+            $ref: "#/components/schemas/GridColumn"
+        levels:
+          type: array
+          description: The distinct level segments present, ascending — one per row.
+          items:
+            type: string
+            example: "01"
+        rows:
+          type: array
+          description: One row per level, each index-aligned with `columns`.
+          items:
+            $ref: "#/components/schemas/GridRow"
+
+    AislePage:
+      type: object
+      description: One keyset page of Aisle (REST API guideline 3).
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Aisle"
+        nextCursor:
+          type: string
+          description: Opaque cursor of the next page; absent on the last page.
+
+    CrossAislePage:
+      type: object
+      description: One keyset page of CrossAisle (REST API guideline 3).
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/CrossAisle"
+        nextCursor:
+          type: string
+          description: Opaque cursor of the next page; absent on the last page.
+
+    FixedStructurePage:
+      type: object
+      description: One keyset page of FixedStructure (REST API guideline 3).
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/FixedStructure"
+        nextCursor:
+          type: string
+          description: Opaque cursor of the next page; absent on the last page.
+
+    LocationSlotPage:
+      type: object
+      description: One keyset page of LocationSlot (REST API guideline 3).
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/LocationSlot"
+        nextCursor:
+          type: string
+          description: Opaque cursor of the next page; absent on the last page.
+
+    LocationTypePage:
+      type: object
+      description: One keyset page of LocationType (REST API guideline 3).
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/LocationType"
+        nextCursor:
+          type: string
+          description: Opaque cursor of the next page; absent on the last page.
+
+    PlacementRulePage:
+      type: object
+      description: One keyset page of PlacementRule (REST API guideline 3).
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlacementRule"
+        nextCursor:
+          type: string
+          description: Opaque cursor of the next page; absent on the last page.
+
+    SitePage:
+      type: object
+      description: One keyset page of Site (REST API guideline 3).
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Site"
+        nextCursor:
+          type: string
+          description: Opaque cursor of the next page; absent on the last page.
+
+    SiteRoleTransferDefaultPage:
+      type: object
+      description: One keyset page of SiteRoleTransferDefault (REST API guideline 3).
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SiteRoleTransferDefault"
+        nextCursor:
+          type: string
+          description: Opaque cursor of the next page; absent on the last page.
+
+    ZonePage:
+      type: object
+      description: One keyset page of Zone (REST API guideline 3).
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Zone"
+        nextCursor:
+          type: string
+          description: Opaque cursor of the next page; absent on the last page.

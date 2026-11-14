@@ -1,0 +1,930 @@
+asyncapi: 2.6.0
+
+info:
+  title: task-interleaving Domain Events
+  version: "1.0.0"
+  contact:
+    name: task-interleaving maintainers
+    url: https://github.com/IQVO/task-interleaving
+    email: task-interleaving@iqvo.example.com
+  license:
+    name: UNLICENSED
+  description: |
+    Event catalog for the **task-interleaving** bounded context (WES subdomain):
+    when a station completes a task, which open task nearby could the operator do
+    next with the smallest detour (ADR 0001, ADR 0002). The output is an
+    **advisory hint**, never an assignment.
+
+    **Published.** The `StationTrip` aggregate (one per station) raises
+    `InterleavingHintIssued` when it issues a hint, `InterleavingHintConsumed`
+    when the hinted station claims one of the candidates, and
+    `InterleavingHintExpired` when an unclaimed hint reaches its `expires_at`;
+    the `InterleavingPolicy` aggregate raises `InterleavingPolicyDeclared`.
+    Only `InterleavingHintIssued` is on the integration topic
+    `warehouse.task-interleaving.events` (fulfillment-execution reads it, ADR
+    0002). All four types are on the analytics topic
+    `warehouse.task-interleaving.analytics`. Events are written through a
+    **transactional outbox**: the aggregate row and its already-encoded events
+    are written in ONE database transaction and a relay drains them to Kafka
+    (at-least-once; the CloudEvents `id` is stored with the outbox row, so a retry
+    republishes the same `id`). A superseded hint raises no event of its own: a
+    consumer learns of it from the next `InterleavingHintIssued` of the same
+    station.
+
+    **Consumed (ADR 0003).** `TaskAvailable`, `TaskClaimed` and `TaskCompleted`
+    from fulfillment-execution (`TaskAvailable` and `TaskClaimed` have been published on
+    its integration topic since its ADR 0049; `TaskAvailable` is announced for RELOCATE and
+    REPLENISH tasks, ADR 0050, and for a PICK task whose plan carries both the site and the
+    pick face, ADR 0062; PACK, SLAM and REBIN are not announced), and `ZoneRegistered`,
+    `LocationSlotRegistered`, `LocationSlotDecommissioned` and
+    `LocationGeometryUpdated` from facility-layout. Each feeds a durable local
+    copy. Both consumers are always on (`FULFILLMENT_MODE` and `LAYOUT_MODE` only
+    accept `kafka`, ADR 0006); the consumer groups are mandatory env
+    `FULFILLMENT_CONSUMER_GROUP` and `LAYOUT_CONSUMER_GROUP`. A transient handler
+    failure is retried up to five times, then the message is dead-lettered to
+    `<topic>.dlq` with `x-dlq-*` headers; a payload of a handled type that can
+    never be applied (a missing required field, malformed `data`) is
+    dead-lettered at once; a message that is not a valid CloudEvents 1.0 event is
+    skipped with a WARN and committed past; an unknown type is ignored. The consumed messages below are the producers' own
+    contracts, decoded independently here and never imported.
+
+    **Envelope (mandatory).** CloudEvents 1.0, structured content mode, Kafka
+    header `content-type: application/cloudevents+json; charset=UTF-8`. Optional
+    W3C trace-context headers (`traceparent`, and `tracestate` / `baggage` when
+    present) carry the trace of the writing request; consumers may extract them
+    and must not require them. `specversion`, `id`, `source`
+    (`/warehouse/task-interleaving`), `type`, `subject`, `time`,
+    `datacontenttype` (`application/json`) and `dataschema`
+    (`urn:warehouse:task-interleaving:<events|analytics>:<EventName>:v1`) are all
+    required. Kafka key and `subject` = the station id for hint events and the
+    site id for the policy event. Type =
+    `com.warehouse.wes.task-interleaving.<entity>.<EventName>` where `<entity>`
+    is the raising aggregate, lowercase, no separators: `stationtrip` or
+    `policy`. `data` is snake_case, optional fields are omitted when unset and
+    timestamps are RFC 3339 UTC. A breaking payload change is a new `.v2` type,
+    never a mutation.
+
+servers:
+  production:
+    url: "{brokers}"
+    protocol: kafka
+    description: Fleet-shared Kafka broker (host supplied by the deployment environment).
+    variables:
+      brokers:
+        default: "kafka.warehouse-systems.internal:9092"
+
+defaultContentType: application/cloudevents+json
+
+tags:
+  - name: task-interleaving
+    description: The task-interleaving bounded context (WES subdomain).
+  - name: stationtrip
+    description: Events raised by the StationTrip aggregate.
+  - name: policy
+    description: Events raised by the InterleavingPolicy aggregate.
+  - name: consumed
+    description: Events produced by sibling contexts that this service consumes (ADR 0003).
+  - name: analytics
+    description: The analytics stream (ADR 0004), written in the same outbox transaction as the integration topic.
+
+channels:
+  warehouse.task-interleaving.events:
+    description: |
+      This service's integration topic. Written by the outbox relay; key = station
+      id; every message carries the CloudEvents content-type header (plus the
+      optional W3C `traceparent` of the writing request). Only
+      `InterleavingHintIssued` is published here: the hint table of
+      fulfillment-execution is its consumer. Dispatch on the full `type`, ignore
+      unknown types, dedupe on `id`.
+    subscribe:
+      operationId: receiveInterleavingHints
+      summary: Receive interleaving hints.
+      description: |
+        Subscribe to the hints. Route on the full `type`
+        (`com.warehouse.wes.task-interleaving.stationtrip.InterleavingHintIssued`).
+        A hint is advisory: use it only as a tie-break inside one priority band,
+        ignore it once `expires_at` has passed, and fail open when it is absent.
+      tags:
+        - name: stationtrip
+      message:
+        $ref: "#/components/messages/InterleavingHintIssued"
+
+  warehouse.task-interleaving.analytics:
+    description: |
+      This service's analytics topic. Written by the SAME outbox relay, from rows
+      inserted in the same transaction as the integration row, with the SAME `type`
+      and `id` per occurrence and `dataschema` =
+      `urn:warehouse:task-interleaving:analytics:<EventName>:v1`; key = station id
+      (hint events) or site id (policy event). `InterleavingHintConsumed`,
+      `InterleavingHintExpired` and `InterleavingPolicyDeclared` exist ONLY here.
+      Not an integration contract: other contexts consume the integration topic.
+      The only consumer is this service's own `cmd/ti-projector` (ADR 0008),
+      under a fixed consumer group read from env `ANALYTICS_CONSUMER_GROUP`
+      (default `task-interleaving-analytics`), which folds the events into the
+      separate analytical database that `cmd/ti-reports` serves
+      (`GET /reports/hint-adoption`, `GET /reports/freshness`). A message the
+      projector can never apply (a known `type` whose payload contradicts its
+      envelope or fails validation) is dead-lettered at once, byte for byte, to
+      `warehouse.task-interleaving.analytics.dlq`; a transient failure retries the
+      same message and never dead-letters it.
+    subscribe:
+      operationId: receiveInterleavingAnalyticsEvents
+      summary: Receive the interleaving analytics events.
+      description: |
+        Route on the full `type`; the payloads are the integration payloads for
+        `InterleavingHintIssued` and the documented analytics-only payloads for the
+        other three types. The projector keeps, per hint, the earliest
+        CloudEvents `time` of each of `InterleavingHintIssued`,
+        `InterleavingHintConsumed` and `InterleavingHintExpired` (arrival order
+        never matters) and records `InterleavingPolicyDeclared` only as an applied
+        id (freshness). A redelivered `id` is applied once.
+      tags:
+        - name: analytics
+      message:
+        oneOf:
+          - $ref: "#/components/messages/InterleavingHintIssuedAnalytics"
+          - $ref: "#/components/messages/InterleavingHintConsumed"
+          - $ref: "#/components/messages/InterleavingHintExpired"
+          - $ref: "#/components/messages/InterleavingPolicyDeclared"
+
+  warehouse.fulfillment.events:
+    description: |
+      fulfillment-execution's integration topic (key and subject = the task id).
+      This service consumes `TaskAvailable`, `TaskClaimed` and `TaskCompleted`
+      under a stable consumer group read from the mandatory env
+      `FULFILLMENT_CONSUMER_GROUP`; dead letters go to `warehouse.fulfillment.events.dlq`. Every other type on the topic is ignored.
+    publish:
+      operationId: consumeFulfillmentTaskEvents
+      summary: Consume task availability, claims and completions.
+      description: |
+        `TaskAvailable` upserts a task into the local open-task pool and
+        `TaskClaimed` removes it (both are published on the integration topic since
+        fulfillment-execution's ADR 0049; `TaskAvailable` for RELOCATE and
+        REPLENISH tasks, ADR 0050, and for a PICK task whose plan carries both the
+        site and the pick face, ADR 0062). `TaskCompleted` (verified on
+        fulfillment-execution's `origin/develop`) records the completion at the
+        station: the position is the completed task's `to_location` read from the
+        local pool copy, so a completion of a task this context never saw as
+        available is ignored. The CloudEvents `id` claim and the effect commit in
+        one transaction; the offset is committed afterwards (ADR 0003).
+      tags:
+        - name: consumed
+      message:
+        oneOf:
+          - $ref: "#/components/messages/TaskAvailable"
+          - $ref: "#/components/messages/TaskClaimed"
+          - $ref: "#/components/messages/TaskCompleted"
+
+  warehouse.facility.events:
+    description: |
+      facility-layout's integration topic. This service consumes `ZoneRegistered`
+      (key `zoneId`), `LocationSlotRegistered`, `LocationSlotDecommissioned` and
+      `LocationGeometryUpdated` (key `locationCode`) under a stable consumer group
+      read from the mandatory env `LAYOUT_CONSUMER_GROUP`; dead letters go to
+      `warehouse.facility.events.dlq`. Every other
+      type is ignored.
+    publish:
+      operationId: consumeFacilityLayoutEvents
+      summary: Consume zones, location slots and location geometry.
+      description: |
+        The geometry copy is keyed by `locationCode` (`LocationGeometryUpdated`
+        upserts a point); a location's site is found through its `zoneId`
+        (`LocationSlotRegistered`) and that zone's `siteCode` (`ZoneRegistered`),
+        joined at read time, so the events may arrive in any order. Decommissioning
+        removes the location and is irreversible. A location without known geometry
+        is never a candidate and never an origin: its distance is unknown, not zero.
+      tags:
+        - name: consumed
+      message:
+        oneOf:
+          - $ref: "#/components/messages/ZoneRegistered"
+          - $ref: "#/components/messages/LocationSlotRegistered"
+          - $ref: "#/components/messages/LocationSlotDecommissioned"
+          - $ref: "#/components/messages/LocationGeometryUpdated"
+
+components:
+  messages:
+    InterleavingHintIssued:
+      name: InterleavingHintIssued
+      title: Interleaving hint issued
+      summary: A station completed a task and nearby open tasks were recommended.
+      description: |
+        `type` = `com.warehouse.wes.task-interleaving.stationtrip.InterleavingHintIssued`,
+        `dataschema` = `urn:warehouse:task-interleaving:events:InterleavingHintIssued:v1`;
+        subject and Kafka key = the station id. The CloudEvents `time` is when the
+        hint was issued. `candidates` is non-empty (an empty candidate set issues
+        NO hint), ranked from 1 by `detour_m` ascending then `task_id`, at most
+        the policy's `max_candidates`. The hint is valid until `expires_at`.
+      contentType: application/cloudevents+json
+      tags:
+        - name: stationtrip
+      payload:
+        $ref: "#/components/schemas/InterleavingHintIssuedEvent"
+      examples:
+        - name: twoCandidates
+          summary: STN-07 finished task-8a1f at WH1-FWD-A01-01-01-A; two open tasks are within the policy's detour.
+          payload:
+            specversion: "1.0"
+            id: "6f1d2c3b-4a5e-4b7c-8d9e-0a1b2c3d4e5f"
+            source: "/warehouse/task-interleaving"
+            type: "com.warehouse.wes.task-interleaving.stationtrip.InterleavingHintIssued"
+            subject: "STN-07"
+            time: "2026-10-17T12:00:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:task-interleaving:events:InterleavingHintIssued:v1"
+            data:
+              hint_id: "hint-3b0e8d2a-7c41-4f6a-9d15-2a8b6c4e1f07"
+              station_id: "STN-07"
+              site_id: "SITE-1"
+              after_task_id: "task-8a1f"
+              origin_location: "WH1-FWD-A01-01-01-A"
+              expires_at: "2026-10-17T12:01:30Z"
+              policy_version: 2
+              candidates:
+                - { rank: 1, task_id: "task-9c2e", task_type: "PICK", location: "WH1-FWD-A01-02-01-A", detour_m: 4.5 }
+                - { rank: 2, task_id: "task-9d10", task_type: "REPLENISH", location: "WH1-FWD-A02-01-01-A", detour_m: 12.0 }
+
+    InterleavingHintIssuedAnalytics:
+      name: InterleavingHintIssuedAnalytics
+      title: Interleaving hint issued (analytics stream)
+      summary: The analytics copy of InterleavingHintIssued.
+      description: |
+        Same `type`, same `id`, same payload as the integration
+        InterleavingHintIssued; only `dataschema` differs
+        (`urn:warehouse:task-interleaving:analytics:InterleavingHintIssued:v1`).
+      contentType: application/cloudevents+json
+      tags:
+        - name: analytics
+      payload:
+        $ref: "#/components/schemas/InterleavingHintIssuedAnalyticsEvent"
+      examples:
+        - name: twoCandidates
+          summary: Same example as the integration message, analytics dataschema.
+          payload:
+            specversion: "1.0"
+            id: "6f1d2c3b-4a5e-4b7c-8d9e-0a1b2c3d4e5f"
+            source: "/warehouse/task-interleaving"
+            type: "com.warehouse.wes.task-interleaving.stationtrip.InterleavingHintIssued"
+            subject: "STN-07"
+            time: "2026-10-17T12:00:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:task-interleaving:analytics:InterleavingHintIssued:v1"
+            data:
+              hint_id: "hint-3b0e8d2a-7c41-4f6a-9d15-2a8b6c4e1f07"
+              station_id: "STN-07"
+              site_id: "SITE-1"
+              after_task_id: "task-8a1f"
+              origin_location: "WH1-FWD-A01-01-01-A"
+              expires_at: "2026-10-17T12:01:30Z"
+              policy_version: 2
+              candidates:
+                - { rank: 1, task_id: "task-9c2e", task_type: "PICK", location: "WH1-FWD-A01-02-01-A", detour_m: 4.5 }
+                - { rank: 2, task_id: "task-9d10", task_type: "REPLENISH", location: "WH1-FWD-A02-01-01-A", detour_m: 12.0 }
+
+    InterleavingHintConsumed:
+      name: InterleavingHintConsumed
+      title: Interleaving hint consumed (analytics only)
+      summary: The hinted station claimed one of the hint's candidates before it expired.
+      description: |
+        `type` = `com.warehouse.wes.task-interleaving.stationtrip.InterleavingHintConsumed`,
+        `dataschema` = `urn:warehouse:task-interleaving:analytics:InterleavingHintConsumed:v1`;
+        analytics topic only. Subject and Kafka key = the station id. The CloudEvents
+        `time` is when the claim was recorded. `rank` and `detour_m` are those of
+        the claimed candidate in the hint.
+      contentType: application/cloudevents+json
+      tags:
+        - name: stationtrip
+        - name: analytics
+      payload:
+        $ref: "#/components/schemas/InterleavingHintConsumedEvent"
+      examples:
+        - name: firstCandidateClaimed
+          summary: STN-07 claimed the rank-1 candidate of its hint 20 seconds after it was issued.
+          payload:
+            specversion: "1.0"
+            id: "0b9a8c7d-6e5f-4a3b-9c2d-1e0f9a8b7c6d"
+            source: "/warehouse/task-interleaving"
+            type: "com.warehouse.wes.task-interleaving.stationtrip.InterleavingHintConsumed"
+            subject: "STN-07"
+            time: "2026-10-17T12:00:20Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:task-interleaving:analytics:InterleavingHintConsumed:v1"
+            data:
+              hint_id: "hint-3b0e8d2a-7c41-4f6a-9d15-2a8b6c4e1f07"
+              station_id: "STN-07"
+              site_id: "SITE-1"
+              task_id: "task-9c2e"
+              rank: 1
+              detour_m: 4.5
+              consumed_at: "2026-10-17T12:00:20Z"
+
+    InterleavingHintExpired:
+      name: InterleavingHintExpired
+      title: Interleaving hint expired (analytics only)
+      summary: A hint reached its expires_at without a candidate being claimed.
+      description: |
+        `type` = `com.warehouse.wes.task-interleaving.stationtrip.InterleavingHintExpired`,
+        `dataschema` = `urn:warehouse:task-interleaving:analytics:InterleavingHintExpired:v1`;
+        analytics topic only. Subject and Kafka key = the station id. The CloudEvents
+        `time` is the moment the expiry was recorded, at or after `expires_at`.
+      contentType: application/cloudevents+json
+      tags:
+        - name: stationtrip
+        - name: analytics
+      payload:
+        $ref: "#/components/schemas/InterleavingHintExpiredEvent"
+      examples:
+        - name: expired
+          summary: The hint of STN-07 expired unclaimed.
+          payload:
+            specversion: "1.0"
+            id: "4d3c2b1a-0f9e-4d8c-8b7a-6f5e4d3c2b1a"
+            source: "/warehouse/task-interleaving"
+            type: "com.warehouse.wes.task-interleaving.stationtrip.InterleavingHintExpired"
+            subject: "STN-07"
+            time: "2026-10-17T12:01:31Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:task-interleaving:analytics:InterleavingHintExpired:v1"
+            data:
+              hint_id: "hint-3b0e8d2a-7c41-4f6a-9d15-2a8b6c4e1f07"
+              station_id: "STN-07"
+              site_id: "SITE-1"
+              expires_at: "2026-10-17T12:01:30Z"
+
+    InterleavingPolicyDeclared:
+      name: InterleavingPolicyDeclared
+      title: Interleaving policy declared (analytics only)
+      summary: An operator declared or replaced a site's interleaving policy.
+      description: |
+        `type` = `com.warehouse.wes.task-interleaving.policy.InterleavingPolicyDeclared`,
+        `dataschema` = `urn:warehouse:task-interleaving:analytics:InterleavingPolicyDeclared:v1`;
+        analytics topic only. Subject and Kafka key = the site id. `version`
+        starts at 1 and increases by one per declaration.
+      contentType: application/cloudevents+json
+      tags:
+        - name: policy
+        - name: analytics
+      payload:
+        $ref: "#/components/schemas/InterleavingPolicyDeclaredEvent"
+      examples:
+        - name: declared
+          summary: SITE-1 allows PICK and REPLENISH hints up to 25 m, three candidates, 90 s.
+          payload:
+            specversion: "1.0"
+            id: "7e6d5c4b-3a29-4180-9f7e-6d5c4b3a2918"
+            source: "/warehouse/task-interleaving"
+            type: "com.warehouse.wes.task-interleaving.policy.InterleavingPolicyDeclared"
+            subject: "SITE-1"
+            time: "2026-10-17T11:00:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:task-interleaving:analytics:InterleavingPolicyDeclared:v1"
+            data:
+              site_id: "SITE-1"
+              max_detour_m: 25
+              max_candidates: 3
+              hint_ttl_seconds: 90
+              eligible_task_types: ["PICK", "REPLENISH"]
+              vertical_weight: 1.5
+              version: 2
+              declared_at: "2026-10-17T11:00:00Z"
+
+    TaskAvailable:
+      name: TaskAvailable
+      title: TaskAvailable (consumed, fulfillment-execution)
+      summary: A task entered or re-entered the open-task pool.
+      description: |
+        Published by fulfillment-execution since its ADR 0049, for the tasks whose
+        location it knows: RELOCATE and REPLENISH tasks carry bins (ADR 0050) and a
+        PICK task whose plan carries both the site and the pick face is announced too
+        (ADR 0062); a pick missing either, and PACK, SLAM and REBIN tasks, are not
+        announced, so the PACK, SLAM and REBIN location rules below describe what
+        this consumer accepts, not what is sent today).
+        This contract was pinned here consumer-first. `type` = `com.warehouse.wes.fulfillment-execution.task.TaskAvailable`,
+        source `/warehouse/fulfillment-execution`, dataschema
+        `urn:warehouse:fulfillment-execution:events:TaskAvailable:v1`. Subject and
+        Kafka key = the task id. Raised whenever a task ENTERS or RE-ENTERS the pool
+        (release, lease expiry); upsert it into the pool copy. `from_location` is
+        where the operator must go first, `to_location` is where the operator ends
+        (PICK: both the pick bin; RELOCATE and REPLENISH: source and destination
+        bin; PACK, SLAM and REBIN: the station code). `priority_band` is an opaque
+        string equal across tasks that fulfillment-execution orders as peers; this
+        context stores it and never interprets it. A message with an unknown
+        `task_type` is stored but is never a candidate.
+      contentType: application/cloudevents+json
+      tags:
+        - name: consumed
+      payload:
+        $ref: "#/components/schemas/TaskAvailableEvent"
+      examples:
+        - name: pickAvailable
+          summary: A PICK task released into the pool.
+          payload:
+            specversion: "1.0"
+            id: "2b1a0f9e-8d7c-4b6a-a594-837261504f3e"
+            source: "/warehouse/fulfillment-execution"
+            type: "com.warehouse.wes.fulfillment-execution.task.TaskAvailable"
+            subject: "task-9c2e"
+            time: "2026-10-17T11:58:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:fulfillment-execution:events:TaskAvailable:v1"
+            data:
+              task_id: "task-9c2e"
+              task_type: "PICK"
+              site_id: "SITE-1"
+              from_location: "WH1-FWD-A01-02-01-A"
+              to_location: "WH1-FWD-A01-02-01-A"
+              required_capabilities: ["pick"]
+              cpt: "2026-10-17T18:00:00Z"
+              priority_band: "band-1"
+              available_at: "2026-10-17T11:58:00Z"
+
+    TaskClaimed:
+      name: TaskClaimed
+      title: TaskClaimed (consumed, fulfillment-execution)
+      summary: A station claimed a task; it left the pool.
+      description: |
+        Published by fulfillment-execution on its integration topic since its ADR 0049
+        (with `claimed_at`, for every task type); it was previously only an
+        analytics occurrence (`{task_id, task_type, station_id}`). `type` =
+        `com.warehouse.wes.fulfillment-execution.task.TaskClaimed`, dataschema
+        `urn:warehouse:fulfillment-execution:events:TaskClaimed:v1`. Subject and
+        Kafka key = the task id. Removes the task from the open pool (the row is
+        kept so a later `TaskCompleted` can read its end location) and, when the
+        claimed task is a candidate of the Active hint of `station_id`, marks that
+        hint Consumed; any other claim leaves the hint Active until it expires or is
+        superseded.
+      contentType: application/cloudevents+json
+      tags:
+        - name: consumed
+      payload:
+        $ref: "#/components/schemas/TaskClaimedEvent"
+      examples:
+        - name: claimed
+          summary: STN-07 claimed task-9c2e.
+          payload:
+            specversion: "1.0"
+            id: "3c2b1a0f-9e8d-4c7b-a695-8372615a4f3d"
+            source: "/warehouse/fulfillment-execution"
+            type: "com.warehouse.wes.fulfillment-execution.task.TaskClaimed"
+            subject: "task-9c2e"
+            time: "2026-10-17T12:00:20Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:fulfillment-execution:events:TaskClaimed:v1"
+            data:
+              task_id: "task-9c2e"
+              task_type: "PICK"
+              station_id: "STN-07"
+              claimed_at: "2026-10-17T12:00:20Z"
+
+    TaskCompleted:
+      name: TaskCompleted
+      title: TaskCompleted (consumed, fulfillment-execution)
+      summary: A station finished a claimed task.
+      description: |
+        `type` = `com.warehouse.wes.fulfillment-execution.task.TaskCompleted`,
+        source `/warehouse/fulfillment-execution`, dataschema
+        `urn:warehouse:fulfillment-execution:events:TaskCompleted:v1`. Subject and
+        Kafka key = the task id; the CloudEvents `time` is the completion time.
+        Verified on fulfillment-execution's `origin/develop`: `task_id`,
+        `station_id` and `work_unit_id` are required by the producer. This context
+        reads `task_id` (required) and `station_id` and ignores every other field
+        (`task_type`, `order_ref`, `line_no`, the RELOCATE `sku`, `from_bin`,
+        `to_bin`, `quantity`, `relocation_ref`, ...). The station's new position is
+        the completed task's `to_location` from the local pool copy, with its site;
+        a completion of a task absent from the copy (or without a `to_location`) is
+        recorded as completed and otherwise ignored (no position, no hint; never
+        dead-lettered). `station_id` is optional here: when blank, the claimer
+        recorded in the pool copy is the completing station.
+      contentType: application/cloudevents+json
+      tags:
+        - name: consumed
+      payload:
+        $ref: "#/components/schemas/TaskCompletedEvent"
+      examples:
+        - name: completed
+          summary: STN-07 completed task-8a1f.
+          payload:
+            specversion: "1.0"
+            id: "1a0f9e8d-7c6b-4a5f-b493-726150493e2d"
+            source: "/warehouse/fulfillment-execution"
+            type: "com.warehouse.wes.fulfillment-execution.task.TaskCompleted"
+            subject: "task-8a1f"
+            time: "2026-10-17T12:00:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:fulfillment-execution:events:TaskCompleted:v1"
+            data:
+              task_id: "task-8a1f"
+              station_id: "STN-07"
+              work_unit_id: "wu-8a1f"
+              task_type: "PICK"
+              order_ref: "order-8a1f"
+              line_no: 2
+
+    ZoneRegistered:
+      name: ZoneRegistered
+      title: ZoneRegistered (consumed, facility-layout)
+      summary: A behavioural zone was added inside a site's area.
+      description: |
+        `type` = `com.warehouse.wms.facility-layout.zone.ZoneRegistered`, source
+        `/warehouse/facility-layout`, dataschema
+        `urn:warehouse:facility-layout:events:ZoneRegistered:v1`. Subject and Kafka
+        key = `zoneId`. Only `zoneId`, `siteCode` (both required) and `zoneCode` (stored) are used:
+        they give the site of a location. `data` also carries `eventName`, `eventType` and `occurredAt`,
+        which are ignored.
+      contentType: application/cloudevents+json
+      tags:
+        - name: consumed
+      payload:
+        $ref: "#/components/schemas/ZoneRegisteredEvent"
+      examples:
+        - name: forwardZone
+          summary: An ambient, non-hazmat forward zone of WH1.
+          payload:
+            specversion: "1.0"
+            id: "5c4b3a29-1807-4f6e-8d5c-4b3a29180716"
+            source: "/warehouse/facility-layout"
+            type: "com.warehouse.wms.facility-layout.zone.ZoneRegistered"
+            subject: "WH1-FWD-AMB"
+            time: "2026-09-01T08:00:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:facility-layout:events:ZoneRegistered:v1"
+            data:
+              eventName: "ZoneRegistered"
+              eventType: "com.warehouse.wms.facility-layout.zone.ZoneRegistered"
+              occurredAt: "2026-09-01T08:00:00Z"
+              zoneId: "WH1-FWD-AMB"
+              siteCode: "WH1"
+              areaCode: "FWD"
+              zoneCode: "FWD"
+              temperatureClass: "Ambient"
+              hazmat: false
+
+    LocationSlotRegistered:
+      name: LocationSlotRegistered
+      title: LocationSlotRegistered (consumed, facility-layout)
+      summary: A coded leaf slot now exists on the warehouse map.
+      description: |
+        `type` = `com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered`,
+        dataschema `urn:warehouse:facility-layout:events:LocationSlotRegistered:v1`.
+        Subject and Kafka key = `locationCode`. Only `locationCode` and `zoneId` are
+        used (they give the location's zone, hence its site). `data` also carries
+        `eventName`, `eventType` and `occurredAt`, which are ignored.
+      contentType: application/cloudevents+json
+      tags:
+        - name: consumed
+      payload:
+        $ref: "#/components/schemas/LocationSlotRegisteredEvent"
+      examples:
+        - name: storageSlot
+          summary: A forward storage slot of 0.5 m3 and 40 kg.
+          payload:
+            specversion: "1.0"
+            id: "2d1c0b9a-8776-4554-a332-1d0c9b8a7665"
+            source: "/warehouse/facility-layout"
+            type: "com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered"
+            subject: "WH1-FWD-A01-01-01-A"
+            time: "2026-09-01T08:05:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:facility-layout:events:LocationSlotRegistered:v1"
+            data:
+              eventName: "LocationSlotRegistered"
+              eventType: "com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered"
+              occurredAt: "2026-09-01T08:05:00Z"
+              locationCode: "WH1-FWD-A01-01-01-A"
+              aisleId: "WH1-FWD-AMB-A01"
+              zoneId: "WH1-FWD-AMB"
+              locationType: "ShelfBin"
+              role: "Storage"
+              maxWeightKg: 40
+              maxVolumeM3: 0.5
+
+    LocationSlotDecommissioned:
+      name: LocationSlotDecommissioned
+      title: LocationSlotDecommissioned (consumed, facility-layout)
+      summary: A coded slot was permanently retired.
+      description: |
+        `type` = `com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned`,
+        dataschema `urn:warehouse:facility-layout:events:LocationSlotDecommissioned:v1`.
+        Subject and Kafka key = `locationCode`. Irreversible: the location and its
+        geometry are removed from the local copy.
+      contentType: application/cloudevents+json
+      tags:
+        - name: consumed
+      payload:
+        $ref: "#/components/schemas/LocationSlotDecommissionedEvent"
+      examples:
+        - name: decommissioned
+          summary: A forward slot retired.
+          payload:
+            specversion: "1.0"
+            id: "9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b"
+            source: "/warehouse/facility-layout"
+            type: "com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned"
+            subject: "WH1-FWD-A01-01-03-A"
+            time: "2026-10-01T08:00:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:facility-layout:events:LocationSlotDecommissioned:v1"
+            data:
+              eventName: "LocationSlotDecommissioned"
+              eventType: "com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned"
+              occurredAt: "2026-10-01T08:00:00Z"
+              locationCode: "WH1-FWD-A01-01-03-A"
+
+    LocationGeometryUpdated:
+      name: LocationGeometryUpdated
+      title: LocationGeometryUpdated (consumed, facility-layout)
+      summary: A coded slot's physical position and footprint was set or changed.
+      description: |
+        `type` = `com.warehouse.wms.facility-layout.locationslot.LocationGeometryUpdated`,
+        dataschema `urn:warehouse:facility-layout:events:LocationGeometryUpdated:v1`.
+        Subject and Kafka key = `locationCode`. The position `(xM, yM, zM)` in the
+        site's local coordinate frame, in metres, feeds the `rectilinear-v1` travel
+        model; the footprint and `pickSequence` are ignored. Last writer wins per
+        `locationCode` (one location's stream is totally ordered on its key).
+      contentType: application/cloudevents+json
+      tags:
+        - name: consumed
+      payload:
+        $ref: "#/components/schemas/LocationGeometryUpdatedEvent"
+      examples:
+        - name: geometry
+          summary: A slot at (4.2, 10.5, 0.4) m.
+          payload:
+            specversion: "1.0"
+            id: "8f7e6d5c-4b3a-4291-8081-706f5e4d3c2b"
+            source: "/warehouse/facility-layout"
+            type: "com.warehouse.wms.facility-layout.locationslot.LocationGeometryUpdated"
+            subject: "WH1-FWD-A01-01-01-A"
+            time: "2026-09-02T08:00:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:facility-layout:events:LocationGeometryUpdated:v1"
+            data:
+              eventName: "LocationGeometryUpdated"
+              eventType: "com.warehouse.wms.facility-layout.locationslot.LocationGeometryUpdated"
+              occurredAt: "2026-09-02T08:00:00Z"
+              locationCode: "WH1-FWD-A01-01-01-A"
+              xM: 4.2
+              yM: 10.5
+              zM: 0.4
+              widthM: 0.8
+              depthM: 0.6
+              heightM: 0.5
+
+  schemas:
+    CloudEventEnvelope:
+      type: object
+      required: [specversion, id, source, type, subject, time, datacontenttype, dataschema, data]
+      properties:
+        specversion: { type: string, const: "1.0" }
+        id: { type: string, format: uuid, description: "UUID v4, minted once per domain event and persisted with the outbox row, so a redelivery repeats it. Dedupe on it." }
+        source: { type: string }
+        type: { type: string, description: Full reverse-DNS type; dispatch on the whole string. }
+        subject: { type: string, description: "The aggregate instance id (the station id or the site id for published events)." }
+        time: { type: string, format: date-time }
+        datacontenttype: { type: string, const: application/json }
+        dataschema: { type: string }
+
+    TaskType:
+      type: string
+      description: The task types a hint may point at.
+      enum: [PICK, PACK, REBIN, SLAM, RELOCATE, REPLENISH]
+
+    HintCandidate:
+      type: object
+      required: [rank, task_id, task_type, location, detour_m]
+      properties:
+        rank: { type: integer, minimum: 1, description: "Starts at 1; ranked by detour_m ascending, then task_id." }
+        task_id: { type: string }
+        task_type: { $ref: "#/components/schemas/TaskType" }
+        location: { type: string, description: The location the operator must go to first (the task's from_location). }
+        detour_m: { type: number, minimum: 0, description: "Rectilinear detour in metres, rounded to 0.1 m." }
+
+    InterleavingHintData:
+      type: object
+      required: [hint_id, station_id, site_id, after_task_id, origin_location, expires_at, policy_version, candidates]
+      properties:
+        hint_id: { type: string }
+        station_id: { type: string }
+        site_id: { type: string }
+        after_task_id: { type: string, description: The completed task this hint follows. }
+        origin_location: { type: string, description: Where the station stood when the hint was issued. }
+        expires_at: { type: string, format: date-time, description: "issued_at + the policy's hint_ttl_seconds." }
+        policy_version: { type: integer, minimum: 1 }
+        candidates:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/HintCandidate" }
+
+    InterleavingHintIssuedEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            type:
+              const: "com.warehouse.wes.task-interleaving.stationtrip.InterleavingHintIssued"
+            dataschema:
+              const: "urn:warehouse:task-interleaving:events:InterleavingHintIssued:v1"
+            data:
+              $ref: "#/components/schemas/InterleavingHintData"
+
+    InterleavingHintIssuedAnalyticsEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            type:
+              const: "com.warehouse.wes.task-interleaving.stationtrip.InterleavingHintIssued"
+            dataschema:
+              const: "urn:warehouse:task-interleaving:analytics:InterleavingHintIssued:v1"
+            data:
+              $ref: "#/components/schemas/InterleavingHintData"
+
+    InterleavingHintConsumedEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            type:
+              const: "com.warehouse.wes.task-interleaving.stationtrip.InterleavingHintConsumed"
+            dataschema:
+              const: "urn:warehouse:task-interleaving:analytics:InterleavingHintConsumed:v1"
+            data:
+              type: object
+              required: [hint_id, station_id, site_id, task_id, rank, detour_m, consumed_at]
+              properties:
+                hint_id: { type: string }
+                station_id: { type: string }
+                site_id: { type: string }
+                task_id: { type: string, description: The claimed task; one of the hint's candidates. }
+                rank: { type: integer, minimum: 1 }
+                detour_m: { type: number, minimum: 0 }
+                consumed_at: { type: string, format: date-time }
+
+    InterleavingHintExpiredEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            type:
+              const: "com.warehouse.wes.task-interleaving.stationtrip.InterleavingHintExpired"
+            dataschema:
+              const: "urn:warehouse:task-interleaving:analytics:InterleavingHintExpired:v1"
+            data:
+              type: object
+              required: [hint_id, station_id, site_id, expires_at]
+              properties:
+                hint_id: { type: string }
+                station_id: { type: string }
+                site_id: { type: string }
+                expires_at: { type: string, format: date-time }
+
+    InterleavingPolicyDeclaredEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            type:
+              const: "com.warehouse.wes.task-interleaving.policy.InterleavingPolicyDeclared"
+            dataschema:
+              const: "urn:warehouse:task-interleaving:analytics:InterleavingPolicyDeclared:v1"
+            data:
+              type: object
+              required: [site_id, max_detour_m, max_candidates, hint_ttl_seconds, eligible_task_types, vertical_weight, version, declared_at]
+              properties:
+                site_id: { type: string }
+                max_detour_m: { type: number, exclusiveMinimum: 0 }
+                max_candidates: { type: integer, minimum: 1, maximum: 5 }
+                hint_ttl_seconds: { type: integer, minimum: 1 }
+                eligible_task_types:
+                  type: array
+                  minItems: 1
+                  items: { $ref: "#/components/schemas/TaskType" }
+                vertical_weight: { type: number, minimum: 0 }
+                version: { type: integer, minimum: 1 }
+                declared_at: { type: string, format: date-time }
+
+    TaskAvailableEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            type:
+              const: "com.warehouse.wes.fulfillment-execution.task.TaskAvailable"
+            dataschema:
+              const: "urn:warehouse:fulfillment-execution:events:TaskAvailable:v1"
+            data:
+              type: object
+              description: "This consumer rejects (dead-letters) a payload without task_id, task_type, site_id or from_location. cpt and available_at are never read."
+              required: [task_id, task_type, site_id, from_location]
+              properties:
+                task_id: { type: string }
+                task_type: { type: string, description: "The task type; a value outside PICK, PACK, REBIN, SLAM, RELOCATE, REPLENISH is stored but never a candidate." }
+                site_id: { type: string }
+                from_location: { type: string, description: Where the operator must go first. }
+                to_location: { type: string, description: "Where the operator ends. Optional for this consumer: a task without it leaves the station no position when completed." }
+                required_capabilities: { type: array, items: { type: string } }
+                cpt: { type: string, format: date-time, description: Omitted when the task has no CPT. Not read by this service. }
+                priority_band: { type: string, description: Opaque; equal across tasks fulfillment-execution orders as peers. }
+                available_at: { type: string, format: date-time, description: Not read by this service. }
+
+    TaskClaimedEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            type:
+              const: "com.warehouse.wes.fulfillment-execution.task.TaskClaimed"
+            dataschema:
+              const: "urn:warehouse:fulfillment-execution:events:TaskClaimed:v1"
+            data:
+              type: object
+              description: This consumer requires task_id and a valid station_id (else the message is dead-lettered); a missing claimed_at falls back to the CloudEvents time.
+              required: [task_id, station_id]
+              properties:
+                task_id: { type: string }
+                task_type: { type: string }
+                station_id: { type: string }
+                claimed_at: { type: string, format: date-time }
+
+    TaskCompletedEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            type:
+              const: "com.warehouse.wes.fulfillment-execution.task.TaskCompleted"
+            dataschema:
+              const: "urn:warehouse:fulfillment-execution:events:TaskCompleted:v1"
+            data:
+              type: object
+              description: Only the fields this service reads; every other field of the producer's payload is ignored.
+              required: [task_id]
+              properties:
+                task_id: { type: string }
+                station_id: { type: string, description: "The station that completed the task; optional here, the pool copy's claimer is used when blank." }
+
+    ZoneRegisteredEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            type:
+              const: "com.warehouse.wms.facility-layout.zone.ZoneRegistered"
+            dataschema:
+              const: "urn:warehouse:facility-layout:events:ZoneRegistered:v1"
+            data:
+              type: object
+              required: [zoneId, siteCode]
+              properties:
+                zoneId: { type: string }
+                siteCode: { type: string }
+                zoneCode: { type: string, description: Stored with the zone; optional. }
+
+    LocationSlotRegisteredEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            type:
+              const: "com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered"
+            dataschema:
+              const: "urn:warehouse:facility-layout:events:LocationSlotRegistered:v1"
+            data:
+              type: object
+              required: [locationCode, zoneId]
+              properties:
+                locationCode: { type: string }
+                zoneId: { type: string }
+
+    LocationSlotDecommissionedEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            type:
+              const: "com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned"
+            dataschema:
+              const: "urn:warehouse:facility-layout:events:LocationSlotDecommissioned:v1"
+            data:
+              type: object
+              required: [locationCode]
+              properties:
+                locationCode: { type: string }
+
+    LocationGeometryUpdatedEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            type:
+              const: "com.warehouse.wms.facility-layout.locationslot.LocationGeometryUpdated"
+            dataschema:
+              const: "urn:warehouse:facility-layout:events:LocationGeometryUpdated:v1"
+            data:
+              type: object
+              required: [locationCode, xM, yM, zM]
+              properties:
+                locationCode: { type: string }
+                xM: { type: number, description: "Position in the site's local coordinate frame, in metres." }
+                yM: { type: number }
+                zM: { type: number, description: Height above floor level, in metres. Never negative. }
