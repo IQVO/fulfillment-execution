@@ -35,13 +35,12 @@ Feature: The Rebin fan-in of the OrderConsolidation aggregate
     And the response is a Problem Details document of type "rebin-unknown-line"
     And the order "order-1" has 1 "PACK" Task
 
-  @bdd @known-bug
+  @bdd
   Scenario: A redelivered arrival while the order is still collecting adds no second arrival fact
     # aggregate-design-canvas, OrderConsolidation: "Redelivered arrivals are
     # idempotent no-ops" and "one event per line plus one at completion".
-    # ArriveAtRebin only short-circuits once the order is complete: a duplicate
-    # arrival of a line while the set is still incomplete saves the consolidation
-    # and publishes ItemArrivedAtRebin again.
+    # ArriveAtRebin returns before saving or publishing when the line has
+    # already arrived, at any stage of the consolidation.
     When line "line-1" of order "order-1" arrives at Rebin; the order needs lines "line-1,line-2"
     And line "line-1" of order "order-1" arrives at Rebin; the order needs lines "line-1,line-2"
     Then the response status is 204

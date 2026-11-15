@@ -93,6 +93,15 @@ func (o *OrderConsolidation) RecordArrival(lineId string) error {
 	return nil
 }
 
+// HasArrived reports whether lineId is a required line that has already
+// arrived at Rebin. It is how a caller recognises a redelivered arrival
+// before doing anything with side effects; a line outside the required
+// set is never "arrived" (RecordArrival rejects it with ErrUnknownLine).
+func (o *OrderConsolidation) HasArrived(lineId string) bool {
+	_, ok := o.arrivedLines[lineId]
+	return ok
+}
+
 // IsComplete reports whether every required line has arrived at Rebin.
 func (o *OrderConsolidation) IsComplete() bool {
 	return len(o.arrivedLines) == len(o.requiredLines)

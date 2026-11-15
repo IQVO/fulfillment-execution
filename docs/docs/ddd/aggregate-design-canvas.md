@@ -288,7 +288,7 @@ rejection, which leaves the state unchanged.
 | # | Invariant | Enforced by |
 | --- | --- | --- |
 | C1 | Only a line in the required set can arrive | `OrderConsolidation.RecordArrival` → `consolidation.ErrUnknownLine` |
-| C2 | Arrivals are idempotent, and the PACK task is created exactly once, on the arrival that completes the set | `RecordArrival` (re-recording is a no-op); `ArriveAtRebin` (`wasAlreadyComplete` check), serialized per order by `FindByOrderRefForUpdate` ([ADR-0034](../adr/0034-concurrency-control-for-consolidation-and-claim.md)) |
+| C2 | Arrivals are idempotent, and the PACK task is created exactly once, on the arrival that completes the set | `RecordArrival` (re-recording is a no-op); `ArriveAtRebin` (`HasArrived` check: a redelivered arrival returns before any save or publish, at any stage), serialized per order by `FindByOrderRefForUpdate` ([ADR-0034](../adr/0034-concurrency-control-for-consolidation-and-claim.md)) |
 
 ### 5. Corrective Policies
 

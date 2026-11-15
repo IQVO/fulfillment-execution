@@ -82,6 +82,7 @@ classDiagram
         -string[] requiredLineIds
         -set arrivedLineIds
         +RecordArrival(lineId) error
+        +HasArrived(lineId) bool
         +IsComplete() bool
     }
     Task *-- Lease : at most one
@@ -210,7 +211,7 @@ the Rebin wall. Execution-scoped only — it does not model the order itself.
 | # | Invariant | Enforced in | Error | HTTP |
 | --- | --- | --- | --- | --- |
 | C1 | **Only required lines may arrive.** An arrival for a line outside the order's required set is rejected. | `OrderConsolidation.RecordArrival` | `consolidation.ErrUnknownLine` | `422` |
-| C2 | **Arrivals are idempotent.** Re-recording an arrived line is a no-op, and once complete the PACK task is created exactly once. | `RecordArrival`; `ArriveAtRebin`'s `wasAlreadyComplete` guard | — | — |
+| C2 | **Arrivals are idempotent.** Re-recording an arrived line is a no-op (no second `ItemArrivedAtRebin`, no second save), and once complete the PACK task is created exactly once. | `RecordArrival`; `ArriveAtRebin`'s `HasArrived` guard | — | — |
 
 ## WorkBatch
 
