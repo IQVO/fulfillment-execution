@@ -742,6 +742,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	w.registerWave2Steps(sc)
 	w.registerWave3Steps(sc)
 	w.registerRulesSteps(sc)
+	w.registerCloseoutSteps(sc)
 }
 
 // TestFeatures runs every Gherkin scenario under features/ as a Go test.
