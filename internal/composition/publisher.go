@@ -61,7 +61,7 @@ type PublisherConfig struct {
 // transaction, and the relay forwards the stored rows to Kafka, so the store
 // and the topics can no longer diverge. A nil pool or an empty broker list is
 // an error: there is no in-memory, log-only or direct-to-Kafka mode.
-func BuildEventPublisher(cfg PublisherConfig, pool *pgxpool.Pool, tasks ports.TaskRepo, stations ports.StationRepo, logger *slog.Logger) (ports.EventPublisher, *postgres.OutboxRelay, func(), error) {
+func BuildEventPublisher(cfg PublisherConfig, pool *pgxpool.Pool, tasks ports.TaskRepo, stations ports.StationRepo, batches ports.WorkBatchRepo, logger *slog.Logger) (ports.EventPublisher, *postgres.OutboxRelay, func(), error) {
 	if pool == nil {
 		return nil, nil, func() {}, ErrNoPool
 	}
@@ -69,8 +69,11 @@ func BuildEventPublisher(cfg PublisherConfig, pool *pgxpool.Pool, tasks ports.Ta
 		return nil, nil, func() {}, ErrNoBrokers
 	}
 
-	// Encoders only: no writer is ever opened for them.
+	// Encoders only: no writer is ever opened for them. Batches, when the
+	// root has one, enriches a PICK's TaskCompleted with its batch_id and
+	// batch_size (ADR 0063); nil keeps the pre-batching payload bytes.
 	integration := outboundkafka.NewPublisherWithWriter(nil, tasks, stations, uuid.NewString)
+	integration.Batches = batches
 	analytics := outboundkafka.NewAnalyticsPublisherWithWriter(nil, tasks, uuid.NewString)
 	outbox := postgres.NewOutboxPublisher(pool, integration, analytics)
 

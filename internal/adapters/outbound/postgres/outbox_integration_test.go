@@ -254,9 +254,10 @@ func TestOutboxRelay_PublishesInOrderAndMarksRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("relay: %v", err)
 	}
-	// integration: TaskClaimed, TaskCompleted (TaskAvailable is not raised on
-	// the wire for a PICK task: it has no location, ADR 0049); analytics:
-	// TaskCreated, TaskClaimed, TaskCompleted.
+	// integration: TaskClaimed, TaskCompleted (TaskAvailable is not raised
+	// for this PICK: it was released without a pick plan, so it has no
+	// placement, ADR 0062); analytics: TaskCreated, TaskClaimed,
+	// TaskCompleted.
 	if n != 5 || len(sink.sent) != 5 {
 		t.Fatalf("expected 5 published, got n=%d sent=%d", n, len(sink.sent))
 	}

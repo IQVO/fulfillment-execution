@@ -11,7 +11,8 @@ import (
 // sealed package: a matching weight applies the shipping label and raises
 // PackageManifested (the "SLAM pass" half of order-management ADR 0014
 // §5's promise feedback loop — see ADR-0025), a discrepancy diverts the
-// package instead (not manifested).
+// package instead (not manifested). Since ADR 0061 the manifest carries
+// the measured actualWeight (weight_g) for ship correlation.
 type RunSlam struct {
 	Packages  ports.PackageRepo
 	Publisher ports.EventPublisher
@@ -48,7 +49,7 @@ func (uc *RunSlam) Execute(ctx context.Context, packageId shared.PackageId, actu
 		}
 		return uc.Publisher.Publish(ctx,
 			shared.NewLabelApplied(packageId, now),
-			shared.NewPackageManifested(packageId, p.OrderRef(), now),
+			shared.NewPackageManifestedWithWeight(packageId, p.OrderRef(), actualWeight, now),
 		)
 	})
 }

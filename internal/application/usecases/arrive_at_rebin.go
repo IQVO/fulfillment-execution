@@ -101,7 +101,25 @@ func (uc *ArriveAtRebin) Execute(
 		if !oc.IsComplete() {
 			return nil
 		}
-		if _, err := uc.CreateTask.Execute(ctx, task.Pack, packCPT, orderRef, packRequired, packFragile, packGiftWrap); err != nil {
+		// The PACK task is created via the release form of CreateTask so it
+		// carries the order's id as its sourceOrderId (ADR 0061): on this rebin path
+		// the posted orderRef IS the bare order-management OrderId by
+		// caller convention, so stamping it makes the release path
+		// (ApplyWorkReleased stamps WorkReleased.ref) and the rebin path
+		// agree on Task.SourceOrderId — which PackageManifested's
+		// source_order_id resolves from. No source line: the task is
+		// order-level, not per-line.
+		//
+		// The PACK task also takes the order's fulfillment site, read from the
+		// order's PICK tasks (ADR 0065), so the PackageManifested sealed from
+		// it can carry site_id. A failed lookup fails the arrival (the scope
+		// rolls back and the caller retries) rather than creating a PACK task
+		// whose manifest downstream consumers would ignore for want of a site.
+		site, err := uc.orderSite(ctx, orderRef)
+		if err != nil {
+			return err
+		}
+		if _, err := uc.CreateTask.ExecuteReleaseWithPickAtSite(ctx, task.Pack, packCPT, orderRef, packRequired, packFragile, packGiftWrap, string(orderRef), 0, nil, nil, site); err != nil {
 			return err
 		}
 		return uc.Publisher.Publish(ctx, shared.NewOrderConsolidated(orderRef, now))

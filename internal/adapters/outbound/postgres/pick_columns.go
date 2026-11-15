@@ -7,14 +7,14 @@ import (
 )
 
 // pickColumns is a task's nullable pick-plan and case-break blocks as stored
-// (migration 0023, ADR 0054). Every field is nil for a task that carries
-// neither (every non-PICK / non-BREAK_CASE task and a PICK released without
-// data.pick).
+// (migration 0023, ADR 0054; pick_site_id added by migration 0025, ADR
+// 0062). Every field is nil for a task that carries neither (every non-PICK
+// / non-BREAK_CASE task and a PICK released without data.pick).
 type pickColumns struct {
-	pickSKU, pickUnit, pickFromBin    *string
-	pickQuantity, pickedEaches        *int
-	breakLPN, breakSKU, breakLooseBin *string
-	breakPickTaskId                   *string
+	pickSKU, pickUnit, pickFromBin, pickSiteId *string
+	pickQuantity, pickedEaches                 *int
+	breakLPN, breakSKU, breakLooseBin          *string
+	breakPickTaskId                            *string
 }
 
 // pickColumnsOf maps t's pick plan and case break onto their columns.
@@ -22,7 +22,7 @@ func pickColumnsOf(t *task.Task) pickColumns {
 	var c pickColumns
 	if p := t.PickPlan(); p != nil {
 		q, picked, unit := p.Quantity, t.PickedEaches(), string(p.Unit)
-		c.pickSKU, c.pickQuantity, c.pickUnit, c.pickFromBin = &p.SKU, &q, &unit, nullableString(p.FromBin)
+		c.pickSKU, c.pickQuantity, c.pickUnit, c.pickFromBin, c.pickSiteId = &p.SKU, &q, &unit, nullableString(p.FromBin), nullableString(p.SiteId)
 		c.pickedEaches = &picked
 	}
 	if b := t.CaseBreak(); b != nil {
@@ -33,13 +33,13 @@ func pickColumnsOf(t *task.Task) pickColumns {
 
 // values is the INSERT argument order of taskColumns' pick tail.
 func (c pickColumns) values() []any {
-	return []any{c.pickSKU, c.pickQuantity, c.pickUnit, c.pickFromBin, c.pickedEaches,
+	return []any{c.pickSKU, c.pickQuantity, c.pickUnit, c.pickFromBin, c.pickSiteId, c.pickedEaches,
 		c.breakLPN, c.breakSKU, c.breakLooseBin, c.breakPickTaskId}
 }
 
 // dest is the Scan destination order of taskColumns' pick tail.
 func (c *pickColumns) dest() []any {
-	return []any{&c.pickSKU, &c.pickQuantity, &c.pickUnit, &c.pickFromBin, &c.pickedEaches,
+	return []any{&c.pickSKU, &c.pickQuantity, &c.pickUnit, &c.pickFromBin, &c.pickSiteId, &c.pickedEaches,
 		&c.breakLPN, &c.breakSKU, &c.breakLooseBin, &c.breakPickTaskId}
 }
 
@@ -51,7 +51,7 @@ func (c pickColumns) rehydrate(id string) (*task.PickPlan, int, *task.CaseBreak,
 	var plan *task.PickPlan
 	picked := 0
 	if c.pickSKU != nil {
-		p, err := task.NewPickPlan(*c.pickSKU, derefInt(c.pickQuantity), derefString(c.pickUnit), derefString(c.pickFromBin))
+		p, err := task.NewPickPlan(*c.pickSKU, derefInt(c.pickQuantity), derefString(c.pickUnit), derefString(c.pickSiteId), derefString(c.pickFromBin))
 		if err != nil {
 			return nil, 0, nil, fmt.Errorf("rehydrate task %q: %w", id, err)
 		}

@@ -11,6 +11,7 @@ fulfillment-execution	find_claimable_work
 fulfillment-execution	get_fulfillment_throughput_report
 fulfillment-execution	get_on_time_to_cpt
 fulfillment-execution	get_queue_status
+fulfillment-execution	get_work_batch
 inventory-storage	check_availability
 inventory-storage	get_bin_occupancy
 inventory-storage	get_inventory_flow_accuracy_report

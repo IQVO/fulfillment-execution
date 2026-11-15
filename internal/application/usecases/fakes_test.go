@@ -3,6 +3,7 @@ package usecases_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
@@ -26,6 +27,7 @@ type errTaskRepo struct {
 	failFindClaimableByType bool
 	failFindAllClaimed      bool
 	failFindOpenPastCPT     bool
+	failFindBySourceOrderId bool
 }
 
 func newErrTaskRepo() *errTaskRepo {
@@ -67,6 +69,13 @@ func (r *errTaskRepo) FindAllClaimed(ctx context.Context) ([]*task.Task, error) 
 		return nil, errFake
 	}
 	return r.TaskRepo.FindAllClaimed(ctx)
+}
+
+func (r *errTaskRepo) FindBySourceOrderId(ctx context.Context, sourceOrderId string) ([]*task.Task, error) {
+	if r.failFindBySourceOrderId {
+		return nil, errFake
+	}
+	return r.TaskRepo.FindBySourceOrderId(ctx, sourceOrderId)
 }
 
 func (r *errTaskRepo) FindOpenPastCPT(ctx context.Context, now time.Time) ([]*task.Task, error) {
@@ -200,9 +209,15 @@ func (m *recordingMetrics) TaskCompleted(_ context.Context, taskType task.Type) 
 // double: pre-programmed per-SKU responses, with an optional forced error
 // for one SKU, so SealPackage's fail-open-per-item behaviour can be
 // exercised without a real HTTP call.
+//
+// GetClassification is called from concurrently forming stations
+// (TestFormWorkBatch_TwoStationsOnePoolNoTaskInTwoBatches), so the call
+// log is guarded by mu. bySKU and failFor are read-only once a test starts;
+// tests read calls only after their concurrent section has joined.
 type fakeClassificationLookup struct {
 	bySKU   map[string]ports.ClassificationInfo
 	failFor map[string]bool
+	mu      sync.Mutex
 	calls   []string
 }
 
@@ -211,7 +226,9 @@ func newFakeClassificationLookup() *fakeClassificationLookup {
 }
 
 func (f *fakeClassificationLookup) GetClassification(_ context.Context, sku string) (ports.ClassificationInfo, error) {
+	f.mu.Lock()
 	f.calls = append(f.calls, sku)
+	f.mu.Unlock()
 	if f.failFor[sku] {
 		return ports.ClassificationInfo{}, errFake
 	}

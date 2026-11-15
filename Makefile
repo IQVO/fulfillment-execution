@@ -8,7 +8,7 @@
 GOLANGCI_LINT_VERSION := v2.13.1
 COVERAGE_THRESHOLD    := 90
 COVERPKG              := ./internal/domain/...,./internal/application/...
-MUTATION_FAST_PKG     := ./internal/domain/task
+MUTATION_FAST_PKG     := ./internal/domain/task ./internal/domain/workbatch
 
 .PHONY: help build vet fmt fmt-check lint test coverage integration bdd contract arch-test mutation mutation-fast vuln check check-all
 

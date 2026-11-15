@@ -126,3 +126,18 @@ func TestRun_MisconfigurationIsRefusedBeforeTheListenerBinds(t *testing.T) {
 		t.Fatalf("something listens on %s after a refused boot", addr)
 	}
 }
+
+// TestLoadBootConfig_PickBatchMode pins the PICK_BATCH_MODE gate's boot
+// validation (ADR 0063, D5): the three modes and the empty default are
+// accepted, anything else fails the boot naming the variable.
+func TestLoadBootConfig_PickBatchMode(t *testing.T) {
+	for _, mode := range []string{"", "off", "shadow", "on"} {
+		if _, err := loadBootConfig(validEnv(map[string]string{"PICK_BATCH_MODE": mode})); err != nil {
+			t.Fatalf("mode %q: unexpected error %v", mode, err)
+		}
+	}
+	_, err := loadBootConfig(validEnv(map[string]string{"PICK_BATCH_MODE": "ON"}))
+	if err == nil || !strings.Contains(err.Error(), "PICK_BATCH_MODE") {
+		t.Fatalf("err = %v, want a boot error naming PICK_BATCH_MODE", err)
+	}
+}

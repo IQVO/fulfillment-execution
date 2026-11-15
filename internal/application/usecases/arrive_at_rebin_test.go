@@ -104,6 +104,29 @@ func TestArriveAtRebin_SingleLineOrderCompletesImmediately(t *testing.T) {
 	}
 }
 
+// ADR 0061 prerequisite: the rebin-created PACK task carries the order's
+// id as its sourceOrderId, so the release path (ApplyWorkReleased stamps
+// WorkReleased.ref) and the rebin path (the posted orderRef IS the bare
+// order id by caller convention) agree on Task.SourceOrderId — and
+// PackageManifested.source_order_id resolves on both.
+func TestArriveAtRebin_PackTaskCarriesSourceOrderId(t *testing.T) {
+	uc, _, tasks, _ := newArriveAtRebinHarness()
+	ctx := context.Background()
+	cpt := shared.NewCPT(epoch.Add(time.Hour))
+
+	if err := uc.Execute(ctx, "order-1", "line-1", []string{"line-1"}, cpt, shared.NewCapabilitySet("pack"), false, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	packTasks, _ := tasks.FindByOrderRef(ctx, "order-1")
+	if len(packTasks) != 1 {
+		t.Fatalf("expected exactly 1 PACK task, got %d", len(packTasks))
+	}
+	if got := packTasks[0].SourceOrderId(); got != "order-1" {
+		t.Fatalf("expected the rebin PACK task to carry sourceOrderId %q (the posted orderRef), got %q", "order-1", got)
+	}
+}
+
 func TestArriveAtRebin_RejectsUnknownLine(t *testing.T) {
 	uc, _, _, _ := newArriveAtRebinHarness()
 	ctx := context.Background()

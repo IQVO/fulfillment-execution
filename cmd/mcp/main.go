@@ -167,6 +167,7 @@ func getenv(key, fallback string) string {
 type storage struct {
 	tasks    ports.TaskRepo
 	stations ports.StationRepo
+	batches  ports.WorkBatchRepo
 	pool     *pgxpool.Pool
 	uow      ports.UnitOfWork
 }
@@ -178,7 +179,7 @@ func buildPublisher(st storage, brokers []string, logger *slog.Logger) (ports.Ev
 	publisher, _, closeFn, err := composition.BuildEventPublisher(composition.PublisherConfig{
 		Brokers:  brokers,
 		RunRelay: false,
-	}, st.pool, st.tasks, st.stations, logger)
+	}, st.pool, st.tasks, st.stations, st.batches, logger)
 	return publisher, closeFn, err
 }
 
@@ -194,8 +195,9 @@ func buildDeps(st storage, publisher ports.EventPublisher, metrics ports.Metrics
 			Metrics:    metrics,
 			UnitOfWork: st.uow,
 		},
-		Tasks: st.tasks,
-		Now:   time.Now,
+		GetWorkBatch: &usecases.GetWorkBatch{Batches: st.batches},
+		Tasks:        st.tasks,
+		Now:          time.Now,
 	}
 }
 
@@ -265,6 +267,7 @@ func buildStorage(ctx context.Context, databaseURL, migrationsDatabaseURL, migra
 	return storage{
 		tasks:    postgres.NewTaskRepo(pool),
 		stations: postgres.NewStationRepo(pool),
+		batches:  postgres.NewWorkBatchRepo(pool),
 		pool:     pool,
 		uow:      postgres.NewUnitOfWork(pool),
 	}, pool.Close, nil

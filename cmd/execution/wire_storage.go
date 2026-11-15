@@ -35,6 +35,7 @@ type storageAdapters struct {
 	packageRepo       ports.PackageRepo
 	processedEvents   ports.ProcessedEvents
 	consolidationRepo ports.OrderConsolidationRepo
+	workBatchRepo     ports.WorkBatchRepo
 	pool              *pgxpool.Pool
 	uow               ports.UnitOfWork
 }
@@ -100,6 +101,7 @@ func openStorage(rootCtx context.Context, logger *slog.Logger, databaseURL, migr
 		packageRepo:       postgres.NewPackageRepo(pool),
 		processedEvents:   postgres.NewProcessedEventsRepo(pool),
 		consolidationRepo: postgres.NewOrderConsolidationRepo(pool),
+		workBatchRepo:     postgres.NewWorkBatchRepo(pool),
 		pool:              pool,
 		uow:               postgres.NewUnitOfWork(pool),
 	}, nil
@@ -140,7 +142,7 @@ func buildEventPublisher(storage storageAdapters, brokers []string, logger *slog
 		RunRelay:         true,
 		RelayInterval:    durationEnv("OUTBOX_RELAY_INTERVAL", time.Second),
 		RelayMaxAttempts: outboxMaxAttempts(logger),
-	}, storage.pool, storage.taskRepo, storage.stationRepo, logger)
+	}, storage.pool, storage.taskRepo, storage.stationRepo, storage.workBatchRepo, logger)
 }
 
 // outboxMaxAttempts parses OUTBOX_MAX_ATTEMPTS (gap fix D12, ADR 0042): how

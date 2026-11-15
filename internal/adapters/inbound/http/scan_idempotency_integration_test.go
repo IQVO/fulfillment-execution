@@ -58,7 +58,7 @@ func newScanFixture(t *testing.T, planned int) *scanFixture {
 	}); err != nil {
 		t.Fatalf("seed pack view: %v", err)
 	}
-	plan, err := task.NewPickPlan("SKU-1", planned, "EACH", "BIN-1")
+	plan, err := task.NewPickPlan("SKU-1", planned, "EACH", "", "BIN-1")
 	if err != nil {
 		t.Fatalf("pick plan: %v", err)
 	}

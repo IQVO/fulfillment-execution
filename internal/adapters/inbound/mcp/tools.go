@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -31,6 +32,9 @@ type Deps struct {
 	CompleteTask *usecases.CompleteTask
 	// Tasks is the read-only query port for richer diagnostics.
 	Tasks TaskQueries
+	// GetWorkBatch is the WorkBatch read side (ADR 0063), backing the
+	// get_work_batch tool: one station walk by id.
+	GetWorkBatch *usecases.GetWorkBatch
 	// Reports is the client of the fulfillment-reports REST service, backing
 	// the curated get_fulfillment_throughput_report tool. When nil, that tool
 	// is not registered (an MCP deployment without the reports service).
@@ -186,6 +190,54 @@ func (d Deps) completeTask(ctx context.Context, in completeTaskInput) (completeT
 	return completeTaskOutput{TaskId: in.TaskId, StationId: in.StationId, Completed: true}, nil
 }
 
+// --- get_work_batch (read, ADR 0063) -----------------------------------------
+
+type getWorkBatchInput struct {
+	BatchId string `json:"batchId" jsonschema:"the id of the work batch to read"`
+}
+
+// workBatchStop is one stop of the walk, in visit order.
+type workBatchStop struct {
+	TaskId      string `json:"taskId"`
+	StopSeq     int    `json:"stopSeq"`
+	Compartment int    `json:"compartment"`
+	State       string `json:"state"`
+}
+
+type getWorkBatchOutput struct {
+	BatchId   string          `json:"batchId"`
+	StationId string          `json:"stationId"`
+	Status    string          `json:"status"`
+	Cpt       string          `json:"cpt"`
+	FormedAt  string          `json:"formedAt"`
+	Stops     []workBatchStop `json:"stops"`
+}
+
+// getWorkBatch reads one WorkBatch through the same use case the REST
+// GET /work-batches/{batchId} serves, per the governance charter (tool
+// handlers call existing use cases; they never touch the domain or SQL).
+func (d Deps) getWorkBatch(ctx context.Context, in getWorkBatchInput) (getWorkBatchOutput, error) {
+	if strings.TrimSpace(in.BatchId) == "" {
+		return getWorkBatchOutput{}, fmt.Errorf("batchId is required")
+	}
+	b, err := d.GetWorkBatch.Execute(ctx, shared.BatchId(in.BatchId))
+	if err != nil {
+		return getWorkBatchOutput{}, err
+	}
+	out := getWorkBatchOutput{
+		BatchId:   string(b.Id()),
+		StationId: string(b.StationId()),
+		Status:    string(b.Status()),
+		Cpt:       b.CPT().UTC().Format(time.RFC3339),
+		FormedAt:  b.FormedAt().UTC().Format(time.RFC3339),
+		Stops:     make([]workBatchStop, len(b.Members())),
+	}
+	for i, m := range b.Members() {
+		out.Stops[i] = workBatchStop{TaskId: string(m.TaskId), StopSeq: m.StopSeq, Compartment: m.Compartment, State: string(m.State)}
+	}
+	return out, nil
+}
+
 // --- registration -------------------------------------------------------------
 
 // registerTools adds every tool to the server, each wrapped so its handler
@@ -210,6 +262,15 @@ func (d Deps) registerTools(server *mcp.Server) {
 		Description: "List claimed tasks whose lease has expired (or expires within a given window), each with the reason it is flagged.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly},
 	}, d.diagnoseStuckTasks)
+
+	// Pick batching (ADR 0063): one station walk by id — the batch, its
+	// station and status, and the stops in visit order with their cart
+	// compartments and member states.
+	addTool(server, &mcp.Tool{
+		Name:        "get_work_batch",
+		Description: "Return one work batch (a station's pick walk) by id: station, status (OPEN, COMPLETED or ABANDONED), CPT band, formation time, and the stops in visit order with task id, stop sequence, cart compartment and member state (OPEN, COMPLETED or DETACHED). A DETACHED member left the walk early (its lease expired and the task returned to the pool).",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly},
+	}, d.getWorkBatch)
 
 	// Write tool: completes a claimed task. Annotated destructive
 	// (non-read-only, non-idempotent) so a host can see it changes state

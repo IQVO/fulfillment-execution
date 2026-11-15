@@ -20,7 +20,7 @@ func casePack(sku string) task.ScannedPack {
 // claimedPick returns a PICK task with a pick plan, claimed by s1 until now+1m.
 func claimedPick(t *testing.T, unit string, quantity int) *task.Task {
 	t.Helper()
-	plan, err := task.NewPickPlan("SKU-1", quantity, unit, binFwd)
+	plan, err := task.NewPickPlan("SKU-1", quantity, unit, "", binFwd)
 	if err != nil {
 		t.Fatalf("NewPickPlan: %v", err)
 	}
@@ -32,15 +32,15 @@ func claimedPick(t *testing.T, unit string, quantity int) *task.Task {
 }
 
 func TestNewPickPlan_ValidatesAndTrims(t *testing.T) {
-	p, err := task.NewPickPlan(" SKU-1 ", 12, " CASE ", " "+binFwd+" ")
+	p, err := task.NewPickPlan(" SKU-1 ", 12, " CASE ", " WH1 ", " "+binFwd+" ")
 	if err != nil {
 		t.Fatalf("NewPickPlan: %v", err)
 	}
-	if p.SKU != "SKU-1" || p.Quantity != 12 || p.Unit != task.PickUnitCase || p.FromBin != binFwd {
+	if p.SKU != "SKU-1" || p.Quantity != 12 || p.Unit != task.PickUnitCase || p.SiteId != "WH1" || p.FromBin != binFwd {
 		t.Fatalf("plan = %+v", p)
 	}
-	if _, err := task.NewPickPlan("SKU-1", 1, "EACH", ""); err != nil {
-		t.Fatalf("an absent from_bin is allowed: %v", err)
+	if _, err := task.NewPickPlan("SKU-1", 1, "EACH", "", ""); err != nil {
+		t.Fatalf("an absent site and from_bin are allowed: %v", err)
 	}
 	for name, c := range map[string]struct {
 		sku  string
@@ -51,12 +51,12 @@ func TestNewPickPlan_ValidatesAndTrims(t *testing.T) {
 		"zero qty":  {"SKU-1", 0, "EACH"},
 		"neg qty":   {"SKU-1", -3, "EACH"},
 	} {
-		if _, err := task.NewPickPlan(c.sku, c.qty, c.unit, ""); !errors.Is(err, task.ErrInvalidPickPlan) {
+		if _, err := task.NewPickPlan(c.sku, c.qty, c.unit, "", ""); !errors.Is(err, task.ErrInvalidPickPlan) {
 			t.Errorf("%s: err = %v, want ErrInvalidPickPlan", name, err)
 		}
 	}
 	for _, u := range []string{"", "each", "PALLET", "INNER"} {
-		if _, err := task.NewPickPlan("SKU-1", 1, u, ""); !errors.Is(err, task.ErrUnknownPickUnit) {
+		if _, err := task.NewPickPlan("SKU-1", 1, u, "", ""); !errors.Is(err, task.ErrUnknownPickUnit) {
 			t.Errorf("unit %q: err = %v, want ErrUnknownPickUnit", u, err)
 		}
 	}
@@ -128,7 +128,7 @@ func TestConfirmPickScan_ClaimRules(t *testing.T) {
 		t.Errorf("expired lease: err = %v, want ErrNotClaimed", err)
 	}
 	pending := task.New("k2", task.Pick, shared.NewCPT(now.Add(time.Hour)), "wu-2", shared.NewCapabilitySet("pick"), false, false)
-	plan, _ := task.NewPickPlan("SKU-1", 3, "EACH", "")
+	plan, _ := task.NewPickPlan("SKU-1", 3, "EACH", "", "")
 	pending.WithPickPlan(&plan, 0)
 	if _, err := pending.ConfirmPickScan("s1", now, eachPack("SKU-1"), 1); !errors.Is(err, task.ErrNotClaimed) {
 		t.Errorf("pending: err = %v, want ErrNotClaimed", err)
@@ -175,7 +175,7 @@ func TestComplete_PickWithoutPlanIsUnchanged(t *testing.T) {
 }
 
 func TestWithPickPlan_CopiesAndClearsOnNil(t *testing.T) {
-	plan, _ := task.NewPickPlan("SKU-1", 5, "EACH", "")
+	plan, _ := task.NewPickPlan("SKU-1", 5, "EACH", "", "")
 	tk := task.New("k5", task.Pick, shared.NewCPT(now), "wu-5", shared.NewCapabilitySet(), false, false).WithPickPlan(&plan, 4)
 	plan.SKU = "MUTATED"
 	if got := tk.PickPlan(); got == nil || got.SKU != "SKU-1" || tk.PickedEaches() != 4 {

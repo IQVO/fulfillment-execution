@@ -90,19 +90,52 @@ func TestPoolEvents_Release_CommitsTaskAndTaskAvailableTogether(t *testing.T) {
 	}
 }
 
-// A PICK task has no location here: no TaskAvailable row, but the task and its
-// analytics TaskCreated are written as before.
-func TestPoolEvents_Release_PickIsNotAnnounced(t *testing.T) {
+// A PICK released without a sited plan (every PICK until the producer
+// stamps data.pick.site_id, ADR 0062) has no placement: no TaskAvailable
+// row, but the task and its analytics TaskCreated are written as before.
+func TestPoolEvents_Release_PickWithoutPlanIsNotAnnounced(t *testing.T) {
 	s := newOutboxStack(t)
 	create := &usecases.CreateTask{Tasks: s.tasks, Publisher: s.pub, Clock: s.clock, NewId: taskIds("pk"), UnitOfWork: s.uow}
 	if _, err := create.Execute(context.Background(), task.Pick, shared.NewCPT(s.clock.t.Add(time.Hour)), "wu-pk", shared.NewCapabilitySet("pick"), false, false); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	if got := integrationRows(t, s, typeAvailable); got != 0 {
-		t.Fatalf("a PICK task must not be announced, got %d TaskAvailable rows", got)
+		t.Fatalf("a PICK task without a sited plan must not be announced, got %d TaskAvailable rows", got)
 	}
 	if got := countOutbox(t, s.pool, "topic = '"+outboundkafka.AnalyticsTopic+"'"); got != 1 {
 		t.Fatalf("expected the analytics TaskCreated row, got %d analytics rows", got)
+	}
+}
+
+// The announced PICK (ADR 0062): a release whose plan carries both the site
+// and the pick face commits a TaskAvailable row together with the task, the
+// pick face as both ends of the trip and the plan's site — the same shape
+// as every other announcement.
+func TestPoolEvents_Release_PickWithSiteAndBinIsAnnounced(t *testing.T) {
+	s := newOutboxStack(t)
+	plan, err := task.NewPickPlan("SKU-1", 2, "EACH", "WH1", "A-01-01")
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	create := &usecases.CreateTask{Tasks: s.tasks, Publisher: s.pub, Clock: s.clock, NewId: taskIds("pk2"), UnitOfWork: s.uow}
+	tk, err := create.ExecuteReleaseWithPick(context.Background(), task.Pick, shared.NewCPT(s.clock.t.Add(time.Hour)), "wu-pk2", shared.NewCapabilitySet("pick"), false, false, "", 0, nil, &plan)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if got := integrationRows(t, s, typeAvailable); got != 1 {
+		t.Fatalf("expected 1 integration TaskAvailable row, got %d", got)
+	}
+	var value []byte
+	if err := s.pool.QueryRow(context.Background(), "SELECT value FROM outbox_events WHERE topic = $1 AND event_type = $2", outboundkafka.Topic, typeAvailable).Scan(&value); err != nil {
+		t.Fatalf("read row: %v", err)
+	}
+	for _, want := range []string{
+		`"task_id":"` + string(tk.Id()) + `"`, `"task_type":"PICK"`, `"site_id":"WH1"`,
+		`"from_location":"A-01-01"`, `"to_location":"A-01-01"`, `"available_at":"`,
+	} {
+		if !bytes.Contains(value, []byte(want)) {
+			t.Errorf("TaskAvailable payload lacks %s: %s", want, value)
+		}
 	}
 }
 

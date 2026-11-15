@@ -118,6 +118,27 @@ func buildHandlers(storage storageAdapters, publisher ports.EventPublisher, cloc
 		// endpoint answering 503 not-configured — a deployment without
 		// WORK_PLANNING_A2A_URL has the surface explicitly off.
 		RequestNextWork: &usecases.RequestNextWork{Planning: planning},
+		// Pick batching (ADR 0063). The mode comes from PICK_BATCH_MODE
+		// (validated at boot by loadBootConfig, default off): with the
+		// fleet default the surface answers 503 batch-mode-off and
+		// ClaimNext / POST .../task-claims behave exactly as today.
+		FormWorkBatch: &usecases.FormWorkBatch{
+			Tasks:          storage.taskRepo,
+			Stations:       storage.stationRepo,
+			Batches:        storage.workBatchRepo,
+			Publisher:      publisher,
+			Clock:          clock,
+			NewBatchId:     newBatchId,
+			Hints:          hintLookup,
+			Classification: classificationLookup,
+			Maximum:        batchMaximum(logger),
+			Mode:           pickBatchMode(logger),
+			Metrics:        metricsPort(metrics),
+			UnitOfWork:     storage.uow,
+			Logger:         logger,
+		},
+		RenewWorkBatchLease: &usecases.RenewWorkBatchLease{Tasks: storage.taskRepo, Batches: storage.workBatchRepo, Clock: clock},
+		GetWorkBatch:        &usecases.GetWorkBatch{Batches: storage.workBatchRepo},
 		// readiness backs GET /readyz (ADR-0029 §graceful shutdown):
 		// flipped to not-ready as the FIRST step of shutdown, below,
 		// before anything else stops.
@@ -182,6 +203,34 @@ func newTaskId() shared.TaskId {
 
 func newPackageId() shared.PackageId {
 	return shared.PackageId(uuidLike())
+}
+
+func newBatchId() shared.BatchId {
+	return shared.BatchId("wb-" + uuidLike())
+}
+
+// pickBatchMode resolves PICK_BATCH_MODE (ADR 0063, D5). loadBootConfig has
+// already rejected an invalid value at boot, so the error branch here is
+// unreachable in the real runtime and only guards unit tests that build
+// handlers without going through boot; it fails closed to off, the fleet
+// default, never to a forming surface.
+func pickBatchMode(logger *slog.Logger) usecases.BatchMode {
+	mode, err := usecases.ParseBatchMode(getenv("PICK_BATCH_MODE", string(usecases.BatchModeOff)))
+	if err != nil {
+		logger.Warn("ignoring invalid PICK_BATCH_MODE", "value", os.Getenv("PICK_BATCH_MODE"), "mode", usecases.BatchModeOff)
+		return usecases.BatchModeOff
+	}
+	if mode != usecases.BatchModeOff {
+		logger.Info("pick batching configured", "pick_batch_mode", mode, "batch_maximum", batchMaximum(logger))
+	}
+	return mode
+}
+
+// batchMaximum resolves PICK_BATCH_MAXIMUM (D4: a setting, placeholder
+// default 4 until measured). Unset, malformed or non-positive keeps the
+// use case's DefaultBatchMaximum: it is a tuning knob, never a boot error.
+func batchMaximum(logger *slog.Logger) int {
+	return intEnv(logger, "PICK_BATCH_MAXIMUM", usecases.DefaultBatchMaximum)
 }
 
 // uuidLike generates a time-ordered, sufficiently-unique id without pulling

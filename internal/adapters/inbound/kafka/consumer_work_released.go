@@ -81,9 +81,14 @@ type WorkReleasedData struct {
 	// TRANSFER_DISPATCH | TRANSFER_ARRIVAL); it selects which transfer
 	// fact the created task's completion publishes.
 	WorkKind string `json:"work_kind,omitempty"`
-	// SiteId is the site the transfer fact is about (origin for
-	// pick/dispatch work, destination for arrival work — the producer
-	// decides).
+	// SiteId is the site the release is about. On transfer work it is the
+	// site the transfer fact is about (origin for pick/dispatch work,
+	// destination for arrival work — the producer decides). On order work
+	// (no transfer_ref) it is the fulfillment site the order named
+	// (order-management's OrderAllocated.site_id, copied by
+	// wes-work-planning; omit-when-unknown): the created task keeps it as
+	// its order site (ADR 0065), which the rebin PACK task inherits and
+	// PackageManifested publishes.
 	SiteId string `json:"site_id,omitempty"`
 	// SKU is the stock the transfer moves.
 	SKU string `json:"sku,omitempty"`
@@ -114,10 +119,15 @@ type WorkReleasedData struct {
 
 // WorkReleasedPick is WorkReleased.data.pick (ADR 0054). quantity is in
 // eaches (the ledger unit) whatever the unit; from_bin is optional.
+// site_id (ADR 0062) is the optional site the pick is worked at, published
+// by the producer whenever it knows one (omit-when-unknown); site_id and
+// from_bin together are what makes the released PICK announcable to the
+// open-task pool.
 type WorkReleasedPick struct {
 	SKU      string `json:"sku"`
 	Quantity *int   `json:"quantity"`
 	Unit     string `json:"unit"`
+	SiteId   string `json:"site_id,omitempty"`
 	FromBin  string `json:"from_bin,omitempty"`
 }
 

@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
 )
 
 // Boot errors of the mandatory configuration. Each names its variable
@@ -101,6 +103,15 @@ func loadBootConfig(env func(string) string) (bootConfig, error) {
 	}
 	if cfg.packViewGroup, err = parsePackViewGroup(env("PACK_VIEW_CONSUMER_GROUP"), env("PRODUCT_CLASSIFICATION_CONSUMER_GROUP")); err != nil {
 		errs = append(errs, err)
+	}
+	// PICK_BATCH_MODE (ADR 0063, D5): a typo must fail the boot, not
+	// silently run the fleet default off — unlike a tuning knob, a mode
+	// the operator believes is on but is not would poison the shadow
+	// measurements. Empty is the fleet default (off).
+	if v := env("PICK_BATCH_MODE"); v != "" {
+		if _, err := usecases.ParseBatchMode(v); err != nil {
+			errs = append(errs, fmt.Errorf("PICK_BATCH_MODE: %w", err))
+		}
 	}
 	if cfg.inventoryStorageURL = strings.TrimSpace(env("INVENTORY_STORAGE_BASE_URL")); cfg.inventoryStorageURL == "" {
 		errs = append(errs, errNoInventoryStorage)

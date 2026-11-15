@@ -11,6 +11,7 @@ import (
 	pack "github.com/claudioed/fulfillment-execution/internal/domain/package"
 	"github.com/claudioed/fulfillment-execution/internal/domain/station"
 	"github.com/claudioed/fulfillment-execution/internal/domain/task"
+	"github.com/claudioed/fulfillment-execution/internal/domain/workbatch"
 )
 
 // problemBaseURI namespaces every RFC 7807 "type" URI this service mints.
@@ -32,7 +33,8 @@ func statusFor(err error) int {
 	switch {
 	case errors.Is(err, usecases.ErrTaskNotFound),
 		errors.Is(err, usecases.ErrStationNotFound),
-		errors.Is(err, usecases.ErrPackageNotFound):
+		errors.Is(err, usecases.ErrPackageNotFound),
+		errors.Is(err, usecases.ErrBatchNotFound):
 		return http.StatusNotFound
 
 	case errors.Is(err, task.ErrAlreadyClaimed),
@@ -68,6 +70,18 @@ func statusFor(err error) int {
 
 	case errors.Is(err, ports.ErrCaseBreakUnavailable):
 		return http.StatusServiceUnavailable
+
+	// Pick batching (ADR 0063). ErrBatchModeOff is a configured state of
+	// the surface, not a fault: PICK_BATCH_MODE off/shadow answers 503
+	// batch-mode-off, exactly like an unset delegation URL (ADR-0058).
+	case errors.Is(err, usecases.ErrBatchModeOff):
+		return http.StatusServiceUnavailable
+	// A station forming while holding an OPEN batch is a conflict on the
+	// station's state, mirroring station.ErrOccupied; a lifecycle command
+	// on a COMPLETED/ABANDONED batch is the same class of conflict.
+	case errors.Is(err, workbatch.ErrStationHasOpenBatch),
+		errors.Is(err, workbatch.ErrBatchNotOpen):
+		return http.StatusConflict
 
 	// Work-planning delegation (ADR-0058): the peer's business rejections are
 	// conflicts, its unknown path is a 404, an unreachable/off-contract peer
@@ -145,6 +159,14 @@ var problemCatalog = []struct {
 	{pack.ErrNotSealed, "package-not-sealed", "Package must be sealed before SLAM"},
 	{pack.ErrPackageSegregationViolation, "package-segregation-violation", "Scanned item's DOT hazard class is incompatible with an already-scanned item"},
 	{usecases.ErrNoClaimableTask, "no-claimable-task", "No claimable task for station capabilities"},
+
+	// Pick batching (ADR 0063): the mode gate (503, a configured state),
+	// the open-batch formation guard, the lifecycle conflict and the
+	// read-side miss.
+	{usecases.ErrBatchModeOff, "batch-mode-off", "Pick batching is off (PICK_BATCH_MODE)"},
+	{usecases.ErrBatchNotFound, "batch-not-found", "Work batch not found"},
+	{workbatch.ErrStationHasOpenBatch, "station-has-open-batch", "Station already holds an open batch"},
+	{workbatch.ErrBatchNotOpen, "batch-not-open", "Batch is not open"},
 
 	{task.ErrCapabilityMismatch, "task-capability-mismatch", "Station capabilities do not match task requirements"},
 	{station.ErrCapabilityMismatch, "station-capability-mismatch", "Capabilities do not match"},

@@ -2,7 +2,7 @@
 // fulfillment-execution domain events onto Kafka, satisfying
 // ports.EventPublisher. It forwards TaskCompleted, TaskCPTMissed,
 // PackageManifested, PackageDiverted and WeightDiscrepancyDetected (plus the
-// task-pool and transfer facts) — every other event type is not part of the
+// task-pool, transfer and work-batch facts) — every other event type is not part of the
 // published integration contract and is skipped. TaskCompleted is
 // enriched with the completed Task's OrderRef (looked up via TaskRepo,
 // since the domain event itself carries only TaskId/StationId) — the same
@@ -10,12 +10,16 @@
 // for ReservationRevoked. It also enriches TaskCompleted with the
 // completing associate's identity, the task's duration, and the task's own
 // type (PICK/PACK/SLAM/REBIN), resolved via a StationRepo lookup, the
-// Task's ClaimedAt timestamp, and the already-loaded Task's Type()
+// Task's DurationBase timestamp (the per-stop work start inside a work
+// batch, else the claim — ADR 0064), and the already-loaded Task's Type()
 // respectively (see ADR-0014, ADR-0023) — inputs the labor-performance
 // bounded context needs and that this service is the sole owner of.
-// TaskCPTMissed and PackageManifested need no repo enrichment: both carry
-// every field their wire payload needs directly on the domain event
-// itself (see ADR-0025); so do PackageDiverted and WeightDiscrepancyDetected,
+// Since ADR 0061, PackageManifested is enriched the same best-effort way
+// with the manifest's ship correlation (source_order_id, cpt), resolved
+// from the order's tasks; its actual weight rides the domain event.
+// TaskCPTMissed still needs no repo enrichment: it carries every field
+// its wire payload needs directly on the domain event itself (see
+// ADR-0025); so do PackageDiverted and WeightDiscrepancyDetected,
 // promoted from the analytics topic for exception-management (ADR 0053).
 //
 // Every message is a CloudEvents 1.0 event in structured content mode
@@ -47,6 +51,9 @@ const (
 	entityTask     = "task"
 	entityPackage  = "package"
 	entityTransfer = "transfer"
+	// entityWorkBatch is the WorkBatch aggregate's entity segment (ADR
+	// 0063): com.warehouse.wes.fulfillment-execution.workbatch.<Event>.
+	entityWorkBatch = "workbatch"
 )
 
 // TaskCompletedData is the payload of a published TaskCompleted event,
@@ -55,9 +62,10 @@ const (
 // labor-performance-relevant facts resolved at publish time (ADR-0014,
 // ADR-0023): AssociateId (the occupant of the claiming station, if any —
 // empty for a station with no checked-in occupant, e.g. a robot),
-// DurationSeconds (elapsed time between the task's claim and its
-// completion), and TaskType (this service's own task.Type — PICK, PACK,
-// SLAM, or REBIN — read directly off the already-loaded Task, no new
+// DurationSeconds (elapsed work time between the task's DurationBase —
+// the per-stop work start inside a work batch, else its claim (ADR 0064) —
+// and its completion), and TaskType (this service's own task.Type — PICK,
+// PACK, SLAM, or REBIN — read directly off the already-loaded Task, no new
 // lookup needed). OrderRef (optional, omitted when empty) is the upstream
 // ORDER the task's work was released for (Task.SourceOrderId, from
 // WorkReleased.ref) — NOT work_unit_id, which for order work is the
@@ -93,6 +101,13 @@ type TaskCompletedData struct {
 	// inventory-storage applies the move as a RelocateStock with reason
 	// REPLENISHMENT and source_ref = request_ref (its ADR 0041).
 	RequestRef string `json:"request_ref,omitempty"`
+	// BatchId and BatchSize are the additive pick-batching fields (ADR
+	// 0063): the work batch the completed PICK's task was a member of, and
+	// how many tasks that walk held. Omitted on every non-batched
+	// completion — nil batch repo, task in no batch, or any other task
+	// type — so the pre-batching payload bytes are unchanged.
+	BatchId   string `json:"batch_id,omitempty"`
+	BatchSize int    `json:"batch_size,omitempty"`
 }
 
 // TaskCPTMissedData is the payload of a published TaskCPTMissed event: a
@@ -112,9 +127,36 @@ type TaskCPTMissedData struct {
 // PackageManifestedData is the payload of a published PackageManifested
 // event: a package that passed its SLAM weigh-check. OrderRef is what
 // order-management's RepromiseOrder consumer keys its recompute on.
+//
+// The ship-correlation fields (ADR 0061) are additive and optional —
+// omitted entirely when unknown, never empty strings or a zero weight on
+// the wire, so the pre-ADR-0061 payload bytes are unchanged:
+//
+//   - source_order_id: the order-management OrderId the package ships for.
+//     Resolved from the correlated tasks' Task.SourceOrderId (stamped from
+//     WorkReleased.ref on the release path, and on the rebin-created PACK
+//     task by ArriveAtRebin); when no correlated task carries one, the
+//     package's orderRef is the bare order id by rebin caller convention
+//     and a trailing "-line-N" work-unit suffix is stripped defensively.
+//   - cpt: the manifest's SLAM task's CPT, RFC3339 (UTC), the same
+//     SLAM-leg correlation as the analytics on-time-to-CPT KPI; when the
+//     order has no SLAM task (every customer order) the rebin PACK task's
+//     CPT, the order's promise date (ADR 0065).
+//   - weight_g: the actual SLAM weigh-check measurement in grams (the
+//     domain event carries it from RunSlam).
+//   - site_id: the order's fulfillment site (ADR 0065): WorkReleased.site_id
+//     kept on the order work, inherited by the rebin PACK task from the
+//     order's PICK tasks, read from the manifest's SLAM task, else its PACK
+//     task. Omitted when the order named none.
 type PackageManifestedData struct {
 	PackageId string `json:"package_id"`
 	OrderRef  string `json:"order_ref"`
+	// Additive ship-correlation fields (ADR 0061). Omitted entirely when
+	// unknown — never empty strings or zero values on the wire.
+	SiteId        string  `json:"site_id,omitempty"`
+	SourceOrderId string  `json:"source_order_id,omitempty"`
+	Cpt           string  `json:"cpt,omitempty"`
+	WeightG       float64 `json:"weight_g,omitempty"`
 }
 
 // PackageDivertedData is the payload of a published PackageDiverted event:
@@ -157,6 +199,53 @@ type TransferFactData struct {
 	Quantity    int    `json:"quantity,omitempty"`
 }
 
+// WorkBatchEventData structs (ADR 0063) mirror the analytics publisher's
+// payload maps field for field, with fields declared in alphabetical order
+// ON PURPOSE (encoding/json sorts map keys, so the integration `data` bytes
+// and the analytics occurrence are byte-identical — same convention as
+// WeightDiscrepancyDetectedData).
+
+// WorkBatchFormData is the payload of a published WorkBatchFormed event:
+// the batch that just formed, its members in stop order.
+type WorkBatchFormData struct {
+	BatchId   string                `json:"batch_id"`
+	Cpt       time.Time             `json:"cpt"`
+	FormedAt  time.Time             `json:"formed_at"`
+	Members   []WorkBatchMemberWire `json:"members"`
+	StationId string                `json:"station_id"`
+	Version   int64                 `json:"version"`
+}
+
+// WorkBatchMemberWire is one member of a WorkBatchFormed payload.
+type WorkBatchMemberWire struct {
+	Compartment int    `json:"compartment"`
+	StopSeq     int    `json:"stop_seq"`
+	TaskId      string `json:"task_id"`
+}
+
+// WorkBatchCompletedData is the payload of a published WorkBatchCompleted
+// event: the last open member completed, so the walk is over and
+// walk_seconds is measurable from formation.
+type WorkBatchCompletedData struct {
+	BatchId     string    `json:"batch_id"`
+	CompletedAt time.Time `json:"completed_at"`
+	MemberCount int       `json:"member_count"`
+	StationId   string    `json:"station_id"`
+	Version     int64     `json:"version"`
+	WalkSeconds int64     `json:"walk_seconds"`
+}
+
+// WorkBatchAbandonedData is the payload of a published WorkBatchAbandoned
+// event: the last open member left the batch (lease expired) without
+// completing.
+type WorkBatchAbandonedData struct {
+	AbandonedAt time.Time `json:"abandoned_at"`
+	BatchId     string    `json:"batch_id"`
+	MemberCount int       `json:"member_count"`
+	StationId   string    `json:"station_id"`
+	Version     int64     `json:"version"`
+}
+
 // Writer is the subset of *kafkago.Writer the Publisher needs, so tests can
 // substitute a fake without a live broker.
 type Writer interface {
@@ -171,6 +260,12 @@ type Publisher struct {
 	Writer   Writer
 	Tasks    ports.TaskRepo
 	Stations ports.StationRepo
+	// Batches, when non-nil, enriches a PICK's TaskCompleted with the
+	// batch_id and batch_size of the work batch the task completed into
+	// (ADR 0063) — the fields labor-performance needs to report batched and
+	// single picks apart. Nil (or no batch found) omits both, so the
+	// pre-batching payload bytes are unchanged.
+	Batches ports.WorkBatchRepo
 	// NewId mints the CloudEvents `id`, exactly once per domain event, in
 	// Encode — so the outbox persists, and the relay republishes, the
 	// same id on every redelivery.
@@ -205,12 +300,16 @@ func NewPublisherWithWriter(w Writer, tasks ports.TaskRepo, stations ports.Stati
 // Encode builds the wire form of every TaskCompleted, TaskCPTMissed, and
 // PackageManifested event in evts — WITHOUT sending it. TaskCompleted's
 // envelope is enriched with the completed Task's OrderRef, the completing
-// associate's identity and the task's duration; TaskCPTMissed and
-// PackageManifested need no enrichment, every field they carry on the wire
-// comes straight off the domain event (see ADR-0025). Other event types
+// associate's identity and the task's duration; since ADR 0061
+// PackageManifested's is enriched with the manifest's ship correlation
+// (source_order_id, cpt) from the order's tasks, while its actual weight
+// rides the domain event; TaskCPTMissed needs no enrichment, every field
+// it carries on the wire comes straight off the domain event (see
+// ADR-0025). Other event types
 // are not part of the integration contract and yield nothing. The repo
-// lookups (TaskCompleted only) happen here, so when Encode runs inside a
-// use case's transaction (the outbox path) they see the just-saved rows.
+// lookups (TaskCompleted and PackageManifested) happen here, so when
+// Encode runs inside a use case's transaction (the outbox path) they see
+// the just-saved rows.
 //
 // The W3C trace context of whatever span is active on ctx is injected
 // into each message's headers, so the consumer's span becomes a child of
@@ -231,17 +330,16 @@ func (p *Publisher) Encode(ctx context.Context, evts ...shared.DomainEvent) ([]E
 		case shared.TaskCPTMissed:
 			encs, err = p.encodeTaskCPTMissed(ev)
 		case shared.PackageManifested:
-			encs, err = p.encodePackageManifested(ev)
+			encs, err = p.encodePackageManifested(ctx, ev)
 		case shared.PackageDiverted:
 			encs, err = p.encodePackageDiverted(ev)
 		case shared.WeightDiscrepancyDetected:
 			encs, err = p.encodeWeightDiscrepancyDetected(ev)
-		case shared.TransferPicked:
-			encs, err = p.encodeTransferFact("TransferPicked", ev.TaskId, ev.OccurredAt(), ev.TaskTransferDetails)
-		case shared.TransferDispatched:
-			encs, err = p.encodeTransferFact("TransferDispatched", ev.TaskId, ev.OccurredAt(), ev.TaskTransferDetails)
-		case shared.TransferArrived:
-			encs, err = p.encodeTransferFact("TransferArrived", ev.TaskId, ev.OccurredAt(), ev.TaskTransferDetails)
+		case shared.TransferPicked, shared.TransferDispatched, shared.TransferArrived:
+			id, d := transferFactOf(e)
+			encs, err = p.encodeTransferFact(e.EventName(), id, e.OccurredAt(), d)
+		case shared.WorkBatchFormed, shared.WorkBatchCompleted, shared.WorkBatchAbandoned:
+			encs, err = p.encodeWorkBatch(e)
 		default:
 			continue
 		}
@@ -273,6 +371,21 @@ func (p *Publisher) Publish(ctx context.Context, evts ...shared.DomainEvent) err
 	return nil
 }
 
+// transferFactOf unpacks any Transfer* fact into the arguments
+// encodeTransferFact takes, so Encode's switch stays one arm per fact
+// family.
+func transferFactOf(e shared.DomainEvent) (id shared.TaskId, d shared.TaskTransferDetails) {
+	switch ev := e.(type) {
+	case shared.TransferPicked:
+		return ev.TaskId, ev.TaskTransferDetails
+	case shared.TransferDispatched:
+		return ev.TaskId, ev.TaskTransferDetails
+	case shared.TransferArrived:
+		return ev.TaskId, ev.TaskTransferDetails
+	}
+	return "", shared.TaskTransferDetails{}
+}
+
 // inIntegrationContract reports whether Encode knows how to turn e into a
 // wire message, so Publish can skip a foreign event before opening a span.
 func inIntegrationContract(e shared.DomainEvent) bool {
@@ -280,7 +393,8 @@ func inIntegrationContract(e shared.DomainEvent) bool {
 	case shared.TaskCompleted, shared.TaskCPTMissed, shared.PackageManifested,
 		shared.PackageDiverted, shared.WeightDiscrepancyDetected,
 		shared.TaskAvailable, shared.TaskClaimed,
-		shared.TransferPicked, shared.TransferDispatched, shared.TransferArrived:
+		shared.TransferPicked, shared.TransferDispatched, shared.TransferArrived,
+		shared.WorkBatchFormed, shared.WorkBatchCompleted, shared.WorkBatchAbandoned:
 		return true
 	default:
 		return false

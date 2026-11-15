@@ -123,8 +123,8 @@ func TestWithCaseBreak_Copies(t *testing.T) {
 }
 
 func TestPickPlanTask_PlacementIsNotAnnounced(t *testing.T) {
-	// A pick plan names a source bin but only RELOCATE/REPLENISH are announced
-	// (ADR 0049); BREAK_CASE is not announced either.
+	// A pick plan names a source bin; a plan with no site (or no bin) carries
+	// no placement, and BREAK_CASE is never announced (ADR 0049, ADR 0062).
 	if _, ok := claimedPick(t, "EACH", 1).Placement(); ok {
 		t.Error("a PICK task must have no placement")
 	}

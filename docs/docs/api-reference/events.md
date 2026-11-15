@@ -99,6 +99,15 @@ it too. The valid range is 1..2147483647 (32-bit); on the consumed
 `WorkReleased` a larger value is ignored (the task's line stays unknown), not
 rejected.
 
+On the consumed `WorkReleased`, `site_id` of order work (no `transfer_ref`) is
+the fulfillment site the order named: it is kept on the task as its order site
+(`tasks.order_site_id`), the rebin PACK task inherits it from the order's PICK
+tasks, and `PackageManifested` publishes it as `site_id`
+([ADR-0065](../adr/0065-the-orders-site-travels-from-work-released-to-package-manifested.md)).
+Like `line_no`, an absent or malformed value (anything but `^[A-Z0-9]+$`) is
+ignored, not rejected: the task is created without a site. On transfer work
+`site_id` stays the transfer fact's site and nothing else.
+
 ## Channels
 
 | Channel | Direction | Content |
@@ -117,14 +126,17 @@ per service via `KAFKA_BROKERS`.
 
 | `type` | `data` fields | Consumed by |
 | --- | --- | --- |
-| `com.warehouse.wes.fulfillment-execution.task.TaskAvailable` | `task_id`, `task_type`, `site_id`, `from_location`, `to_location`, `required_capabilities`, `cpt`?, `priority_band`, `available_at` ([ADR-0049](../adr/0049-task-pool-events-task-available-and-task-claimed.md)) | task-interleaving |
+| `com.warehouse.wes.fulfillment-execution.task.TaskAvailable` | `task_id`, `task_type`, `site_id`, `from_location`, `to_location`, `required_capabilities`, `cpt`?, `priority_band`, `available_at` ([ADR-0049](../adr/0049-task-pool-events-task-available-and-task-claimed.md); a PICK with a sited plan is announced too, a pick missing site or pick face is not — [ADR-0062](../adr/0062-pick-tasks-are-announced-to-the-open-task-pool.md)) | task-interleaving |
 | `com.warehouse.wes.fulfillment-execution.task.TaskClaimed` | `task_id`, `task_type`, `station_id`, `claimed_at` ([ADR-0049](../adr/0049-task-pool-events-task-available-and-task-claimed.md)) | task-interleaving |
-| `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` | `task_id`, `station_id`, `work_unit_id`, `associate_id`, `duration_seconds`, `task_type`, `order_ref`? ([ADR-0040](../adr/0040-task-completed-carries-order-ref.md)), `line_no`? ([ADR-0041](../adr/0041-task-completed-carries-line-no.md)) | wes-work-planning, labor-performance, inventory-storage (pick confirmation) |
+| `com.warehouse.wes.fulfillment-execution.task.TaskCompleted` | `task_id`, `station_id`, `work_unit_id`, `associate_id`, `duration_seconds`, `task_type`, `order_ref`? ([ADR-0040](../adr/0040-task-completed-carries-order-ref.md)), `line_no`? ([ADR-0041](../adr/0041-task-completed-carries-line-no.md)), `batch_id`?, `batch_size`? ([ADR-0063](../adr/0063-work-batches-formed-at-assignment-behind-a-mode-gate.md), omitted on every non-batched completion) | wes-work-planning, labor-performance, inventory-storage (pick confirmation) |
 | `com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed` | `task_id`, `order_ref`, `task_type`, `cpt` | order-management |
-| `com.warehouse.wes.fulfillment-execution.package.PackageManifested` | `package_id`, `order_ref` | order-management |
+| `com.warehouse.wes.fulfillment-execution.package.PackageManifested` | `package_id`, `order_ref`, `source_order_id`?, `cpt`? (the SLAM task's CPT, else the PACK task's), `weight_g`?, `site_id`? (the order's fulfillment site, omitted when the order named none) ([ADR-0061](../adr/0061-package-manifested-carries-ship-correlation.md), [ADR-0065](../adr/0065-the-orders-site-travels-from-work-released-to-package-manifested.md)) | order-management, outbound-shipping |
 | `com.warehouse.wes.fulfillment-execution.package.PackageDiverted` | `package_id` | exception-management (planned) ([ADR-0053](../adr/0053-promote-package-exception-facts-to-integration-topic.md)) |
 | `com.warehouse.wes.fulfillment-execution.package.WeightDiscrepancyDetected` | `package_id`, `expected_g`, `actual_g` | exception-management (planned) ([ADR-0053](../adr/0053-promote-package-exception-facts-to-integration-topic.md)) |
 | `com.warehouse.wes.fulfillment-execution.transfer.TransferPicked` / `TransferDispatched` / `TransferArrived` | `transfer_ref`, `demand_id`?, `work_unit_id`, `task_id`, `work_kind`, `site_id`?, `sku`?, `quantity`? (key and `subject` = the completing task id) | network-inventory-planning's transfer saga |
+| `com.warehouse.wes.fulfillment-execution.workbatch.WorkBatchFormed` | `batch_id`, `station_id`, `cpt`, `formed_at`, `version`, `members[]` (`task_id`, `stop_seq`, `compartment`) — key and `subject` = batch id; published only with `PICK_BATCH_MODE` on ([ADR-0063](../adr/0063-work-batches-formed-at-assignment-behind-a-mode-gate.md)) | labor-performance, warehouse-console (planned) |
+| `com.warehouse.wes.fulfillment-execution.workbatch.WorkBatchCompleted` | `batch_id`, `station_id`, `member_count`, `walk_seconds`, `completed_at`, `version` — the last open stop completed; `walk_seconds` is completion minus formation ([ADR-0063](../adr/0063-work-batches-formed-at-assignment-behind-a-mode-gate.md)) | labor-performance, warehouse-console (planned) |
+| `com.warehouse.wes.fulfillment-execution.workbatch.WorkBatchAbandoned` | `batch_id`, `station_id`, `member_count`, `abandoned_at`, `version` — every member left without completing; the tasks themselves stay claimable through the ordinary sweep ([ADR-0063](../adr/0063-work-batches-formed-at-assignment-behind-a-mode-gate.md)) | labor-performance, warehouse-console (planned) |
 
 ### `TaskCompleted` and the `work_unit_id` enrichment
 
@@ -142,8 +154,12 @@ ADR-0023), omitted when unavailable.
 These two events are the fulfillment-execution half of order-management
 ADR 0014 §5's promise feedback loop: order-management's `RepromiseOrder`
 consumer reacts to them to recompute — and, if it moved, re-promise — the
-affected shipment group's delivery date. Neither needs a repo-lookup
-enrichment: every field comes straight off the domain event.
+affected shipment group's delivery date. `TaskCPTMissed` needs no
+repo-lookup enrichment: every field comes straight off the domain event.
+Since [ADR-0061](../adr/0061-package-manifested-carries-ship-correlation.md)
+`PackageManifested` gains a best-effort, fail-soft one: the payload's
+optional ship-correlation fields (`source_order_id`, `cpt`) are resolved
+from the order's tasks at encode time.
 
 `TaskCPTMissed` is raised by the Clock-driven CPT-missed sweep (`POST
 /tasks/sweep-cpt-misses`) for a task still open (Pending or Claimed) at
@@ -185,6 +201,9 @@ Same `type` strings, `dataschema` `urn:warehouse:fulfillment-execution:analytics
 | `...package.LabelApplied` | `package_id` |
 | `...package.PackageDiverted` | `package_id` — also published on the integration topic ([ADR-0053](../adr/0053-promote-package-exception-facts-to-integration-topic.md)) |
 | `...package.PackageManifested` | `package_id`, `order_ref`, `task_type`, `station_id`, `on_time`, `resolved` |
+| `...workbatch.WorkBatchFormed` | `batch_id`, `station_id`, `cpt`, `formed_at`, `version`, `members[]` — byte-identical `data` to the integration occurrence ([ADR-0063](../adr/0063-work-batches-formed-at-assignment-behind-a-mode-gate.md)); not projected yet (wave 4's batch-effectiveness report reads them) |
+| `...workbatch.WorkBatchCompleted` | `batch_id`, `station_id`, `member_count`, `walk_seconds`, `completed_at`, `version` ([ADR-0063](../adr/0063-work-batches-formed-at-assignment-behind-a-mode-gate.md)) |
+| `...workbatch.WorkBatchAbandoned` | `batch_id`, `station_id`, `member_count`, `abandoned_at`, `version` ([ADR-0063](../adr/0063-work-batches-formed-at-assignment-behind-a-mode-gate.md)) |
 
 `ItemArrivedAtRebin` and `OrderConsolidated` (ADR-0016) are in-process only
 and are not published on either topic.

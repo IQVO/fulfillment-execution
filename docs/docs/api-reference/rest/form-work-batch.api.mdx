@@ -1,0 +1,71 @@
+---
+id: form-work-batch
+title: "Form this station's pick walk (ADR 0063)"
+description: "Pick batching behind the `PICK_BATCH_MODE` rollout gate. The anchor is exactly the task `POST /stations/{stationId}/task-claims` with `taskType: PICK` would return (the same claimer selects it), so batching never changes who goes first; companions are the station's interleaving-hint candidates inside the anchor's CPT band, in hint rank order, kept only when the station can do them and the cart segregation matrix allows sharing, up to the configured maximum (default 4). A batch of one is valid; nothing waits for a batch to fill. With the mode not `on` (the fleet default is `off`) the surface answers 503 batch-mode-off and `task-claims` is the only dispatch path, exactly as before."
+sidebar_label: "Form this station's pick walk (ADR 0063)"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "post api-method"
+info_path: docs/api-reference/rest/fulfillment-execution-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Form this station's pick walk (ADR 0063)"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"post"}
+  path={"/stations/{stationId}/work-batches"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+Pick batching behind the `PICK_BATCH_MODE` rollout gate. The anchor is exactly the task `POST /stations/{stationId}/task-claims` with `taskType: PICK` would return (the same claimer selects it), so batching never changes who goes first; companions are the station's interleaving-hint candidates inside the anchor's CPT band, in hint rank order, kept only when the station can do them and the cart segregation matrix allows sharing, up to the configured maximum (default 4). A batch of one is valid; nothing waits for a batch to fill. With the mode not `on` (the fleet default is `off`) the surface answers 503 batch-mode-off and `task-claims` is the only dispatch path, exactly as before.
+
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./form-work-batch.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./form-work-batch.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./form-work-batch.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

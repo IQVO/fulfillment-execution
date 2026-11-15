@@ -1,0 +1,71 @@
+---
+id: renew-work-batch-lease
+title: "Renew every open member's task lease (LeaseTogether)"
+description: "The batch's lease is the union of its open members' task leases (ADR 0063's LeaseTogether policy): one call renews every still-open stop, so later stops of a long walk cannot expire mid-walk. Completed members are not renewed; detached members are gone (the sweep already returned them to the pool)."
+sidebar_label: "Renew every open member's task lease (LeaseTogether)"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "post api-method"
+info_path: docs/api-reference/rest/fulfillment-execution-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Renew every open member's task lease (LeaseTogether)"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"post"}
+  path={"/work-batches/{batchId}/lease-renewals"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+The batch's lease is the union of its open members' task leases (ADR 0063's LeaseTogether policy): one call renews every still-open stop, so later stops of a long walk cannot expire mid-walk. Completed members are not renewed; detached members are gone (the sweep already returned them to the pool).
+
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./renew-work-batch-lease.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./renew-work-batch-lease.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./renew-work-batch-lease.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

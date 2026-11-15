@@ -74,3 +74,20 @@ checks.positive_data_acceptance.expected-statuses = ["2xx", "400", "401", "403",
 [[operations]]
 include-operation-id = "getPackagesByOrderRef"
 checks.positive_data_acceptance.expected-statuses = ["2xx", "400", "401", "403", "404", "409", "429", "5xx"]
+
+# formWorkBatch (POST /stations/{stationId}/work-batches): answers 503
+# batch-mode-off whenever this deployment runs with PICK_BATCH_MODE not
+# `on` (the fleet default is `off`; D5 / ADR 0063) — an environment
+# condition the contract runner cannot see and OpenAPI cannot express;
+# the 503 is documented on the operation. The status mapping (503
+# mode-off, 201 formed, 200 anchor-without-pick-face, 409
+# station-has-open-batch / no-claimable-task, 404 station) is tested by
+# internal/adapters/inbound/http/handlers_workbatch_test.go; the
+# formation rules (anchor == ClaimNext, band, hazard, maximum) by
+# internal/application/usecases/form_work_batch_test.go.
+# status-code / response-schema conformance and negative data rejection
+# still run unchanged.
+[[operations]]
+include-operation-id = "formWorkBatch"
+checks.not_a_server_error.expected-statuses = ["2xx", "4xx", "5xx"]
+checks.positive_data_acceptance.expected-statuses = ["2xx", "4xx", "5xx"]

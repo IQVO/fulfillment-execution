@@ -108,6 +108,9 @@ com.warehouse.wes.fulfillment-execution.package.WeightDiscrepancyDetected -> exc
 com.warehouse.wes.fulfillment-execution.transfer.TransferPicked      -> network-inventory-planning (transfer saga), destination receipt correlation
 com.warehouse.wes.fulfillment-execution.transfer.TransferDispatched  -> network-inventory-planning (transfer saga)
 com.warehouse.wes.fulfillment-execution.transfer.TransferArrived     -> network-inventory-planning (transfer saga), destination receipt/stow
+com.warehouse.wes.fulfillment-execution.workbatch.WorkBatchFormed    -> labor-performance (pick batching, ADR-0063; integration + analytics; published only with PICK_BATCH_MODE on)
+com.warehouse.wes.fulfillment-execution.workbatch.WorkBatchCompleted -> labor-performance (pick batching, ADR-0063; integration + analytics)
+com.warehouse.wes.fulfillment-execution.workbatch.WorkBatchAbandoned -> labor-performance (pick batching, ADR-0063; integration + analytics)
 ```
 
 **Published — analytics (`warehouse.fulfillment.analytics`):**
@@ -123,6 +126,9 @@ com.warehouse.wes.fulfillment-execution.package.WeightDiscrepancyDetected
 com.warehouse.wes.fulfillment-execution.package.LabelApplied
 com.warehouse.wes.fulfillment-execution.package.PackageDiverted
 com.warehouse.wes.fulfillment-execution.package.PackageManifested
+com.warehouse.wes.fulfillment-execution.workbatch.WorkBatchFormed    (ADR-0063, PICK_BATCH_MODE on)
+com.warehouse.wes.fulfillment-execution.workbatch.WorkBatchCompleted (ADR-0063)
+com.warehouse.wes.fulfillment-execution.workbatch.WorkBatchAbandoned (ADR-0063)
 ```
 
 `ItemArrivedAtRebin` and `OrderConsolidated` (ADR-0016) remain in-process
