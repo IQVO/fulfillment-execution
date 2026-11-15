@@ -68,24 +68,28 @@ func (uc *ArriveAtRebin) Execute(
 		if oc == nil {
 			oc = consolidation.New(string(orderRef), requiredLineIds)
 		}
-		wasAlreadyComplete := oc.IsComplete()
+
+		// A redelivered arrival (same order, same line) is a pure no-op
+		// at ANY stage: no save, no second ItemArrivedAtRebin, and — once
+		// the order has consolidated — no second PACK task. The first
+		// arrival already saved the line and published its event in its
+		// own committed scope, so nothing is lost by skipping. This one
+		// check replaces the earlier "already complete" short-circuit,
+		// which covered only a COMPLETE order and let a duplicate of an
+		// early line republish the event while the order was still
+		// collecting (aggregate-design-canvas C2, ADR 0016 addendum). A
+		// complete order has every required line arrived, so it is a
+		// special case of this. A line outside the required set is not
+		// "arrived", so it still reaches RecordArrival and fails 422.
+		if oc.HasArrived(lineId) {
+			return nil
+		}
 
 		if err := oc.RecordArrival(lineId); err != nil {
 			return err
 		}
 
 		now := uc.Clock.Now()
-
-		// Once consolidation has completed, every further call for this
-		// orderRef (a redelivered arrival, or an arrival for a line that
-		// somehow arrives twice) is a pure idempotent no-op with respect to
-		// PACK task creation — the PACK task was already created exactly
-		// once, on the arrival that first completed consolidation. Without
-		// this guard, IsComplete() staying true forever would re-trigger
-		// CreateTask on every subsequent call.
-		if wasAlreadyComplete {
-			return nil
-		}
 
 		// The consolidation state is saved FIRST and the arrival event
 		// published after it, inside the same scope: with a transactional

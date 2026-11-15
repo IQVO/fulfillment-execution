@@ -248,3 +248,19 @@ mutants; its overall efficacy number is held down entirely by pre-
 existing survivors in `package/segregation.go` and `package/package.go`
 predating this feature, which only the non-blocking scheduled
 `mutation` CI job (not `mutation-fast`) exercises.
+
+
+## Addendum (2026-11-15): redelivery is a no-op at every stage
+
+The "Idempotency" paragraph above and the Verification note name a
+`wasAlreadyComplete` guard. That guard only covered an order that had
+ALREADY consolidated: a redelivered arrival of a line while the order was
+still collecting re-saved the consolidation and published a second
+`ItemArrivedAtRebin` (two events for one arrival). It is superseded by a
+single check in `ArriveAtRebin.Execute`: if `OrderConsolidation.HasArrived(lineId)`
+the call returns before saving or publishing anything, whatever the stage
+(a complete order has every required line arrived, so the old case is a
+special case of it). A line outside the required set is not "arrived" and
+still fails with `ErrUnknownLine` (422). The consolidation lock
+(ADR 0034) and the per-order scope are unchanged. `RecordArrival` itself
+stays an idempotent no-op.

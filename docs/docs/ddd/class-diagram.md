@@ -106,6 +106,7 @@ classDiagram
         -requiredLines set of string
         -arrivedLines set of string
         +RecordArrival(lineId) error
+        +HasArrived(lineId) bool
         +IsComplete() bool
     }
     class CapabilitySet {

@@ -65,6 +65,33 @@ func TestRecordArrival_IdempotentOnRedelivery(t *testing.T) {
 	}
 }
 
+// HasArrived is how the use case recognises a redelivery: true only for a
+// required line that has really arrived, false for a line not yet seen and
+// for a line outside the required set (that one must still fail in
+// RecordArrival, never be swallowed as a duplicate).
+func TestHasArrived(t *testing.T) {
+	oc := consolidation.New("order-1", []string{"line-1", "line-2"})
+	if oc.HasArrived("line-1") {
+		t.Fatal("line-1 has not arrived yet")
+	}
+	if err := oc.RecordArrival("line-1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !oc.HasArrived("line-1") {
+		t.Fatal("line-1 arrived")
+	}
+	if oc.HasArrived("line-2") {
+		t.Fatal("line-2 has not arrived")
+	}
+	if oc.HasArrived("line-9") {
+		t.Fatal("a line outside the required set never counts as arrived")
+	}
+	rehydrated := consolidation.Rehydrate("order-1", []string{"line-1", "line-2"}, []string{"line-2"})
+	if !rehydrated.HasArrived("line-2") || rehydrated.HasArrived("line-1") {
+		t.Fatal("HasArrived must reflect rehydrated state")
+	}
+}
+
 func TestRequiredAndArrivedLineIds_ReflectState(t *testing.T) {
 	oc := consolidation.New("order-1", []string{"line-1", "line-2"})
 	_ = oc.RecordArrival("line-1")
