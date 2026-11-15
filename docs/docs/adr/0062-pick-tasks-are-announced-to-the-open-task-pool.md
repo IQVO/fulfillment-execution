@@ -10,7 +10,7 @@ description: "ADR 0062 — a PICK whose plan carries both the release site (Work
 
 ## Status
 
-Proposed (2026-11-06). Pick-batching wave 2b; consumes the pinned additive
+Accepted (2026-11-14; first Proposed 2026-11-06, built since: see the Addendum). Pick-batching wave 2b; consumes the pinned additive
 producer contract of wes-work-planning's pick-site change (its ADR 0048).
 
 ## Context
@@ -89,4 +89,4 @@ pinned here as consumed, independently of the producing branch:
 
 ## Addendum (2026-11-13): current state
 
-Built and on `develop` (PR #279): `Task.Placement()` returns a placement for a PICK with both a site and a pick face, and none otherwise (`internal/domain/task/placement.go:32`, `pickPlacement` at `:65`); `tasks.pick_site_id` is migration `0025_task_pick_site_id`; the `TaskAvailable` description in `apis/asyncapi.yaml` states that a sited PICK is announced. The Status line above is unchanged.
+Built and on `develop` (PR #279): `Task.Placement()` returns a placement for a PICK with both a site and a pick face, and none otherwise (`internal/domain/task/placement.go:32`, `pickPlacement` at `:65`); `tasks.pick_site_id` is migration `0025_task_pick_site_id`; the `TaskAvailable` description in `apis/asyncapi.yaml` states that a sited PICK is announced. The Status line above was flipped to Accepted on 2026-11-14.
