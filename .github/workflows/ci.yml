@@ -49,6 +49,7 @@ jobs:
       - run: python3 scripts/harness/test_hook.py
       - run: python3 scripts/harness/test_red_issue.py
       - run: python3 scripts/harness/test_repo_lint.py
+      - run: python3 scripts/harness/asyncapi_breaking.py --self-test
 
 
   # Complexity gate as its own named check: cyclomatic (gocyclo, cyclop),
@@ -420,6 +421,88 @@ jobs:
         run: spectral lint apis/openapi-reports.yaml --ruleset .spectral.yaml --fail-severity=warn
       - name: Lint AsyncAPI spec
         run: spectral lint apis/asyncapi.yaml --ruleset .spectral.asyncapi.yaml --fail-severity=warn
+
+  # Breaking-change gate for the published API contracts (producer-parity
+  # wave): on a PR that touches apis/**, the base branch's specs are checked
+  # out and compared BEFORE merge. oasdiff gates the two REST specs; the
+  # harness script gates the event spec. Additive changes pass — a breaking
+  # payload change ships as a new .v2 type with a new dataschema URN
+  # (ADR-0032). Pinning consumers, from warehouse-docs
+  # network/model/contract-edges.json (main, read-only): apis/openapi.yaml is
+  # pinned by workforce-management; apis/asyncapi.yaml's
+  # warehouse.fulfillment.events is subscribed to by exception-management,
+  # inventory-storage, labor-performance, network-inventory-planning,
+  # order-management, outbound-shipping, returns-processing,
+  # task-interleaving, warehouse-planning and wes-work-planning; and
+  # apis/openapi-reports.yaml is self-pinned (cmd/fulfillment-reports).
+  # ============================================================
+  # CLASSIFICATION: CONTRACT TESTING (spec breaking-change gate)
+  # ============================================================
+  spec-breaking:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Does this PR touch apis/**?
+        id: specs
+        run: |
+          set -euo pipefail
+          git fetch origin "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+          if git diff --name-only "origin/${{ github.base_ref }}...HEAD" -- apis/ | grep -q .; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "PR touches no apis/** file; breaking gate skipped."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Materialize the base branch's specs
+        if: steps.specs.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/base-apis
+          for f in openapi.yaml openapi-reports.yaml asyncapi.yaml; do
+            git show "origin/${{ github.base_ref }}:apis/$f" > "/tmp/base-apis/$f"
+          done
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        if: steps.specs.outputs.changed == 'true'
+        with:
+          go-version-file: go.mod
+      - name: Install oasdiff (pinned)
+        if: steps.specs.outputs.changed == 'true'
+        run: go install github.com/oasdiff/oasdiff@v1.38.0
+      - name: REST breaking gate (apis/openapi.yaml - pinned by workforce-management)
+        if: steps.specs.outputs.changed == 'true'
+        run: |
+          set -uo pipefail
+          if ! oasdiff breaking --fail-on ERR -f githubactions /tmp/base-apis/openapi.yaml apis/openapi.yaml; then
+            echo "::error::Breaking REST change in apis/openapi.yaml vs ${{ github.base_ref }}. Pinning consumer: workforce-management (FULFILLMENT_EXECUTION_BASE_URL). Ship the change additively, or coordinate a versioned transition with the consumer before merging. Consumer list source: warehouse-docs network/model/contract-edges.json (main)."
+            exit 1
+          fi
+      - name: REST breaking gate (apis/openapi-reports.yaml - self-pinned)
+        if: steps.specs.outputs.changed == 'true'
+        run: |
+          set -uo pipefail
+          if ! oasdiff breaking --fail-on ERR -f githubactions /tmp/base-apis/openapi-reports.yaml apis/openapi-reports.yaml; then
+            echo "::error::Breaking REST change in apis/openapi-reports.yaml vs ${{ github.base_ref }}. Self-pinned by this repo's cmd/fulfillment-reports deployment; ship the change additively or bump spec and binary together. Consumer list source: warehouse-docs network/model/contract-edges.json (main)."
+            exit 1
+          fi
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        if: steps.specs.outputs.changed == 'true'
+        with:
+          python-version: "3.13"
+      - name: Install PyYAML (pinned)
+        if: steps.specs.outputs.changed == 'true'
+        run: python3 -m pip install --require-hashes -r .github/requirements/chart-tests.txt
+      - name: Event breaking gate (apis/asyncapi.yaml - 10 subscribers)
+        if: steps.specs.outputs.changed == 'true'
+        run: |
+          set -uo pipefail
+          if ! python3 scripts/harness/asyncapi_breaking.py /tmp/base-apis/asyncapi.yaml apis/asyncapi.yaml; then
+            echo "::error::Breaking event-contract change in apis/asyncapi.yaml vs ${{ github.base_ref }}. Consumers subscribed to warehouse.fulfillment.events: exception-management, inventory-storage, labor-performance, network-inventory-planning, order-management, outbound-shipping, returns-processing, task-interleaving, warehouse-planning, wes-work-planning. Ship a breaking payload change as a new .v2 type with a new dataschema URN (ADR-0032). Consumer list source: warehouse-docs network/model/contract-edges.json (main)."
+            exit 1
+          fi
 
   # ============================================================
   # CLASSIFICATION: PACKAGING VALIDATION (Helm chart)
