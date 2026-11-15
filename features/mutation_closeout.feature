@@ -228,6 +228,89 @@ Feature: Rules the documentation-derived scenarios left unpinned
       | order-8        | order-8         |
 
   @bdd
+  Scenario: The manifest site is the first leg that names one, not simply the first leg
+    Given a Station "pack-01" is registered with capabilities "pack"
+    And work planning publishes a WorkReleased event "evt-pack" with:
+      | path_id      | pack-zone-a |
+      | work_unit_id | wu-m4       |
+      | ref          | order-pack  |
+      | cpt_minutes  | 60          |
+      | site_id      | DFW2        |
+    And work planning publishes a WorkReleased event "evt-slam" with:
+      | path_id      | slam-zone-a |
+      | work_unit_id | wu-m4       |
+      | ref          | order-slam  |
+      | cpt_minutes  | 90          |
+    And Station "pack-01" has claimed the next "PACK" Task
+    And Station "pack-01" sealed a Package for the claimed Task with scanned contents "sku-1"
+    And the SLAM weigh-check runs on the Package with an actual weight of 2.00 against an expected weight of 2.00
+    When the recorded events are encoded for the integration topic
+    Then the "PackageManifested" integration message has "data.site_id" equal to "DFW2"
+    And the "PackageManifested" integration message has "data.cpt" equal to "2026-01-01T13:30:00Z"
+
+  @bdd
+  Scenario: A PICK task of the same work unit never stands in for the PACK leg of the manifest
+    Given a Station "pick-01" is registered with capabilities "pick"
+    And a Station "pack-01" is registered with capabilities "pack"
+    And work planning publishes a WorkReleased event "evt-pick" with:
+      | path_id      | pick-zone-a |
+      | work_unit_id | wu-m5       |
+      | ref          | order-pick  |
+      | cpt_minutes  | 30          |
+      | site_id      | ATL1        |
+    And work planning publishes a WorkReleased event "evt-pack" with:
+      | path_id      | pack-zone-a |
+      | work_unit_id | wu-m5       |
+      | ref          | order-pack  |
+      | cpt_minutes  | 60          |
+      | site_id      | DFW2        |
+    And Station "pick-01" has claimed the next "PICK" Task
+    And Station "pack-01" has claimed the next "PACK" Task
+    And Station "pack-01" sealed a Package for the claimed Task with scanned contents "sku-1"
+    And the SLAM weigh-check runs on the Package with an actual weight of 2.00 against an expected weight of 2.00
+    When the recorded events are encoded for the integration topic
+    Then the "PackageManifested" integration message has "data.cpt" equal to "2026-01-01T13:00:00Z"
+    And the "PackageManifested" integration message has "data.site_id" equal to "DFW2"
+    And the "PackageManifested" integration message has "data.source_order_id" equal to "order-pack"
+
+  @bdd
+  Scenario: A manifest encoded with no task repository wired still ships, without any correlation
+    Given a Station "pack-01" is registered with capabilities "pack"
+    And a "PACK" Task for order "order-1" with a CPT 60 minutes from now requiring capabilities "pack"
+    And Station "pack-01" has claimed the next "PACK" Task
+    And Station "pack-01" sealed a Package for the claimed Task with scanned contents "sku-1"
+    And the SLAM weigh-check runs on the Package with an actual weight of 2.00 against an expected weight of 2.00
+    When the recorded events are encoded without a task repository
+    Then the integration topic carries 1 "PackageManifested" message
+    And the "PackageManifested" integration message has "data.order_ref" equal to "order-1"
+    And the "PackageManifested" integration message has no "data.cpt"
+    And the "PackageManifested" integration message has no "data.site_id"
+    And the "PackageManifested" integration message has no "data.source_order_id"
+
+  @bdd
+  Scenario: The site of a Rebin PACK task comes from the order's PICK tasks and from no other leg
+    Given a Station "pack-01" is registered with capabilities "pack"
+    And work planning publishes a WorkReleased event "evt-pick" with:
+      | path_id      | pick-zone-a     |
+      | work_unit_id | order-r3-line-1 |
+      | ref          | order-r3        |
+      | line_no      | 1               |
+      | cpt_minutes  | 30              |
+    And work planning publishes a WorkReleased event "evt-slam" with:
+      | path_id      | slam-zone-a |
+      | work_unit_id | wu-slam3    |
+      | ref          | order-r3    |
+      | cpt_minutes  | 45          |
+      | site_id      | DFW2        |
+    And line "line-1" of order "order-r3" has arrived at Rebin; the order needs lines "line-1"
+    And Station "pack-01" has claimed the next "PACK" Task
+    And Station "pack-01" sealed a Package for the claimed Task with scanned contents "sku-1"
+    And the SLAM weigh-check runs on the Package with an actual weight of 2.00 against an expected weight of 2.00
+    When the recorded events are encoded for the integration topic
+    Then the "PackageManifested" integration message has "data.order_ref" equal to "order-r3"
+    And the "PackageManifested" integration message has no "data.site_id"
+
+  @bdd
   Scenario: The PACK task a Rebin consolidation creates carries the order and the site of its PICK tasks
     Given a Station "pack-01" is registered with capabilities "pack"
     And work planning publishes a WorkReleased event "evt-pick" with:

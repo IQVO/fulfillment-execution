@@ -6,12 +6,15 @@ package main_test
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
 
 	"github.com/cucumber/godog"
+
+	kafkaout "github.com/claudioed/fulfillment-execution/internal/adapters/outbound/kafka"
 )
 
 var (
@@ -56,9 +59,26 @@ func (w *world) capturedLogHasNoWarn() error {
 	return nil
 }
 
+// recordedEventsAreEncodedWithoutTasks runs the integration encoder with no
+// task repository wired, the documented fail-soft case of manifestCorrelation.
+func (w *world) recordedEventsAreEncodedWithoutTasks() error {
+	newId := func() string {
+		w.rules.wireSeq++
+		return fmt.Sprintf("00000000-0000-4000-8000-%012d", w.rules.wireSeq)
+	}
+	pub := kafkaout.NewPublisherWithWriter(nil, nil, w.handlers.ClaimNext.Stations, newId)
+	encoded, err := pub.Encode(context.Background(), w.publisher.Events()...)
+	if err != nil {
+		return fmt.Errorf("encode the recorded events: %w", err)
+	}
+	w.rules.wire = encoded
+	return nil
+}
+
 // registerCloseoutSteps registers the closeout vocabulary on sc.
 func (w *world) registerCloseoutSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the WorkReleased consumer's log is captured$`, w.workReleasedLogIsCaptured)
 	sc.Step(`^the captured log has a WARN containing "([^"]*)"$`, w.capturedLogHasWarn)
 	sc.Step(`^the captured log has no WARN$`, w.capturedLogHasNoWarn)
+	sc.Step(`^the recorded events are encoded without a task repository$`, w.recordedEventsAreEncodedWithoutTasks)
 }
