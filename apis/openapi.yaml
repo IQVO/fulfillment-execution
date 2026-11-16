@@ -92,7 +92,7 @@ tags:
     description: Operational endpoints not tied to a domain aggregate.
 
 paths:
-  /tasks:
+  /tasks-canary:
     post:
       operationId: createTask
       tags: [Tasks]
