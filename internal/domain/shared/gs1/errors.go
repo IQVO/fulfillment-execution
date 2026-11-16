@@ -13,6 +13,8 @@ var (
 	ErrInvalidGTIN = errors.New("gs1: invalid GTIN")
 	// ErrInvalidSSCC: not 18 ASCII digits with a valid mod-10 check digit.
 	ErrInvalidSSCC = errors.New("gs1: invalid SSCC")
+	// ErrInvalidGLN: not 13 ASCII digits with a valid mod-10 check digit.
+	ErrInvalidGLN = errors.New("gs1: invalid GLN")
 	// ErrVariableMeasure: GTIN-14 with indicator digit 9 (variable measure trade item).
 	ErrVariableMeasure = errors.New("gs1: variable measure GTIN (indicator digit 9) is not supported")
 
@@ -21,7 +23,7 @@ var (
 	ErrInvalidScan = errors.New("gs1: invalid scan")
 	// ErrUnsupportedSymbology: a symbology identifier other than ]E0, ]I1 and ]C1.
 	ErrUnsupportedSymbology = fmt.Errorf("%w: unsupported symbology identifier", ErrInvalidScan)
-	// ErrUnknownAI: an application identifier outside 00, 01, 02, 10, 17, 37.
+	// ErrUnknownAI: an application identifier outside 00, 01, 02, 10, 11, 13, 15, 17, 21, 37, 400, 410, 413.
 	ErrUnknownAI = fmt.Errorf("%w: unknown application identifier", ErrInvalidScan)
 	// ErrDuplicateAI: the same application identifier twice in one element string.
 	ErrDuplicateAI = fmt.Errorf("%w: duplicate application identifier", ErrInvalidScan)
@@ -32,5 +34,6 @@ var (
 )
 
 func invalidGTIN(reason string) error { return fmt.Errorf("%w: %s", ErrInvalidGTIN, reason) }
+func invalidGLN(reason string) error  { return fmt.Errorf("%w: %s", ErrInvalidGLN, reason) }
 func invalidSSCC(reason string) error { return fmt.Errorf("%w: %s", ErrInvalidSSCC, reason) }
 func invalidScan(reason string) error { return fmt.Errorf("%w: %s", ErrInvalidScan, reason) }
