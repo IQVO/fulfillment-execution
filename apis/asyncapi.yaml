@@ -177,7 +177,7 @@ channels:
         $ref: '#/components/messages/InterleavingHintIssued'
 components:
   messages:
-    TaskCompleted:
+    TaskCompletedCanary:
       name: TaskCompleted
       title: TaskCompleted
       summary: A station finished a claimed task.
