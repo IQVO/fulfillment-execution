@@ -1,5 +1,6 @@
 asyncapi: 2.6.0
 info:
+  x-canary: true
   title: Fulfillment Execution Events API
   version: 2.0.0
   description: 'Kafka events produced and consumed by the **Fulfillment Execution** bounded context (WES
