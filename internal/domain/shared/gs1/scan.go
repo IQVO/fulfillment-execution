@@ -22,12 +22,14 @@ const (
 const groupSeparator = '\x1d'
 
 const (
-	maxLotLength   = 20
-	maxCountLength = 8
-	expiryLength   = 6
+	maxLotLength           = 20
+	maxCountLength         = 8
+	dateLength             = 6
+	maxSerialLength        = 20
+	maxPurchaseOrderLength = 30
 )
 
-// Date is a calendar date without a time zone (AI 17 expiry). The zero value is "no date".
+// Date is a calendar date without a time zone (AIs 11, 13, 15, 17). The zero value is "no date".
 type Date struct {
 	Year  int
 	Month time.Month
@@ -54,23 +56,72 @@ type Scan struct {
 	Count       int       // AI 37, number of ContentGTIN items; 0 when absent
 	Lot         string    // AI 10, 1 to 20 characters of the GS1 82 character set
 	Expiry      Date      // AI 17; DD=00 is read as the last day of the month
+
+	// Added with the label AIs; all keep their zero value when the AI is absent.
+	ProductionDate Date   // AI 11; DD=00 is read as the last day of the month
+	PackagingDate  Date   // AI 13; DD=00 is read as the last day of the month
+	BestBefore     Date   // AI 15; DD=00 is read as the last day of the month
+	Serial         string // AI 21, 1 to 20 characters of the GS1 82 character set
+	PurchaseOrder  string // AI 400, customer purchase order number, 1 to 30 characters of set 82
+	ShipToGLN      GLN    // AI 410, ship-to / deliver-to location
+	ShipForGLN     GLN    // AI 413, ship-for / deliver-for location
 }
 
 // ParseScan parses what a scanner delivers.
 //
 //   - ]E0 + 8/12/13 digits, ]I1 + 14 digits: one GTIN.
-//   - ]C1 + element string: AIs 00, 01, 02, 10, 17, 37. Variable-length AIs (10, 37) end at a GS
-//     character or at the end of the data; fixed-length AIs are followed directly by the next AI.
+//   - ]C1 + element string: AIs 00, 01, 02, 10, 11, 13, 15, 17, 21, 37, 400, 410, 413.
+//     Variable-length AIs (10, 21, 37, 400) end at a GS character or at the end of the data;
+//     fixed-length AIs (00, 01, 02, 11, 13, 15, 17, 410, 413) are followed directly by the next AI.
 //   - No identifier (a keyboard wedge that strips it): 8, 12, 13 or 14 digits are a GTIN,
 //     anything else is read as an element string.
 //
-// The expiry year is read as 20YY. Every error wraps ErrInvalidScan; on error the Scan is zero.
+// Dates (AIs 11, 13, 15, 17) are YYMMDD: month 01-12, day within the real month length, and
+// DD=00 means "day not specified", read as the last day of the month. ParseScan reads the
+// two-digit year as 20YY, as it always did. ParseScanAt applies the GS1 century window instead.
+// Every error wraps ErrInvalidScan; on error the Scan is zero.
 func ParseScan(raw string) (Scan, error) {
+	return parseScan(raw, legacyYear)
+}
+
+// ParseScanAt is ParseScan with the GS1 century window for the two-digit year of every date
+// AI: relative to refYear (the year the caller considers "now"; the package has no clock), a
+// YY 51 to 99 above refYear's own YY is read in the previous century, a YY 50 or more below it
+// in the next century, anything else in refYear's century. Example, refYear 2026: 00-76 mean
+// 2000-2076 and 77-99 mean 1977-1999.
+func ParseScanAt(raw string, refYear int) (Scan, error) {
+	return parseScan(raw, windowYear(refYear))
+}
+
+// yearResolver turns the YY of a date AI into a four-digit year.
+type yearResolver func(yy int) int
+
+// legacyYear reads every YY as 20YY (the behaviour of ParseScan before ParseScanAt existed).
+func legacyYear(yy int) int { return 2000 + yy }
+
+// windowYear is the GS1 rule: the century is the one that puts the year within the window
+// around refYear (51..99 above its YY: previous century; 50..99 below: next century).
+func windowYear(refYear int) yearResolver {
+	refYY := refYear % 100
+	century := refYear - refYY
+	return func(yy int) int {
+		diff := yy - refYY
+		if diff >= 51 {
+			return century - 100 + yy
+		}
+		if diff <= -50 {
+			return century + 100 + yy
+		}
+		return century + yy
+	}
+}
+
+func parseScan(raw string, year yearResolver) (Scan, error) {
 	if raw == "" {
 		return Scan{}, invalidScan("empty scan")
 	}
 	if raw[0] != ']' {
-		return parseUnprefixed(raw)
+		return parseUnprefixed(raw, year)
 	}
 	if len(raw) < 3 {
 		return Scan{}, invalidScan("truncated symbology identifier")
@@ -82,20 +133,20 @@ func ParseScan(raw string) (Scan, error) {
 	case SymbologyITF14:
 		return parseSingleGTIN(sym, body, true)
 	case SymbologyGS1128:
-		return parseElementString(sym, body)
+		return parseElementString(sym, body, year)
 	default:
 		return Scan{}, ErrUnsupportedSymbology
 	}
 }
 
-func parseUnprefixed(raw string) (Scan, error) {
+func parseUnprefixed(raw string, year yearResolver) (Scan, error) {
 	if allDigits(raw) {
 		switch len(raw) {
 		case 8, 12, 13, 14:
 			return parseSingleGTIN("", raw, false)
 		}
 	}
-	return parseElementString("", raw)
+	return parseElementString("", raw, year)
 }
 
 func parseSingleGTIN(sym Symbology, data string, fourteenOnly bool) (Scan, error) {
@@ -114,18 +165,26 @@ type aiSpec struct {
 	fixed    int // > 0: fixed number of characters
 	max      int // > 0 (and fixed == 0): variable length, 1..max characters
 	assignTo func(*Scan, string) error
+	dateAt   func(*Scan) *Date // date AIs: the field to fill (assignTo is nil)
 }
 
 var aiTable = map[string]aiSpec{
-	"00": {fixed: ssccLength, assignTo: setSSCC},
-	"01": {fixed: gtinLength, assignTo: setGTIN},
-	"02": {fixed: gtinLength, assignTo: setContentGTIN},
-	"17": {fixed: expiryLength, assignTo: setExpiry},
-	"10": {max: maxLotLength, assignTo: setLot},
-	"37": {max: maxCountLength, assignTo: setCount},
+	"00":  {fixed: ssccLength, assignTo: setSSCC},
+	"01":  {fixed: gtinLength, assignTo: setGTIN},
+	"02":  {fixed: gtinLength, assignTo: setContentGTIN},
+	"11":  {fixed: dateLength, dateAt: func(s *Scan) *Date { return &s.ProductionDate }},
+	"13":  {fixed: dateLength, dateAt: func(s *Scan) *Date { return &s.PackagingDate }},
+	"15":  {fixed: dateLength, dateAt: func(s *Scan) *Date { return &s.BestBefore }},
+	"17":  {fixed: dateLength, dateAt: func(s *Scan) *Date { return &s.Expiry }},
+	"10":  {max: maxLotLength, assignTo: setLot},
+	"21":  {max: maxSerialLength, assignTo: setSerial},
+	"37":  {max: maxCountLength, assignTo: setCount},
+	"400": {max: maxPurchaseOrderLength, assignTo: setPurchaseOrder},
+	"410": {fixed: glnLength, assignTo: setShipToGLN},
+	"413": {fixed: glnLength, assignTo: setShipForGLN},
 }
 
-func parseElementString(sym Symbology, data string) (Scan, error) {
+func parseElementString(sym Symbology, data string, year yearResolver) (Scan, error) {
 	scan := Scan{Symbology: sym}
 	seen := map[string]bool{}
 	rest := data
@@ -138,7 +197,7 @@ func parseElementString(sym Symbology, data string) (Scan, error) {
 			return Scan{}, ErrDuplicateAI
 		}
 		seen[ai] = true
-		if err := aiTable[ai].assignTo(&scan, value); err != nil {
+		if err := assignElement(&scan, aiTable[ai], value, year); err != nil {
 			return Scan{}, err
 		}
 		rest = remaining
@@ -149,14 +208,38 @@ func parseElementString(sym Symbology, data string) (Scan, error) {
 	return scan, nil
 }
 
+func assignElement(scan *Scan, spec aiSpec, value string, year yearResolver) error {
+	if spec.dateAt == nil {
+		return spec.assignTo(scan, value)
+	}
+	d, err := parseDate(value, year)
+	if err != nil {
+		return err
+	}
+	*spec.dateAt(scan) = d
+	return nil
+}
+
+// lookupAI finds the AI at the start of s: two digits first, then three (400, 410, 413).
+func lookupAI(s string) (string, aiSpec, bool) {
+	for _, n := range [...]int{2, 3} {
+		if len(s) < n {
+			break
+		}
+		if spec, ok := aiTable[s[:n]]; ok {
+			return s[:n], spec, true
+		}
+	}
+	return "", aiSpec{}, false
+}
+
 // nextElement splits the leading AI and its value off s.
 func nextElement(s string) (ai, value, remaining string, err error) {
-	ai = s[:min(2, len(s))]
-	spec, ok := aiTable[ai]
+	ai, spec, ok := lookupAI(s)
 	if !ok {
 		return "", "", "", ErrUnknownAI
 	}
-	s = s[2:]
+	s = s[len(ai):]
 	if spec.fixed > 0 {
 		if len(s) < spec.fixed {
 			return "", "", "", invalidScan("element shorter than its fixed length")
@@ -189,90 +272,3 @@ func checkCombination(s Scan) error {
 }
 
 func wrapScan(err error) error { return fmt.Errorf("%w: %w", ErrInvalidScan, err) }
-
-func setSSCC(s *Scan, v string) error {
-	x, err := ParseSSCC(v)
-	if err != nil {
-		return wrapScan(err)
-	}
-	s.SSCC = x
-	return nil
-}
-
-func setGTIN(s *Scan, v string) error {
-	x, err := ParseGTIN(v)
-	if err != nil {
-		return wrapScan(err)
-	}
-	s.GTIN = x
-	return nil
-}
-
-func setContentGTIN(s *Scan, v string) error {
-	x, err := ParseGTIN(v)
-	if err != nil {
-		return wrapScan(err)
-	}
-	s.ContentGTIN = x
-	return nil
-}
-
-func setLot(s *Scan, v string) error {
-	for i := 0; i < len(v); i++ {
-		if !inCharacterSet82(v[i]) {
-			return invalidScan("lot has a character outside the GS1 82 character set")
-		}
-	}
-	s.Lot = v
-	return nil
-}
-
-func setCount(s *Scan, v string) error {
-	if !allDigits(v) {
-		return invalidScan("count must be digits")
-	}
-	n := 0
-	for i := 0; i < len(v); i++ {
-		n = n*10 + int(v[i]-'0')
-	}
-	if n < 1 {
-		return invalidScan("count must be at least 1")
-	}
-	s.Count = n
-	return nil
-}
-
-func setExpiry(s *Scan, v string) error {
-	if !allDigits(v) {
-		return invalidScan("expiry must be YYMMDD digits")
-	}
-	yy := int(v[0]-'0')*10 + int(v[1]-'0')
-	mm := int(v[2]-'0')*10 + int(v[3]-'0')
-	dd := int(v[4]-'0')*10 + int(v[5]-'0')
-	if mm < 1 || mm > 12 {
-		return invalidScan("expiry month out of range")
-	}
-	year, month := 2000+yy, time.Month(mm)
-	last := time.Date(year, month+1, 0, 0, 0, 0, 0, time.UTC).Day()
-	if dd == 0 {
-		dd = last // GS1: day 00 means the last day of the month
-	}
-	if dd > last {
-		return invalidScan("expiry day out of range")
-	}
-	s.Expiry = Date{Year: year, Month: month, Day: dd}
-	return nil
-}
-
-// inCharacterSet82 reports whether c is in the GS1 AI-encodable character set 82 (printable
-// ASCII without space, # $ @ [ \ ] ^ ` { | } ~).
-func inCharacterSet82(c byte) bool {
-	// % & ' ( ) * + , - . / 0-9 : ; < = > ?
-	if c >= '%' && c <= '?' {
-		return true
-	}
-	if c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' {
-		return true
-	}
-	return c == '!' || c == '"' || c == '_'
-}

@@ -92,3 +92,88 @@ func TestZeroSSCCDigitAccessors(t *testing.T) {
 		t.Errorf("zero SSCC digits = (%d,%d), want (-1,-1)", s.ExtensionDigit(), s.CheckDigit())
 	}
 }
+
+func TestBuildSSCC(t *testing.T) {
+	tests := []struct {
+		name      string
+		extension int
+		prefix    string
+		serial    string
+		want      string
+	}{
+		{"seven digit prefix, serial padded", 3, "7610425", "12345", "376104250000123457"},
+		{"serial of one digit", 0, "6141411", "1", "061414110000000013"},
+		{"seven digit prefix, serial fills the room (9 digits)", 3, "7610425", "999999999", "376104259999999999"},
+		{"ten digit prefix, serial fills the room (6 digits)", 9, "0614141234", "123456", "906141412341234562"},
+		{"nine digit prefix", 5, "761042512", "1234567", "576104251212345679"},
+		{"ten digit prefix, shorter serial", 5, "7610425123", "123456", "576104251231234565"},
+		{"all zero", 0, "0000000", "0", "000000000000000000"},
+		{"serial with leading zeros keeps its width", 3, "7610425", "000012345", "376104250000123457"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, err := BuildSSCC(tc.extension, tc.prefix, tc.serial)
+			if err != nil {
+				t.Fatalf("BuildSSCC(%d, %q, %q) error = %v", tc.extension, tc.prefix, tc.serial, err)
+			}
+			if s.String() != tc.want {
+				t.Errorf("BuildSSCC = %q, want %q", s, tc.want)
+			}
+			if _, err := ParseSSCC(s.String()); err != nil {
+				t.Errorf("built SSCC does not parse back: %v", err)
+			}
+		})
+	}
+}
+
+func TestBuildSSCCRejects(t *testing.T) {
+	tests := []struct {
+		name      string
+		extension int
+		prefix    string
+		serial    string
+	}{
+		{"extension -1", -1, "7610425", "1"},
+		{"extension 10", 10, "7610425", "1"},
+		{"prefix of 6 digits", 3, "761042", "1"},
+		{"prefix of 11 digits", 3, "76104251234", "1"},
+		{"empty prefix", 3, "", "1"},
+		{"non numeric prefix", 3, "761042X", "1"},
+		{"empty serial", 3, "7610425", ""},
+		{"non numeric serial", 3, "7610425", "12A"},
+		{"serial of 10 digits after a 7 digit prefix", 3, "7610425", "1234567890"},
+		{"serial of 7 digits after a 10 digit prefix", 3, "7610425123", "1234567"},
+		{"serial with a sign", 3, "7610425", "-1"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, err := BuildSSCC(tc.extension, tc.prefix, tc.serial)
+			if !errors.Is(err, ErrInvalidSSCC) {
+				t.Fatalf("BuildSSCC(%d, %q, %q) error = %v, want ErrInvalidSSCC", tc.extension, tc.prefix, tc.serial, err)
+			}
+			if !s.IsZero() {
+				t.Errorf("non-zero SSCC returned with an error: %v", s)
+			}
+		})
+	}
+}
+
+// The boundary values themselves are accepted: extension 0 and 9.
+func TestBuildSSCCExtensionBounds(t *testing.T) {
+	for _, ext := range []int{0, 9} {
+		s, err := BuildSSCC(ext, "7610425", "1")
+		if err != nil || s.ExtensionDigit() != ext {
+			t.Errorf("BuildSSCC(%d) = %v, %v", ext, s, err)
+		}
+	}
+}
+
+func TestSSCCHumanReadable(t *testing.T) {
+	s := mustSSCC(t, "376104250021234569")
+	if got := s.HumanReadable(); got != "(00)376104250021234569" {
+		t.Errorf("HumanReadable() = %q", got)
+	}
+	if got := (SSCC{}).HumanReadable(); got != "" {
+		t.Errorf("zero SSCC HumanReadable() = %q, want empty", got)
+	}
+}

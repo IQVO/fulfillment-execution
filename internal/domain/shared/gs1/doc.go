@@ -1,6 +1,7 @@
 // Package gs1 holds the GS1 identification keys every bounded context in the fleet shares:
-// the GTIN and SSCC value objects, the mod-10 check digit, and a parser for what a barcode
-// scanner hands back (EAN/UPC, ITF-14 and GS1-128 element strings).
+// the GTIN, SSCC and GLN value objects, the mod-10 check digit, SSCC generation from its
+// parts, and a parser for what a barcode scanner hands back (EAN/UPC, ITF-14 and GS1-128
+// element strings).
 //
 // It is pure domain code: standard library only, no I/O, no clock. The identical source is
 // used by every service that needs to validate a GTIN or SSCC, so the same input is accepted
@@ -17,6 +18,12 @@
 //   - GTIN-14 indicator digit 9 means variable measure; IsVariableMeasure/RejectVariableMeasure
 //     let a caller refuse it (the fleet does not support it yet).
 //   - An SSCC is 18 digits (extension digit, 16 digits, check digit) with a valid check digit.
-//   - A scan resolves AIs 00 (SSCC), 01 (GTIN), 02 (content GTIN), 37 (count), 10 (lot) and
-//     17 (expiry). AI 01 and AI 02 never occur together, and AI 02 requires AI 00 and AI 37.
+//     BuildSSCC formats one from extension digit + company prefix (7-10 digits) + serial
+//     reference; it never allocates a serial (that is the service's job).
+//   - A GLN is 13 digits with a valid check digit.
+//   - A scan resolves AIs 00 (SSCC), 01 (GTIN), 02 (content GTIN), 37 (count), 10 (lot),
+//     11/13/15/17 (production, packaging, best-before, expiry date), 21 (serial),
+//     400 (customer purchase order), 410 and 413 (ship-to and ship-for GLN). AI 01 and AI 02
+//     never occur together, and AI 02 requires AI 00 and AI 37. Two-digit years are read as
+//     20YY by ParseScan; ParseScanAt takes the reference year of the GS1 century window.
 package gs1
