@@ -41,3 +41,11 @@ that `INVENTORY_STORAGE_BASE_URL` is no longer read: it is read again, for the c
 - The chart renders `PACK_VIEW_CONSUMER_GROUP` and `INVENTORY_STORAGE_BASE_URL`; warehouse-infra must
   set both.
 - The pick plan and case break travel on `WorkReleased` as optional fields (`pick`, `case_break`).
+
+## Amended by ADR 0066 (2026-11-19)
+
+The Decision text above is unchanged. [ADR 0066](./0066-retry-the-case-break-refusals-inventory-storage-releases.md)
+narrows "every non-5xx refusal of inventory-storage is permanent" for the case-break call: a refusal whose problem type
+inventory-storage declares RETRYABLE is released there, so it leaves the task claimed and answers 503
+`case-break-unavailable` for a retry under the same `break-case:<taskId>` key; FINAL, OUTCOME, unknown and body-less
+refusals stay 409 `case-break-rejected`.

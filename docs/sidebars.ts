@@ -186,6 +186,7 @@ const sidebars: SidebarsConfig = {
         'adr/0061-package-manifested-carries-ship-correlation',
         'adr/0062-pick-tasks-are-announced-to-the-open-task-pool',
         'adr/0065-the-orders-site-travels-from-work-released-to-package-manifested',
+        'adr/0066-retry-the-case-break-refusals-inventory-storage-releases',
       ],
     },
   ],

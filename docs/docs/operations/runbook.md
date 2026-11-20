@@ -262,6 +262,17 @@ from the resulting `StockRelocated`; a move the ledger rejects is dead-lettered
 there. If the stock was not actually moved, leave the task Claimed: the lease
 lapses and the task goes back to the REPLENISH queue.
 
+**A BREAK_CASE task will not complete (`503 case-break-unavailable`).**
+`POST /tasks/{id}/case-breaks` calls inventory-storage with the key `break-case:<taskId>`
+([ADR-0066](../adr/0066-retry-the-case-break-refusals-inventory-storage-releases.md)). The `detail` of the 503 names
+why: a connection error, a 5xx, or a refusal inventory-storage does not store because it depends on state that can
+change (`bin-not-found`, `container-not-found`, `concurrent-modification`, `container-reserved`, ...). The task stays
+Claimed; re-sending the command (the floor client does it by itself) calls inventory-storage again with the same key and
+passes once the state is right (register the bin, deliver the container). Do not mint a different key for the break: the
+key is per task by design. If it never passes the lease (5 minutes) lapses, the next attempt is `409 task-not-claimed`
+and the task goes back to the BREAK_CASE queue. A `409 case-break-rejected` is a refusal inventory-storage stores
+(for example `empty-bin-id`): it is permanent and the task must be fixed, not retried.
+
 **Find and re-send outbox rows.** Stuck rows:
 `SELECT id, topic, event_type, attempts, last_error FROM outbox_events WHERE published_at IS NULL ORDER BY id LIMIT 20;`
 The relay retries them every interval by itself, up to `OUTBOX_MAX_ATTEMPTS`.

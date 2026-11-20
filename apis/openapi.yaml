@@ -1195,7 +1195,11 @@ paths:
         break the container (`POST /containers/{lpn}/case-breaks`) into the loose
         bin, with an Idempotency-Key stable per task, and only then completes
         the task and publishes `TaskCompleted`. If inventory-storage cannot be
-        reached the task stays claimed (503); a retry does not break twice.
+        reached, or refuses the break with a problem type it does not store
+        (a bin or container it does not know yet, a concurrent writer), the
+        task stays claimed (503) and the same call, under the same
+        Idempotency-Key, can be retried: inventory-storage executes it again
+        and a retry never breaks twice (ADR 0066).
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
         - name: id
@@ -1238,7 +1242,7 @@ paths:
                     instance: /tasks/20260101T120000.000000000/case-breaks
         "409":
           description: >
-            The task has no active claim, another station owns it, it is already completed, it is not a BREAK_CASE task (`not-case-break-task`), or inventory-storage rejected the break (`case-break-rejected`). `POST /tasks/{id}/completions` on a BREAK_CASE task answers `case-break-completion-required`.
+            The task has no active claim, another station owns it, it is already completed, it is not a BREAK_CASE task (`not-case-break-task`), or inventory-storage rejected the break with a refusal it stores and replays (`case-break-rejected`). `POST /tasks/{id}/completions` on a BREAK_CASE task answers `case-break-completion-required`.
             The same `Idempotency-Key` reused with a different method, path or body is also a 409, problem type `idempotency-key-reused`.
           content:
             application/problem+json:
@@ -1268,7 +1272,7 @@ paths:
                     instance: /tasks/20260101T120000.000000000/case-breaks
         "503":
           description: >
-            inventory-storage could not be reached; the task stays claimed and the call can be retried.
+            inventory-storage could not be reached, or refused the break with a problem type it does not store (its replay class RETRYABLE, for example `bin-not-found` or `concurrent-modification`; the `detail` carries its answer). The task stays claimed and the call can be retried with the same `Idempotency-Key`.
           content:
             application/problem+json:
               schema:
