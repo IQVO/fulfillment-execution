@@ -71,6 +71,32 @@ func (f caseBreakFixture) status(t *testing.T) task.Status {
 	return tk.Status()
 }
 
+// isReleasedRefusal: retryable, named as a released refusal, and not a rejection.
+func isReleasedRefusal(err error) bool {
+	return errors.Is(err, ports.ErrCaseBreakRefusalReleased) && errors.Is(err, ports.ErrCaseBreakUnavailable) && !errors.Is(err, ports.ErrCaseBreakRejected)
+}
+
+// assertState fails unless the task has the status and the publisher the event count.
+func (f caseBreakFixture) assertState(t *testing.T, status task.Status, events int) {
+	t.Helper()
+	if st := f.status(t); st != status || len(f.published.Events()) != events {
+		t.Fatalf("status=%s events=%d, want %s and %d", st, len(f.published.Events()), status, events)
+	}
+}
+
+// assertKeys fails unless the callee was called n times, every time with the task's key.
+func (f caseBreakFixture) assertKeys(t *testing.T, n int) {
+	t.Helper()
+	if len(f.breaker.seen) != n {
+		t.Fatalf("callee called %d times, want %d", len(f.breaker.seen), n)
+	}
+	for _, r := range f.breaker.seen {
+		if r.IdempotencyKey != "break-case:tb-1" {
+			t.Fatalf("key = %q, want break-case:tb-1 on every attempt", r.IdempotencyKey)
+		}
+	}
+}
+
 func releasedRefusal() error {
 	return fmt.Errorf("%w: %w: status 404: bin-not-found", ports.ErrCaseBreakRefusalReleased, ports.ErrCaseBreakUnavailable)
 }
@@ -82,23 +108,16 @@ func TestCompleteCaseBreak_AReleasedRefusalStaysRetryableAndALaterSuccessComplet
 	f := newCaseBreakFixture(t, releasedRefusal(), nil)
 	ctx := context.Background()
 
-	err := f.uc.Execute(ctx, "tb-1", "s-1")
-	if !errors.Is(err, ports.ErrCaseBreakRefusalReleased) || !errors.Is(err, ports.ErrCaseBreakUnavailable) || errors.Is(err, ports.ErrCaseBreakRejected) {
+	if err := f.uc.Execute(ctx, "tb-1", "s-1"); !isReleasedRefusal(err) {
 		t.Fatalf("first attempt = %v, want a released refusal that is retryable and not a rejection", err)
 	}
-	if st := f.status(t); st != task.Claimed || len(f.published.Events()) != 0 {
-		t.Fatalf("after the released refusal status=%s events=%d, want Claimed and none", st, len(f.published.Events()))
-	}
+	f.assertState(t, task.Claimed, 0)
 
 	if err := f.uc.Execute(ctx, "tb-1", "s-1"); err != nil {
 		t.Fatalf("retry after the callee passes: %v", err)
 	}
-	if st := f.status(t); st != task.Completed || len(f.published.Events()) != 1 {
-		t.Fatalf("after the retry status=%s events=%d, want Completed and one TaskCompleted", st, len(f.published.Events()))
-	}
-	if len(f.breaker.seen) != 2 || f.breaker.seen[0].IdempotencyKey != "break-case:tb-1" || f.breaker.seen[1].IdempotencyKey != "break-case:tb-1" {
-		t.Fatalf("keys = %+v, want the same break-case:tb-1 on both attempts", f.breaker.seen)
-	}
+	f.assertState(t, task.Completed, 1)
+	f.assertKeys(t, 2)
 }
 
 // A FINAL or OUTCOME refusal is terminal exactly as before: a rejection, the task
@@ -111,9 +130,7 @@ func TestCompleteCaseBreak_AFinalRefusalIsARejectionNotARetry(t *testing.T) {
 	if !errors.Is(err, ports.ErrCaseBreakRejected) || errors.Is(err, ports.ErrCaseBreakUnavailable) || errors.Is(err, ports.ErrCaseBreakRefusalReleased) {
 		t.Fatalf("err = %v, want only ErrCaseBreakRejected", err)
 	}
-	if st := f.status(t); st != task.Claimed || len(f.published.Events()) != 0 {
-		t.Fatalf("status=%s events=%d, want Claimed and none", st, len(f.published.Events()))
-	}
+	f.assertState(t, task.Claimed, 0)
 }
 
 // What bounds a refusal that never passes: every attempt reuses the key while the
@@ -124,7 +141,7 @@ func TestCompleteCaseBreak_AForeverReleasedRefusalEndsWhenTheLeaseExpires(t *tes
 	ctx := context.Background()
 
 	for i := 0; i < 3; i++ {
-		if err := f.uc.Execute(ctx, "tb-1", "s-1"); !errors.Is(err, ports.ErrCaseBreakRefusalReleased) {
+		if err := f.uc.Execute(ctx, "tb-1", "s-1"); !isReleasedRefusal(err) {
 			t.Fatalf("attempt %d = %v, want the released refusal", i, err)
 		}
 	}
@@ -133,12 +150,5 @@ func TestCompleteCaseBreak_AForeverReleasedRefusalEndsWhenTheLeaseExpires(t *tes
 	if !errors.Is(err, task.ErrNotClaimed) {
 		t.Fatalf("after the lease = %v, want task.ErrNotClaimed", err)
 	}
-	if len(f.breaker.seen) != 3 {
-		t.Fatalf("callee called %d times, want 3 (none after the lease expired)", len(f.breaker.seen))
-	}
-	for _, r := range f.breaker.seen {
-		if r.IdempotencyKey != "break-case:tb-1" {
-			t.Fatalf("key = %q, want break-case:tb-1 on every attempt", r.IdempotencyKey)
-		}
-	}
+	f.assertKeys(t, 3) // none after the lease expired
 }
