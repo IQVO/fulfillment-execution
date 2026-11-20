@@ -22,8 +22,12 @@ import (
 // DefaultTimeout bounds one break request.
 const DefaultTimeout = 5 * time.Second
 
-// maxErrorBody caps how much of an error response is quoted in an error.
-const maxErrorBody = 512
+// maxErrorBody caps how much of an error response is quoted in an error;
+// maxProblemBody caps how much of it is read to find the problem type.
+const (
+	maxErrorBody   = 512
+	maxProblemBody = 4096
+)
 
 // HTTPDoer is the subset of *http.Client this adapter depends on.
 type HTTPDoer interface {
@@ -52,9 +56,13 @@ type breakRequestBody struct {
 }
 
 // BreakCase posts the break. 2xx is success (including the replay of an
-// earlier answer for the same Idempotency-Key). 400/404/409/422 are
-// permanent (ports.ErrCaseBreakRejected); transport errors, 408, 429 and 5xx
-// are transient (ports.ErrCaseBreakUnavailable); anything else is permanent.
+// earlier answer for the same Idempotency-Key). A refusal whose problem type
+// inventory-storage declares RETRYABLE (caseBreakRefusals) was not stored: it
+// is released and transient (ports.ErrCaseBreakRefusalReleased, which wraps
+// ports.ErrCaseBreakUnavailable). Transport errors, 408, 429 and 5xx are
+// transient (ports.ErrCaseBreakUnavailable); every other refusal (a FINAL or
+// OUTCOME slug, an unknown slug, a 4xx without a problem body) is permanent
+// (ports.ErrCaseBreakRejected).
 func (c *Client) BreakCase(ctx context.Context, r ports.CaseBreakRequest) error {
 	body, err := json.Marshal(breakRequestBody{LooseBin: r.LooseBin})
 	if err != nil {
@@ -77,12 +85,28 @@ func (c *Client) BreakCase(ctx context.Context, r ports.CaseBreakRequest) error 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
-	snippet, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
-	detail := fmt.Sprintf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxProblemBody))
+	detail := fmt.Sprintf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(raw[:min(len(raw), maxErrorBody)])))
 	switch {
 	case resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500:
 		return fmt.Errorf("%w: %s", ports.ErrCaseBreakUnavailable, detail)
+	case releasedRefusal(problemSlug(raw)):
+		// The callee did not store this refusal: the key is free, so the same
+		// request under the same key executes again (refusal_classes.go).
+		return fmt.Errorf("%w: %w: %s", ports.ErrCaseBreakRefusalReleased, ports.ErrCaseBreakUnavailable, detail)
 	default:
 		return fmt.Errorf("%w: %s", ports.ErrCaseBreakRejected, detail)
 	}
+}
+
+// problemSlug is the last path segment of the `type` of an RFC 7807 body, or ""
+// when the body is not a problem document (an unknown refusal is terminal).
+func problemSlug(body []byte) string {
+	var p struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(body, &p) != nil {
+		return ""
+	}
+	return p.Type[strings.LastIndex(p.Type, "/")+1:]
 }

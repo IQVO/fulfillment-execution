@@ -20,7 +20,10 @@ func CaseBreakIdempotencyKey(id shared.TaskId) string { return "break-case:" + s
 // only when that succeeds completes the task and publishes TaskCompleted. A
 // failed break leaves the task Claimed and unchanged; a retry reuses the
 // same idempotency key, so a break that succeeded but whose answer or local
-// save was lost is not repeated.
+// save was lost is not repeated. A refusal inventory-storage releases
+// (ports.ErrCaseBreakRefusalReleased, ADR 0066) is such a failure: the same
+// key executes again there, so the retry may pass; the claim's lease bounds
+// the retrying and a permanent refusal (ports.ErrCaseBreakRejected) is final.
 type CompleteCaseBreak struct {
 	Tasks      ports.TaskRepo
 	Breaker    ports.CaseBreaker

@@ -51,10 +51,11 @@ func NewBreakerClientWithTimeout(inner *Client, recorder resilience.StateRecorde
 			Interval:    resilience.DefaultInterval,
 			Timeout:     cooldown,
 			ReadyToTrip: resilience.ReadyToTrip,
-			// The caller giving up, and a business rejection (the dependency
-			// answered), are not the dependency failing.
+			// The caller giving up, and a refusal (the dependency answered,
+			// stored or released), are not the dependency failing.
 			IsExcluded: func(err error) bool {
-				return errors.Is(err, context.Canceled) || errors.Is(err, ports.ErrCaseBreakRejected)
+				return errors.Is(err, context.Canceled) || errors.Is(err, ports.ErrCaseBreakRejected) ||
+					errors.Is(err, ports.ErrCaseBreakRefusalReleased)
 			},
 			OnStateChange: resilience.RecordStateChange(DependencyName, recorder),
 		}),
@@ -62,8 +63,9 @@ func NewBreakerClientWithTimeout(inner *Client, recorder resilience.StateRecorde
 	}
 }
 
-// BreakCase retries transient failures with jittered backoff inside one
-// breaker call; a rejection is returned at once.
+// BreakCase retries transient failures, and the refusals inventory-storage
+// releases, with jittered backoff inside one breaker call (3 attempts, always
+// the same Idempotency-Key); a rejection is returned at once.
 func (c *BreakerClient) BreakCase(ctx context.Context, r ports.CaseBreakRequest) error {
 	callCtx, cancel := resilience.CallTimeout(ctx, DefaultTimeout)
 	defer cancel()

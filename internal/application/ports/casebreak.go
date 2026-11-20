@@ -6,14 +6,24 @@ import (
 )
 
 var (
-	// ErrCaseBreakRejected: inventory-storage refused the break for a reason
-	// a retry cannot fix (unknown container, container not SEALED, not at the
-	// site, reserved, bin/handling-unit mismatch). Permanent.
+	// ErrCaseBreakRejected: inventory-storage refused the break with a problem
+	// type it stores and replays (a FINAL or OUTCOME refusal), an unknown
+	// problem type, or a 4xx without a problem body. A retry cannot fix it.
+	// Permanent.
 	ErrCaseBreakRejected = errors.New("ports: inventory-storage rejected the case break")
 	// ErrCaseBreakUnavailable: inventory-storage could not be reached or
 	// answered with a server error. Transient: retrying with the same
 	// idempotency key is safe.
 	ErrCaseBreakUnavailable = errors.New("ports: inventory-storage is unavailable for the case break")
+	// ErrCaseBreakRefusalReleased: inventory-storage refused the break with a
+	// problem type it declares RETRYABLE (ADR 0053 there): nothing was
+	// committed, the Idempotency-Key is released and the same request under
+	// the SAME key executes again and may pass (a bin registered later, a
+	// concurrent writer done). It always wraps ErrCaseBreakUnavailable: the
+	// task stays claimed, the answer is a 5xx that is not stored, and a retry
+	// is safe (ADR 0066). Which refusals count is decided by the outbound
+	// adapter alone.
+	ErrCaseBreakRefusalReleased = errors.New("ports: inventory-storage refused the case break for a reason that can pass")
 )
 
 // CaseBreakRequest is one break of a sealed case into loose eaches.
