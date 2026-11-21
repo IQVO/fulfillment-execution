@@ -30,8 +30,12 @@ import (
 
 	kafkain "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/kafka"
 	kafkaout "github.com/claudioed/fulfillment-execution/internal/adapters/outbound/kafka"
+	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/packview"
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
+	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
 	"github.com/claudioed/fulfillment-execution/internal/domain/pathcatalog"
+	"github.com/claudioed/fulfillment-execution/internal/domain/shared/gs1"
+	"github.com/claudioed/fulfillment-execution/internal/domain/task"
 )
 
 // rulesState is the per-scenario state of the documentation-derived steps.
@@ -39,6 +43,11 @@ type rulesState struct {
 	wire      []kafkaout.Encoded
 	wireSeq   int
 	locations *fakeLocations
+	// packView is the local PackView double ConfirmPickScan resolves scans
+	// against (ADR-0054); breaker is the inventory-storage double behind
+	// POST /tasks/{id}/case-breaks.
+	packView *packview.MemoryStore
+	breaker  *fakeCaseBreaker
 }
 
 // fakeLocations is the facility-layout double behind RegisterStation's
@@ -68,6 +77,23 @@ func (f *flakyClassification) GetClassification(ctx context.Context, sku string)
 		return ports.ClassificationInfo{}, errors.New("classification copy unavailable")
 	}
 	return f.inner.GetClassification(ctx, sku)
+}
+
+// fakeCaseBreaker is the inventory-storage double behind CompleteCaseBreak
+// (ADR-0054): it records every break attempt — including the ones it fails,
+// because the documented guarantee is that a retry reuses the SAME
+// idempotency key, which is only observable on the failed attempt too.
+type fakeCaseBreaker struct {
+	fail     bool
+	requests []ports.CaseBreakRequest
+}
+
+func (f *fakeCaseBreaker) BreakCase(_ context.Context, req ports.CaseBreakRequest) error {
+	f.requests = append(f.requests, req)
+	if f.fail {
+		return ports.ErrCaseBreakUnavailable
+	}
+	return nil
 }
 
 // rulesCatalogue is warehouse-infra's declared process paths plus the two
@@ -484,6 +510,86 @@ func (w *world) integrationMessagesHaveDistinctIds(name string) error {
 	return nil
 }
 
+// --- pick scans and case breaks (ADR-0054, ADR-0055) --------------------------
+
+// packLevelDeclared mirrors what product-master's ProductPackLevelDeclared
+// writes into the local PackView: one GTIN, its SKU and its level.
+func (w *world) packLevelDeclared(level, gtin, sku, unitsPerPack string) error {
+	parsed, err := gs1.ParseGTIN(gtin)
+	if err != nil {
+		return fmt.Errorf("GTIN %q: %w", gtin, err)
+	}
+	units := 0
+	if unitsPerPack != "" {
+		units, err = strconv.Atoi(unitsPerPack)
+		if err != nil {
+			return fmt.Errorf("units per pack %q: %w", unitsPerPack, err)
+		}
+	}
+	var packLevel task.PackLevel
+	switch level {
+	case "EACH":
+		packLevel, units = task.PackLevelEach, 1
+	case "CASE":
+		packLevel = task.PackLevelCase
+	default:
+		return fmt.Errorf("unknown pack level %q (EACH or CASE)", level)
+	}
+	_, err = w.rules.packView.UpsertIfNewer(context.Background(), ports.PackRecord{
+		GTIN: parsed.String(), SKU: sku, Level: packLevel, UnitsPerPack: units, Version: 1,
+	})
+	return err
+}
+
+func (w *world) stationScansClaimedTaskStep(stationId, gtin, count string) error {
+	n := 1
+	if count != "" {
+		parsed, err := strconv.Atoi(count)
+		if err != nil {
+			return fmt.Errorf("scan count %q: %w", count, err)
+		}
+		n = parsed
+	}
+	return w.stationScansClaimedTask(stationId, gtin, n)
+}
+
+func (w *world) stationScansClaimedTask(stationId, gtin string, count int) error {
+	return w.do(http.MethodPost, "/tasks/"+w.claimedTaskId+"/scans", map[string]any{
+		"stationId": stationId, "gtin": gtin, "count": count,
+	})
+}
+
+func (w *world) stationBreaksTheCase(stationId string) error {
+	return w.do(http.MethodPost, "/tasks/"+w.claimedTaskId+"/case-breaks", map[string]any{
+		"stationId": stationId,
+	})
+}
+
+func (w *world) inventoryStorageIsUnreachable() error {
+	w.rules.breaker.fail = true
+	return nil
+}
+
+func (w *world) inventoryStorageIsReachableAgain() error {
+	w.rules.breaker.fail = false
+	return nil
+}
+
+// inventoryStorageReceived asserts every recorded break attempt — failed ones
+// included — targeted the LPN, the loose bin and the stable per-task
+// idempotency key (ADR-0054: a retry never breaks twice under a new key).
+func (w *world) inventoryStorageReceived(expected int, lpn, bin, key string) error {
+	if n := len(w.rules.breaker.requests); n != expected {
+		return fmt.Errorf("expected %d case break request(s), inventory-storage received %d: %+v", expected, n, w.rules.breaker.requests)
+	}
+	for i, req := range w.rules.breaker.requests {
+		if req.LPN != lpn || req.LooseBin != bin || req.IdempotencyKey != key {
+			return fmt.Errorf("case break request %d was %+v, expected LPN %q bin %q key %q", i, req, lpn, bin, key)
+		}
+	}
+	return nil
+}
+
 // registerRulesSteps registers the documentation-derived vocabulary on sc.
 func (w *world) registerRulesSteps(sc *godog.ScenarioContext) {
 	// Runs after the world's own reset hook: give the scenario its own state and
@@ -491,6 +597,22 @@ func (w *world) registerRulesSteps(sc *godog.ScenarioContext) {
 	sc.Before(func(ctx context.Context, _ *godog.Scenario) (context.Context, error) {
 		w.rules = rulesState{}
 		w.w2.workConsumer.Apply.Catalogue = rulesCatalogue()
+		// The harness leaves the pick-scan, case-break and work-request use
+		// cases unwired; wire them the way cmd/execution/wire_handlers.go
+		// does, against doubles, so the documented rules of those surfaces
+		// are exercisable (ADR-0054, ADR-0055, ADR-0058).
+		w.rules.packView = packview.NewMemoryStore()
+		w.rules.breaker = &fakeCaseBreaker{}
+		w.handlers.ConfirmPickScan = &usecases.ConfirmPickScan{
+			Tasks: w.handlers.CompleteTask.Tasks, Packs: w.rules.packView, Clock: w.clock,
+		}
+		w.handlers.CompleteCaseBreak = &usecases.CompleteCaseBreak{
+			Tasks: w.handlers.CompleteTask.Tasks, Breaker: w.rules.breaker,
+			Publisher: w.publisher, Clock: w.clock,
+		}
+		// No WORK_PLANNING_A2A_URL: the delegation surface is explicitly off
+		// (ADR-0058) — a nil Planning port answers 503, never a panic.
+		w.handlers.RequestNextWork = &usecases.RequestNextWork{}
 		return ctx, nil
 	})
 
@@ -529,4 +651,11 @@ func (w *world) registerRulesSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the "([^"]*)" integration message has no "([^"]*)"$`, w.integrationMessageHasNo)
 	sc.Step(`^the "([^"]*)" integration message is keyed by its subject$`, w.integrationMessageKeyedBySubject)
 	sc.Step(`^the "([^"]*)" integration messages have distinct CloudEvents ids$`, w.integrationMessagesHaveDistinctIds)
+
+	sc.Step(`^product-master has declared the (EACH|CASE) GTIN "([0-9]+)" of SKU "([^"]*)"(?: with (\d+) units per pack)?$`, w.packLevelDeclared)
+	sc.Step(`^Station "([^"]*)" scans "([0-9]+)"(?: x (\d+))? against the claimed Task$`, w.stationScansClaimedTaskStep)
+	sc.Step(`^Station "([^"]*)" breaks the case of the claimed Task$`, w.stationBreaksTheCase)
+	sc.Step(`^inventory-storage is unreachable for case breaks$`, w.inventoryStorageIsUnreachable)
+	sc.Step(`^inventory-storage is reachable for case breaks again$`, w.inventoryStorageIsReachableAgain)
+	sc.Step(`^inventory-storage received (\d+) case breaks? for LPN "([^"]*)" into bin "([^"]*)" under the idempotency key "([^"]*)"$`, w.inventoryStorageReceived)
 }
