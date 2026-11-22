@@ -393,11 +393,11 @@ sequenceDiagram
     alt first arrival for the order
         UC->>OC: consolidation.New orderRef, requiredLineIds
     end
-    UC->>OC: RecordArrival lineId
-    alt unknown line
+    UC->>OC: HasArrived lineId
+    alt line already arrived (redelivery, any stage)
+        UC-->>H: no-op - no Save, no Publish
+    else RecordArrival lineId rejects an unknown line
         UC-->>H: ErrUnknownLine - 422
-    else order was already complete
-        UC-->>H: no-op
     else
         UC->>OR: Save
         UC->>P: Publish ItemArrivedAtRebin - in-process only

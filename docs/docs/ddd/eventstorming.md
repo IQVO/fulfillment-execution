@@ -266,7 +266,7 @@ batch (`PICK_BATCH_MODE=on` only, [ADR-0063](../adr/0063-work-batches-formed-at-
 | `WorkReleased` | Domain event (inbound) | `com.warehouse.wes.work-planning.workunit.WorkReleased`, `internal/adapters/inbound/kafka/consumer.go` |
 | `TaskCreated`, `TaskAvailable`, `TaskClaimed`, `LeaseExpired`, `TaskCompleted`, `TaskCPTMissed`, `TransferPicked`, `TransferDispatched`, `TransferArrived`, `WorkBatchFormed`, `WorkBatchCompleted`, `WorkBatchAbandoned`, `PackageSealed`, `LabelApplied`, `PackageManifested`, `WeightDiscrepancyDetected`, `PackageDiverted`, `ItemArrivedAtRebin`, `OrderConsolidated` (19 of the 20 events in the file; the 20th, `ItemPicked`, is the hotspot below) | Domain event | `internal/domain/shared/events.go` |
 | Create a task from the path catalogue | Policy | `consumer.go` → `PathCatalogue.Lookup` → `CreateTask` ([ADR-0017](../adr/0017-process-path-catalogue-as-configuration.md)) |
-| Create the PACK task once | Policy | `arrive_at_rebin.go` (`wasAlreadyComplete`, `IsComplete`) |
+| Create the PACK task once | Policy | `arrive_at_rebin.go` (`HasArrived`, `IsComplete`) |
 | A lapsed lease is claimable again | Policy | `Task.IsAvailable`, `TaskRepo.FindClaimableByType` |
 | Re-promise on CPT miss | Policy (downstream) | `order-management`, [ADR-0025](../adr/0025-cpt-missed-sweep-and-package-manifested.md) |
 | Queue depth, Package read model, Throughput rollup | Read model | `get_queue_depth.go`; `get_package.go` ([ADR-0033](../adr/0033-package-read-model.md)); `throughput_rollup` ([ADR-0012](../adr/0012-analytical-data-product.md)) |

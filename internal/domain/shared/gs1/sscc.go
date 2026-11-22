@@ -1,6 +1,9 @@
 package gs1
 
-import "strconv"
+import (
+	"strconv"
+	"strings"
+)
 
 const ssccLength = 18
 
@@ -32,6 +35,46 @@ func NewSSCC(payload string) (SSCC, error) {
 		return SSCC{}, invalidSSCC("only ASCII digits are allowed")
 	}
 	return ParseSSCC(payload + strconv.Itoa(cd))
+}
+
+// BuildSSCC generates an SSCC from its parts: one extension digit (0-9), the GS1 company
+// prefix (7 to 10 digits) and a serial reference. The serial is zero-padded on the left so the
+// first 17 digits are filled (17 - 1 - len(prefix) digits of serial reference), then the mod-10
+// check digit is appended. A serial that is empty, non-numeric or longer than the room left
+// is refused.
+//
+// Pure formatting and validation: no state, no counter, no randomness. Allocating a serial
+// that is unique per company prefix is the calling service's job.
+//
+// (The older NewSSCC(payload) keeps its meaning: it only appends a check digit.)
+func BuildSSCC(extension int, companyPrefix, serial string) (SSCC, error) {
+	if extension < 0 || extension > 9 {
+		return SSCC{}, invalidSSCC("extension digit must be 0 to 9")
+	}
+	if len(companyPrefix) < 7 || len(companyPrefix) > 10 {
+		return SSCC{}, invalidSSCC("company prefix must be 7 to 10 digits")
+	}
+	if !allDigits(companyPrefix) {
+		return SSCC{}, invalidSSCC("company prefix: only ASCII digits are allowed")
+	}
+	if serial == "" || !allDigits(serial) {
+		return SSCC{}, invalidSSCC("serial reference must be one or more ASCII digits")
+	}
+	room := ssccLength - 2 - len(companyPrefix)
+	if len(serial) > room {
+		return SSCC{}, invalidSSCC("serial reference does not fit after the company prefix")
+	}
+	payload := strconv.Itoa(extension) + companyPrefix + strings.Repeat("0", room-len(serial)) + serial
+	return NewSSCC(payload)
+}
+
+// HumanReadable is the human-readable interpretation printed under the barcode: the AI in
+// parentheses followed by the 18 digits, "(00)376104250021234569". "" for the zero value.
+func (s SSCC) HumanReadable() string {
+	if s.v == "" {
+		return ""
+	}
+	return "(00)" + s.v
 }
 
 // String is the 18-digit form, or "" for the zero value.

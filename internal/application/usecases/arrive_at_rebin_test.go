@@ -164,6 +164,78 @@ func TestArriveAtRebin_RedeliveredArrivalDoesNotDuplicatePackTask(t *testing.T) 
 	}
 }
 
+// Idempotency while the order is still COLLECTING (aggregate-design-canvas
+// C2, ADR 0016): redelivering a line that already arrived is a pure no-op.
+// Only the completion path had a guard, so a duplicate of an early line
+// saved the consolidation again and republished ItemArrivedAtRebin
+// (2 events instead of 1). The first publish must survive, and the order
+// must still consolidate normally afterwards.
+func TestArriveAtRebin_RedeliveredArrivalWhileCollectingPublishesNothingNew(t *testing.T) {
+	uc, consolidations, tasks, publisher := newArriveAtRebinHarness()
+	ctx := context.Background()
+	cpt := shared.NewCPT(epoch.Add(time.Hour))
+	packCaps := shared.NewCapabilitySet("pack")
+	required := []string{"line-1", "line-2"}
+
+	if err := uc.Execute(ctx, "order-1", "line-1", required, cpt, packCaps, false, false); err != nil {
+		t.Fatalf("unexpected error on first delivery: %v", err)
+	}
+	if err := uc.Execute(ctx, "order-1", "line-1", required, cpt, packCaps, false, false); err != nil {
+		t.Fatalf("unexpected error on redelivered arrival: %v", err)
+	}
+
+	evs := publisher.Events()
+	if len(evs) != 1 || evs[0].EventName() != "ItemArrivedAtRebin" {
+		t.Fatalf("expected exactly the first ItemArrivedAtRebin to survive the redelivery, got %+v", evs)
+	}
+	oc, err := consolidations.FindByOrderRef(ctx, "order-1")
+	if err != nil || oc == nil {
+		t.Fatalf("consolidation lost after redelivery: %v, %v", oc, err)
+	}
+	if arrived := oc.ArrivedLineIds(); len(arrived) != 1 || arrived[0] != "line-1" {
+		t.Fatalf("expected arrived [line-1] after redelivery, got %v", arrived)
+	}
+	if packTasks, _ := tasks.FindByOrderRef(ctx, "order-1"); len(packTasks) != 0 {
+		t.Fatalf("expected no PACK task while collecting, got %d", len(packTasks))
+	}
+
+	// The redelivery did not disturb the fan-in: the last line still
+	// completes the order once, with one arrival event per line.
+	if err := uc.Execute(ctx, "order-1", "line-2", required, cpt, packCaps, false, false); err != nil {
+		t.Fatalf("unexpected error on last arrival: %v", err)
+	}
+	counts := map[string]int{}
+	for _, e := range publisher.Events() {
+		counts[e.EventName()]++
+	}
+	if counts["ItemArrivedAtRebin"] != 2 || counts["OrderConsolidated"] != 1 {
+		t.Fatalf("expected 2 ItemArrivedAtRebin + 1 OrderConsolidated, got %v", counts)
+	}
+	if packTasks, _ := tasks.FindByOrderRef(ctx, "order-1"); len(packTasks) != 1 {
+		t.Fatalf("expected exactly 1 PACK task after the last arrival, got %d", len(packTasks))
+	}
+}
+
+// A redelivery must not mask a bad line: the idempotency guard only
+// recognises lines that really arrived, so an unknown line still fails.
+func TestArriveAtRebin_RedeliveryGuardStillRejectsUnknownLine(t *testing.T) {
+	uc, _, _, publisher := newArriveAtRebinHarness()
+	ctx := context.Background()
+	cpt := shared.NewCPT(epoch.Add(time.Hour))
+	required := []string{"line-1", "line-2"}
+
+	if err := uc.Execute(ctx, "order-1", "line-1", required, cpt, shared.NewCapabilitySet("pack"), false, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	err := uc.Execute(ctx, "order-1", "line-9", required, cpt, shared.NewCapabilitySet("pack"), false, false)
+	if !errors.Is(err, consolidation.ErrUnknownLine) {
+		t.Fatalf("expected ErrUnknownLine, got %v", err)
+	}
+	if len(publisher.Events()) != 1 {
+		t.Fatalf("a rejected arrival must publish nothing, got %+v", publisher.Events())
+	}
+}
+
 func TestArriveAtRebin_PropagatesConsolidationLookupError(t *testing.T) {
 	uc, _, _, publisher := newFailingArriveAtRebinHarness(func(consolidations *errConsolidationRepo, tasks *errTaskRepo) {
 		consolidations.failFindByOrderRef = true

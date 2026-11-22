@@ -149,7 +149,10 @@ func TestParseScanRejects(t *testing.T) {
 		{"unsupported data matrix", "]d2" + "01" + "13041090004824", ErrUnsupportedSymbology},
 		{"one character cannot be an AI", "]C1" + "0", ErrUnknownAI},
 		{"unknown AI", "]C1" + "99" + "ABC", ErrUnknownAI},
-		{"unknown AI after valid", "]C1" + "01" + "13041090004824" + "21" + "SER1", ErrUnknownAI},
+		{"unknown AI after valid", "]C1" + "01" + "13041090004824" + "22" + "SER1", ErrUnknownAI},
+		{"AI 40 is not an AI (400 needs its third digit)", "]C1" + "01" + "13041090004824" + "40", ErrUnknownAI},
+		{"three digit prefix 401 is unknown", "]C1" + "01" + "13041090004824" + "401" + "PO1", ErrUnknownAI},
+		{"one digit after a valid element", "]C1" + "01" + "13041090004824" + "4", ErrUnknownAI},
 		{"leading separator", "]C1" + gsep + "01" + "13041090004824", ErrInvalidScan},
 		{"separator after fixed length AI", "]C1" + "01" + "13041090004824" + gsep + "17" + "261231", ErrInvalidScan},
 		{"AI 01 and AI 02 together", "]C1" + "01" + "13041090004824" + "02" + "03041090004827" + "37" + "48", ErrConflictingAIs},
@@ -239,6 +242,10 @@ func FuzzParseScan(f *testing.F) {
 		"]C100376104250021234569" + "02" + "13041090004824" + "37" + "20" + gsep + "10" + "L9" + gsep + "17" + "260100",
 		"]E05901234123457", "]E096385074", "]I113041090004824", "13041090004824", "96385074",
 		"]C10113041090004824" + "02" + "03041090004827", "99", "]Z0", "\x00", "]C1" + strings.Repeat("1", 64),
+		"]C1" + "01" + "13041090004824" + "15" + "261200" + "21" + "SER1" + gsep + "400" + "PO-9" + gsep + "410" + "4006381333931",
+		"]C1" + "00" + "376104250021234569" + "413" + "4012345000009" + "11" + "260101" + "13" + "260102",
+		"]C1" + "01" + "13041090004824" + "21" + strings.Repeat("S", 20), "]C1" + "01" + "13041090004824" + "400",
+		"]C1" + "01" + "13041090004824" + "4", "]C1" + "01" + "13041090004824" + "41",
 	} {
 		f.Add(seed)
 	}
@@ -292,6 +299,24 @@ func assertScanElementBounds(t *testing.T, s Scan) {
 	if len(s.Lot) > 20 {
 		t.Fatalf("lot longer than 20: %q", s.Lot)
 	}
+	assertLabelElementBounds(t, s)
+}
+
+func assertLabelElementBounds(t *testing.T, s Scan) {
+	t.Helper()
+	if len(s.Serial) > 20 || len(s.PurchaseOrder) > 30 {
+		t.Fatalf("serial or purchase order too long: %q %q", s.Serial, s.PurchaseOrder)
+	}
+	for _, g := range []GLN{s.ShipToGLN, s.ShipForGLN} {
+		if !g.IsZero() && (len(g.String()) != 13 || !ValidMod10(g.String())) {
+			t.Fatalf("invalid GLN accepted: %q", g)
+		}
+	}
+	for _, d := range []Date{s.ProductionDate, s.PackagingDate, s.BestBefore, s.Expiry} {
+		if !d.IsZero() && (d.Month < 1 || d.Month > 12 || d.Day < 1 || d.Day > 31) {
+			t.Fatalf("invalid date accepted: %+v", d)
+		}
+	}
 }
 
 func TestParseScanTruncatedSymbologyIdentifier(t *testing.T) {
@@ -318,6 +343,295 @@ func TestLotCharacterSet(t *testing.T) {
 			t.Errorf("byte %#x (%q) must be allowed in a lot: %v", c, rune(c), err)
 		case !inSet && c != 0x1d && err == nil:
 			t.Errorf("byte %#x (%q) must be refused in a lot", c, rune(c))
+		}
+	}
+}
+
+const (
+	gtinCase  = "13041090004824"
+	glnShipTo = "4006381333931"
+	glnShipFr = "4012345000009"
+)
+
+func mustGLN(t testing.TB, s string) GLN {
+	t.Helper()
+	g, err := ParseGLN(s)
+	if err != nil {
+		t.Fatalf("fixture GLN %q: %v", s, err)
+	}
+	return g
+}
+
+// dateOf returns the date field the given date AI fills.
+func dateOf(s Scan, ai string) Date {
+	switch ai {
+	case "11":
+		return s.ProductionDate
+	case "13":
+		return s.PackagingDate
+	case "15":
+		return s.BestBefore
+	}
+	return s.Expiry
+}
+
+// All four date AIs share one validation: both sides of every boundary, on every AI.
+func TestDateAIsShareOneValidation(t *testing.T) {
+	tests := []struct {
+		name   string
+		yymmdd string
+		want   Date // zero: must be refused
+	}{
+		{"month 00", "260001", Date{}},
+		{"month 01", "260101", Date{Year: 2026, Month: time.January, Day: 1}},
+		{"month 12", "261201", Date{Year: 2026, Month: time.December, Day: 1}},
+		{"month 13", "261301", Date{}},
+		{"day 00 in a 31 day month", "260100", Date{Year: 2026, Month: time.January, Day: 31}},
+		{"day 00 in a 30 day month", "260400", Date{Year: 2026, Month: time.April, Day: 30}},
+		{"day 00 in february", "260200", Date{Year: 2026, Month: time.February, Day: 28}},
+		{"day 00 in february of a leap year", "240200", Date{Year: 2024, Month: time.February, Day: 29}},
+		{"day 01", "260101", Date{Year: 2026, Month: time.January, Day: 1}},
+		{"day 28 february", "260228", Date{Year: 2026, Month: time.February, Day: 28}},
+		{"day 29 february common year", "260229", Date{}},
+		{"day 29 february 2024", "240229", Date{Year: 2024, Month: time.February, Day: 29}},
+		{"day 29 february 2000", "000229", Date{Year: 2000, Month: time.February, Day: 29}},
+		{"day 30 february leap year", "240230", Date{}},
+		{"day 30 april", "260430", Date{Year: 2026, Month: time.April, Day: 30}},
+		{"day 31 april", "260431", Date{}},
+		{"day 31 january", "260131", Date{Year: 2026, Month: time.January, Day: 31}},
+		{"day 32 january", "260132", Date{}},
+		{"year 99 reads as 2099", "991231", Date{Year: 2099, Month: time.December, Day: 31}},
+		{"non digit", "26AB31", Date{}},
+		{"five digits", "26123", Date{}},
+	}
+	for _, ai := range []string{"11", "13", "15", "17"} {
+		for _, tc := range tests {
+			t.Run(ai+" "+tc.name, func(t *testing.T) { checkDateAI(t, ai, tc.yymmdd, tc.want) })
+		}
+	}
+}
+
+func checkDateAI(t *testing.T, ai, yymmdd string, want Date) {
+	t.Helper()
+	in := "]C1" + "01" + gtinCase + ai + yymmdd
+	got, err := ParseScan(in)
+	if want.IsZero() {
+		if !errors.Is(err, ErrInvalidScan) {
+			t.Fatalf("ParseScan(%q) error = %v, want ErrInvalidScan", in, err)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("ParseScan(%q) error = %v", in, err)
+	}
+	if d := dateOf(got, ai); d != want {
+		t.Fatalf("ParseScan(%q) date = %+v, want %+v", in, d, want)
+	}
+	for _, other := range []string{"11", "13", "15", "17"} {
+		if other != ai && !dateOf(got, other).IsZero() {
+			t.Errorf("AI %s filled the date of AI %s", ai, other)
+		}
+	}
+}
+
+// ParseScanAt applies the GS1 century window; both sides of each edge, and the leap rule in
+// 1900, 2000, 2024 and 2100.
+func TestParseScanAtCenturyWindow(t *testing.T) {
+	tests := []struct {
+		name string
+		ref  int
+		yy   string
+		want int // year; 0: must be refused
+		mmdd string
+	}{
+		{"ref 2026 yy 26", 2026, "26", 2026, "0615"},
+		{"ref 2026 yy 00", 2026, "00", 2000, "0615"},
+		{"ref 2026 yy 76 is 50 ahead", 2026, "76", 2076, "0615"},
+		{"ref 2026 yy 77 is 51 ahead", 2026, "77", 1977, "0615"},
+		{"ref 2026 yy 99", 2026, "99", 1999, "0615"},
+		{"ref 2000 yy 50", 2000, "50", 2050, "0615"},
+		{"ref 2000 yy 51", 2000, "51", 1951, "0615"},
+		{"ref 2050 yy 99 is 49 ahead", 2050, "99", 2099, "0615"},
+		{"ref 2050 yy 00 is 50 behind", 2050, "00", 2100, "0615"},
+		{"ref 2051 yy 01 is 50 behind", 2051, "01", 2101, "0615"},
+		{"ref 2051 yy 02 is 49 behind", 2051, "02", 2002, "0615"},
+		{"ref 2076 yy 26 is 50 behind", 2076, "26", 2126, "0615"},
+		{"ref 2076 yy 27 is 49 behind", 2076, "27", 2027, "0615"},
+		{"ref 1999 yy 49", 1999, "49", 2049, "0615"},
+		{"ref 1999 yy 50", 1999, "50", 1950, "0615"},
+		{"1900 is not a leap year: 29 february refused", 1900, "00", 0, "0229"},
+		{"1900: 28 february", 1900, "00", 1900, "0228"},
+		{"1900: day 00 of february", 1900, "00", 1900, "0200"},
+		{"2000 is a leap year", 2000, "00", 2000, "0229"},
+		{"2024 is a leap year", 2024, "24", 2024, "0229"},
+		{"2100 is not a leap year: 29 february refused", 2100, "00", 0, "0229"},
+		{"2100: 28 february", 2100, "00", 2100, "0228"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			in := "]C1" + "01" + gtinCase + "15" + tc.yy + tc.mmdd
+			got, err := ParseScanAt(in, tc.ref)
+			if tc.want == 0 {
+				if !errors.Is(err, ErrInvalidScan) {
+					t.Fatalf("ParseScanAt(%q, %d) error = %v, want ErrInvalidScan", in, tc.ref, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseScanAt(%q, %d) error = %v", in, tc.ref, err)
+			}
+			if got.BestBefore.Year != tc.want {
+				t.Errorf("ParseScanAt(%q, %d) year = %d, want %d", in, tc.ref, got.BestBefore.Year, tc.want)
+			}
+		})
+	}
+}
+
+// ParseScan keeps reading 20YY (its behaviour before ParseScanAt existed); ParseScanAt moves
+// the same bytes to the previous century.
+func TestParseScanReadsTwentyYYParseScanAtWindows(t *testing.T) {
+	in := "]C1" + "01" + gtinCase + "17" + "770101"
+	got, err := ParseScan(in)
+	if err != nil || got.Expiry.Year != 2077 {
+		t.Fatalf("ParseScan(%q) = %+v, %v; want year 2077", in, got, err)
+	}
+	got, err = ParseScanAt(in, 2026)
+	if err != nil || got.Expiry.Year != 1977 {
+		t.Fatalf("ParseScanAt(%q, 2026) = %+v, %v; want year 1977", in, got, err)
+	}
+	if _, err := ParseScanAt("", 2026); !errors.Is(err, ErrInvalidScan) {
+		t.Errorf("ParseScanAt empty: %v", err)
+	}
+}
+
+func TestParseScanLabelAIs(t *testing.T) {
+	const sscc = "376104250021234569"
+	tests := []struct {
+		name string
+		in   string
+		want func(t *testing.T) Scan
+	}{
+		{"serial last", "]C1" + "01" + gtinCase + "21" + "SN-0001", func(t *testing.T) Scan {
+			return Scan{Symbology: SymbologyGS1128, GTIN: mustGTIN(t, gtinCase), Serial: "SN-0001"}
+		}},
+		{"serial then separator then best before", "]C1" + "01" + gtinCase + "21" + "S1" + gsep + "15" + "270630", func(t *testing.T) Scan {
+			return Scan{Symbology: SymbologyGS1128, GTIN: mustGTIN(t, gtinCase), Serial: "S1",
+				BestBefore: Date{Year: 2027, Month: time.June, Day: 30}}
+		}},
+		{"serial of one character", "]C1" + "01" + gtinCase + "21" + "7", func(t *testing.T) Scan {
+			return Scan{Symbology: SymbologyGS1128, GTIN: mustGTIN(t, gtinCase), Serial: "7"}
+		}},
+		{"serial of twenty characters", "]C1" + "01" + gtinCase + "21" + "ABCDEFGHIJ0123456789", func(t *testing.T) Scan {
+			return Scan{Symbology: SymbologyGS1128, GTIN: mustGTIN(t, gtinCase), Serial: "ABCDEFGHIJ0123456789"}
+		}},
+		{"purchase order of one character", "]C1" + "00" + sscc + "400" + "P", func(t *testing.T) Scan {
+			return Scan{Symbology: SymbologyGS1128, SSCC: mustSSCC(t, sscc), PurchaseOrder: "P"}
+		}},
+		{"purchase order of thirty characters", "]C1" + "00" + sscc + "400" + "ABCDEFGHIJ0123456789ABCDEFGHIJ", func(t *testing.T) Scan {
+			return Scan{Symbology: SymbologyGS1128, SSCC: mustSSCC(t, sscc), PurchaseOrder: "ABCDEFGHIJ0123456789ABCDEFGHIJ"}
+		}},
+		{"purchase order then ship-to", "]C1" + "00" + sscc + "400" + "PO/77" + gsep + "410" + glnShipTo, func(t *testing.T) Scan {
+			return Scan{Symbology: SymbologyGS1128, SSCC: mustSSCC(t, sscc), PurchaseOrder: "PO/77", ShipToGLN: mustGLN(t, glnShipTo)}
+		}},
+		{"ship-to then ship-for, fixed length needs no separator", "]C1" + "00" + sscc + "410" + glnShipTo + "413" + glnShipFr, func(t *testing.T) Scan {
+			return Scan{Symbology: SymbologyGS1128, SSCC: mustSSCC(t, sscc),
+				ShipToGLN: mustGLN(t, glnShipTo), ShipForGLN: mustGLN(t, glnShipFr)}
+		}},
+		{"ship-for alone with gtin", "]C1" + "01" + gtinCase + "413" + glnShipFr, func(t *testing.T) Scan {
+			return Scan{Symbology: SymbologyGS1128, GTIN: mustGTIN(t, gtinCase), ShipForGLN: mustGLN(t, glnShipFr)}
+		}},
+		{"dates 11 and 13 and 15 and 17 on one label", "]C1" + "01" + gtinCase + "11" + "260101" + "13" + "260102" + "15" + "270300" + "17" + "280229", func(t *testing.T) Scan {
+			return Scan{Symbology: SymbologyGS1128, GTIN: mustGTIN(t, gtinCase),
+				ProductionDate: Date{Year: 2026, Month: time.January, Day: 1},
+				PackagingDate:  Date{Year: 2026, Month: time.January, Day: 2},
+				BestBefore:     Date{Year: 2027, Month: time.March, Day: 31},
+				Expiry:         Date{Year: 2028, Month: time.February, Day: 29}}
+		}},
+		{"a full pallet label", "]C1" + "00" + sscc + "02" + gtinCase + "37" + "24" + gsep + "10" + "LOT9" + gsep + "15" + "270630" + "21" + "S5" + gsep + "400" + "PO1" + gsep + "410" + glnShipTo + "413" + glnShipFr, func(t *testing.T) Scan {
+			return Scan{Symbology: SymbologyGS1128, SSCC: mustSSCC(t, sscc), ContentGTIN: mustGTIN(t, gtinCase),
+				Count: 24, Lot: "LOT9", BestBefore: Date{Year: 2027, Month: time.June, Day: 30}, Serial: "S5",
+				PurchaseOrder: "PO1", ShipToGLN: mustGLN(t, glnShipTo), ShipForGLN: mustGLN(t, glnShipFr)}
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ParseScan(tc.in)
+			if err != nil {
+				t.Fatalf("ParseScan(%q) error = %v", tc.in, err)
+			}
+			if want := tc.want(t); got != want {
+				t.Fatalf("ParseScan(%q)\n got  %+v\n want %+v", tc.in, got, want)
+			}
+		})
+	}
+}
+
+func TestParseScanLabelAIRejects(t *testing.T) {
+	const sscc = "376104250021234569"
+	tests := []struct {
+		name string
+		in   string
+		want error
+	}{
+		{"serial empty", "]C1" + "01" + gtinCase + "21" + gsep + "10" + "L", ErrInvalidScan},
+		{"serial 21 characters", "]C1" + "01" + gtinCase + "21" + strings.Repeat("S", 21), ErrInvalidScan},
+		{"serial with space", "]C1" + "01" + gtinCase + "21" + "S 1", ErrInvalidScan},
+		{"serial without a key", "]C1" + "21" + "SER1", ErrMissingAI},
+		{"duplicate serial", "]C1" + "01" + gtinCase + "21" + "A" + gsep + "21" + "B", ErrDuplicateAI},
+		{"purchase order empty", "]C1" + "01" + gtinCase + "400" + gsep + "10" + "L", ErrInvalidScan},
+		{"purchase order 31 characters", "]C1" + "01" + gtinCase + "400" + strings.Repeat("P", 31), ErrInvalidScan},
+		{"purchase order with hash", "]C1" + "01" + gtinCase + "400" + "PO#1", ErrInvalidScan},
+		{"duplicate purchase order", "]C1" + "01" + gtinCase + "400" + "A" + gsep + "400" + "B", ErrDuplicateAI},
+		{"ship-to bad check digit", "]C1" + "01" + gtinCase + "410" + "4006381333932", ErrInvalidScan},
+		{"ship-for bad check digit", "]C1" + "01" + gtinCase + "413" + "4012345000008", ErrInvalidScan},
+		{"ship-to twelve digits", "]C1" + "01" + gtinCase + "410" + "400638133393", ErrInvalidScan},
+		{"ship-to with a letter", "]C1" + "01" + gtinCase + "410" + "400638133393A", ErrInvalidScan},
+		{"ship-to followed by a stray digit", "]C1" + "01" + gtinCase + "410" + glnShipTo + "5", ErrUnknownAI},
+		{"duplicate ship-to", "]C1" + "01" + gtinCase + "410" + glnShipTo + "410" + glnShipTo, ErrDuplicateAI},
+		{"separator after a fixed length GLN", "]C1" + "01" + gtinCase + "410" + glnShipTo + gsep + "413" + glnShipFr, ErrInvalidScan},
+		{"ship-to alone identifies nothing", "]C1" + "410" + glnShipTo, ErrMissingAI},
+		{"best before alone identifies nothing", "]C1" + "15" + "261231", ErrMissingAI},
+		{"AI 02 rule still holds with the new AIs", "]C1" + "02" + gtinCase + "410" + glnShipTo, ErrMissingAI},
+		{"AI 01 and AI 02 rule still holds with the new AIs", "]C1" + "00" + sscc + "01" + gtinCase + "02" + gtinCase + "37" + "1" + gsep + "410" + glnShipTo, ErrConflictingAIs},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ParseScan(tc.in)
+			if !errors.Is(err, tc.want) || !errors.Is(err, ErrInvalidScan) {
+				t.Fatalf("ParseScan(%q) error = %v, want %v", tc.in, err, tc.want)
+			}
+			if got != (Scan{}) {
+				t.Errorf("partial scan %+v returned with an error", got)
+			}
+		})
+	}
+}
+
+// The GS1 character set 82 holds for AI 21 and AI 400 as it does for AI 10.
+func TestSerialAndPurchaseOrderCharacterSet(t *testing.T) {
+	const allowed = "!\"%&'()*+,-./0123456789:;<=>?ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz"
+	for _, ai := range []string{"21", "400"} {
+		base := "]C1" + "01" + gtinCase + ai
+		for c := 0; c < 256; c++ {
+			_, err := ParseScan(base + "A" + string([]byte{byte(c)}) + "B")
+			inSet := strings.IndexByte(allowed, byte(c)) >= 0
+			switch {
+			case inSet && err != nil:
+				t.Errorf("AI %s: byte %#x (%q) must be allowed: %v", ai, c, rune(c), err)
+			case !inSet && c != 0x1d && err == nil:
+				t.Errorf("AI %s: byte %#x (%q) must be refused", ai, c, rune(c))
+			}
+		}
+	}
+}
+
+// An AI with no value at all is a malformed element, not an unknown AI.
+func TestAIWithoutValueIsNotUnknown(t *testing.T) {
+	for _, ai := range []string{"00", "02", "10", "11", "15", "17", "21", "37", "400", "410", "413"} {
+		in := "]C1" + "01" + gtinCase + ai
+		_, err := ParseScan(in)
+		if !errors.Is(err, ErrInvalidScan) || errors.Is(err, ErrUnknownAI) {
+			t.Errorf("ParseScan(%q) error = %v, want a malformed element, not ErrUnknownAI", in, err)
 		}
 	}
 }

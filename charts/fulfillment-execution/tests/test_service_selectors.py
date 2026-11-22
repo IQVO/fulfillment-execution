@@ -86,6 +86,21 @@ def main() -> int:
                 f"Service {svc_name} selects {len(hit)} Deployments {sorted(hit)}; expected exactly 1"
             )
 
+    # agents.colocate (warehouse-infra ADR 0012, capacity step 3): mcp and a2a as two containers of ONE
+    # fulfillment-execution-agents Deployment; the mcp and a2a Services both select exactly it.
+    co = render(ENABLE_EVERYTHING + ["--set", "agents.colocate=true"])
+    co_svc = {d["metadata"]["name"]: d for d in co if d.get("kind") == "Service"}
+    co_dep = {d["metadata"]["name"]: d for d in co if d.get("kind") == "Deployment"}
+    if "fulfillment-execution-agents" not in co_dep or {"fulfillment-execution-mcp", "fulfillment-execution-a2a"} & set(co_dep):
+        failures.append(f"agents.colocate: want fulfillment-execution-agents and no standalone mcp/a2a, got {sorted(co_dep)}")
+    if set(co_svc) != set(services):
+        failures.append(f"agents.colocate: the Services must not change, got {sorted(co_svc)} vs {sorted(services)}")
+    for svc_name, svc in co_svc.items():
+        hit = [d for d, dep in co_dep.items() if matches(selector_of(svc), pod_labels_of(dep))]
+        want = ["fulfillment-execution-agents"] if svc_name in ("fulfillment-execution-mcp", "fulfillment-execution-a2a") else None
+        if len(hit) != 1 or (want and hit != want):
+            failures.append(f"agents.colocate: Service {svc_name} selects {sorted(hit)}; expected {want or 'exactly 1'}")
+
     fe = services.get("fulfillment-execution-frontend")
     if fe and fe["spec"].get("type") != "ClusterIP":
         failures.append("frontend Service must be ClusterIP")
@@ -112,7 +127,8 @@ def main() -> int:
         return 1
 
     print(f"PASS: {len(services)} Services each select exactly one Deployment; "
-          "frontend is ClusterIP, unrouted, and off by default")
+          "frontend is ClusterIP, unrouted, and off by default; with agents.colocate the mcp and a2a "
+          "Services both select the one agents Deployment")
     return 0
 
 
