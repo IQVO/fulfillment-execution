@@ -218,6 +218,10 @@ is at `/.well-known/agent-card.json` and the JSON-RPC endpoint is mounted at
 both `/` and `/a2a`. Kong exposes it at `/api/a2a/fulfillment-execution`
 (rewritten to `/`) when `a2a.route.enabled=true`. Unauthenticated, like REST
 and MCP ([ADR-0022](docs/docs/adr/0022-remove-rest-mcp-auth.md)).
+With `mcp.enabled` and `a2a.enabled`, `agents.colocate=true` (default `false`; capacity step 3,
+warehouse-infra ADR 0012) runs `/app/mcp` and `/app/a2a` as the containers `mcp` (:8090) and `a2a` (:8093)
+of ONE `<release>-agents` Deployment instead of two; the Services keep their names and ports, readiness
+becomes pod-wide (`tests/test_agents_colocation.py`).
 
 Two skills, called as a `SendMessage` data part
 `{"skill": "<id>", "arguments": {...}}`:
