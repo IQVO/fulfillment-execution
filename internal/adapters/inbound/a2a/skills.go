@@ -341,7 +341,7 @@ func problemFromUseCase(err error) *problem {
 			return &problem{Type: problemTypeBase + c.slug, Title: c.title, Detail: err.Error(), Status: c.status}
 		}
 	}
-	slog.Error("a2a skill failed", "error", err)
+	slog.Error("a2a skill failed", "error", logReplacer.Replace(err.Error()))
 	return &problem{Type: problemTypeBase + "internal-error", Title: "Internal server error", Detail: "the skill failed; see server logs (trace id in the response metadata)", Status: 500}
 }
 
