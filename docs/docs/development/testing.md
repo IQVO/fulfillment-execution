@@ -71,32 +71,45 @@ container.
 
 ### BDD features
 
-21 feature files with 92 `Scenario`/`Scenario Outline` headings (6 are
+32 feature files with 206 `Scenario`/`Scenario Outline` headings (45 are
 outlines, expanded by their example tables):
 
 | Feature file | Scenarios |
 | --- | --- |
+| `claim_break_case.feature` | 4 |
 | `claim_next.feature` | 3 |
 | `claim_next_validation.feature` | 3 |
 | `complete_task.feature` | 2 |
 | `cpt_missed_sweep.feature` | 4 |
 | `cpt_sweep_boundaries.feature` | 2 |
 | `installed_capacity.feature` | 2 |
+| `integration_events_rules.feature` | 8 |
 | `lease.feature` | 2 |
+| `mutation_closeout.feature` | 22 (7 outlines) |
 | `order_ref_lookup.feature` | 3 |
 | `pack_slam.feature` | 4 |
+| `pack_slam_rules.feature` | 17 (6 outlines) |
 | `package_read_model.feature` | 6 |
+| `pick_scan_rules.feature` | 13 (1 outlines) |
 | `rebin_consolidation.feature` | 6 |
+| `rebin_rules.feature` | 4 |
+| `relocate_replenish_rules.feature` | 20 (17 outlines) |
 | `request_validation.feature` | 17 (5 outlines) |
 | `seal_package_guards.feature` | 4 |
 | `slam_required_weights.feature` | 4 |
 | `slam_tolerance.feature` | 1 |
 | `station_and_claim_selection.feature` | 3 |
 | `station_occupancy.feature` | 4 |
+| `station_rules.feature` | 3 (1 outlines) |
 | `task_creation.feature` | 2 |
 | `task_guards.feature` | 6 |
+| `task_lease_rules.feature` | 11 (4 outlines) |
 | `task_lifecycle_edges.feature` | 9 |
-| `work_released_consumer.feature` | 5 (1 outline) |
+| `task_pool_rules.feature` | 7 (1 outlines) |
+| `work_released_consumer.feature` | 5 (1 outlines) |
+| `work_released_rules.feature` | 5 (2 outlines) |
+
+
 
 The MCP E3 suite adds 17 scenarios in
 `internal/adapters/inbound/mcp/testdata/features/mcp_tools.feature`. The
