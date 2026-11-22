@@ -78,7 +78,7 @@ func readRecovering(ctx context.Context, r messageReader, policy backoff.BackOff
 		wait := policy.NextBackOff()
 		if logger != nil {
 			logger.WarnContext(ctx, "kafka read failed; retrying",
-				"topic", topic, "retry_in", wait.String(), "error", err)
+				"topic", topic, "retry_in", wait.String(), "error", sanitizeErr(err))
 		}
 		select {
 		case <-ctx.Done():

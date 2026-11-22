@@ -342,7 +342,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 				level = slog.LevelWarn
 			}
 			c.Logger.Log(ctx, level, "process-path catalogue message handling failed",
-				"topic", msg.Topic, "offset", msg.Offset, "partition", msg.Partition, "error", err)
+				"topic", msg.Topic, "offset", msg.Offset, "partition", msg.Partition, "error", sanitizeErr(err))
 		}
 		c.checkReady(msg)
 	}

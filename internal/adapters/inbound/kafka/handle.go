@@ -44,11 +44,11 @@ func handleConsumedEvent[T any](ctx context.Context, msg kafkago.Message, logger
 	switch {
 	case errors.Is(err, cloudevents.ErrNotCloudEvent):
 		logger.WarnContext(ctx, "skipping kafka message that is not a valid CloudEvent",
-			"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset, "error", err)
+			"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset, "error", sanitizeErr(err))
 		return nil
 	case errors.Is(err, invalidErr):
 		logger.WarnContext(ctx, invalidWarn,
-			"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset, "error", err)
+			"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset, "error", sanitizeErr(err))
 		return nil
 	case err != nil:
 		return err

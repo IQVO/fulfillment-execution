@@ -138,7 +138,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 				return nil
 			}
 			c.Logger.WarnContext(ctx, "kafka commit failed; the message will be redelivered and deduplicated",
-				"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset, "error", err)
+				"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset, "error", sanitizeErr(err))
 		}
 	}
 }
@@ -159,10 +159,10 @@ func (c *Consumer) settle(ctx context.Context, msg kafkago.Message) bool {
 		// 1.0 event, e.g. the retired flat envelope): never
 		// retried, never parsed any other way — dead-lettered.
 		c.Logger.WarnContext(ctx, "kafka message is not a valid CloudEvent; dead-lettering",
-			"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset, "error", err)
+			"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset, "error", sanitizeErr(err))
 	} else {
 		c.Logger.ErrorContext(ctx, "kafka message handling failed after retries",
-			"topic", msg.Topic, "attempts", maxHandlerAttempts, "error", err)
+			"topic", msg.Topic, "attempts", maxHandlerAttempts, "error", sanitizeErr(err))
 	}
 	c.SendToDeadLetter(ctx, msg, err)
 	return true
@@ -195,7 +195,7 @@ func (c *Consumer) SendToDeadLetter(ctx context.Context, msg kafkago.Message, ca
 	}
 	if err := c.DeadLetter.WriteMessages(ctx, dlqMsg); err != nil {
 		c.Logger.ErrorContext(ctx, "failed to publish message to dead-letter topic",
-			"dlq_topic", dlqMsg.Topic, "original_error", cause, "dlq_error", err)
+			"dlq_topic", dlqMsg.Topic, "original_error", sanitizeErr(cause), "dlq_error", sanitizeErr(err))
 	}
 }
 

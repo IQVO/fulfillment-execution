@@ -189,7 +189,7 @@ func (r runner) trigger(ctx context.Context, cfg config) error {
 		}
 		last = err
 		r.logger.WarnContext(ctx, "sweep: attempt failed", "url", cfg.URL, "attempt", attempt,
-			"max_attempts", cfg.MaxAttempts, "error", err)
+			"max_attempts", cfg.MaxAttempts, "error", sanitizeErr(err))
 		if attempt == cfg.MaxAttempts {
 			break
 		}
