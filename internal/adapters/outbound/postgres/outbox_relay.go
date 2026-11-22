@@ -103,7 +103,7 @@ func (r *OutboxRelay) Run(ctx context.Context) error {
 	for {
 		n, err := r.RelayOnce(ctx)
 		if err != nil && !errors.Is(err, context.Canceled) {
-			r.logger.ErrorContext(ctx, "outbox relay pass failed", "error", err)
+			r.logger.ErrorContext(ctx, "outbox relay pass failed", "error", sanitizeErr(err))
 		}
 		if n == r.batchSize && err == nil {
 			continue
@@ -253,10 +253,10 @@ func (r *OutboxRelay) failRow(ctx context.Context, tx pgx.Tx, p pendingOutboxRow
 func (r *OutboxRelay) logFailure(ctx context.Context, p pendingOutboxRow, attempts int, sendErr error) {
 	if r.maxAttempts > 0 && attempts >= r.maxAttempts {
 		r.logger.ErrorContext(ctx, "outbox relay: row reached the attempt cap and is excluded from future claims; re-arm it with attempts = 0 after fixing the cause",
-			"outbox_id", p.id, "topic", p.enc.Topic, "event_type", p.enc.EventType,
-			"key", string(p.enc.Key), "attempts", attempts, "max_attempts", r.maxAttempts, "error", sendErr)
+			"outbox_id", p.id, "topic", p.enc.Topic, "event_type", sanitizeLog(p.enc.EventType),
+			"key", sanitizeLog(string(p.enc.Key)), "attempts", attempts, "max_attempts", r.maxAttempts, "error", sanitizeErr(sendErr))
 		return
 	}
 	r.logger.WarnContext(ctx, "outbox relay: send failed, stopping this pass at the failed row",
-		"outbox_id", p.id, "topic", p.enc.Topic, "attempts", attempts, "error", sendErr)
+		"outbox_id", p.id, "topic", p.enc.Topic, "attempts", attempts, "error", sanitizeErr(sendErr))
 }

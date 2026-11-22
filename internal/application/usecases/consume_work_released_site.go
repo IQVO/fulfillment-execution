@@ -19,7 +19,7 @@ func (uc *ApplyWorkReleased) orderSite(ctx context.Context, req WorkReleasedRequ
 	site, err := task.ParseOrderSite(req.SiteId)
 	if err != nil {
 		uc.logger().WarnContext(ctx, "WorkReleased site_id is not a valid site code; order site left unknown",
-			"event_id", req.EventId, "work_unit_id", req.WorkUnitId, "site_id", req.SiteId)
+			"event_id", logSafe(req.EventId), "work_unit_id", logSafe(req.WorkUnitId), "site_id", logSafe(req.SiteId))
 		return ""
 	}
 	return site

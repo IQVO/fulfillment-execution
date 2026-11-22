@@ -64,7 +64,7 @@ func (p *Publisher) encodeTaskAvailable(ctx context.Context, ev shared.TaskAvail
 	place, ok := t.Placement()
 	if !ok {
 		slog.DebugContext(ctx, "TaskAvailable not published: the task has no determinable location or site",
-			"task_id", string(ev.TaskId), "task_type", string(t.Type()))
+			"task_id", sanitizeLog(string(ev.TaskId)), "task_type", sanitizeLog(string(t.Type())))
 		return nil, nil
 	}
 	data := TaskAvailableData{

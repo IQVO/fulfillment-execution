@@ -144,7 +144,7 @@ func (c *ProductClassifiedConsumer) Run(ctx context.Context) error {
 			// The effect is committed and deduped on the CloudEvents id,
 			// so a redelivery caused by this lost commit is harmless.
 			c.logger.WarnContext(ctx, "kafka commit failed; the message will be redelivered and deduplicated",
-				"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset, "error", err)
+				"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset, "error", sanitizeErr(err))
 		}
 	}
 }
@@ -163,7 +163,7 @@ func (c *ProductClassifiedConsumer) fetchRecovering(ctx context.Context, policy 
 			return kafkago.Message{}, false
 		}
 		wait := policy.NextBackOff()
-		c.logger.WarnContext(ctx, "kafka fetch failed; retrying", "topic", c.topic, "retry_in", wait.String(), "error", err)
+		c.logger.WarnContext(ctx, "kafka fetch failed; retrying", "topic", c.topic, "retry_in", wait.String(), "error", sanitizeErr(err))
 		select {
 		case <-ctx.Done():
 			return kafkago.Message{}, false
@@ -190,7 +190,7 @@ func (c *ProductClassifiedConsumer) handleUntilDone(ctx context.Context, msg kaf
 		}
 		wait := policy.NextBackOff()
 		c.logger.ErrorContext(ctx, "applying ProductClassified failed; retrying the same message",
-			"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset, "retry_in", wait.String(), "error", err)
+			"topic", msg.Topic, "partition", msg.Partition, "offset", msg.Offset, "retry_in", wait.String(), "error", sanitizeErr(err))
 		select {
 		case <-ctx.Done():
 			return false

@@ -32,7 +32,7 @@ func NewLogPublisher(logger *slog.Logger) *LogPublisher {
 // back to the request or consumed message that raised it.
 func (p *LogPublisher) Publish(ctx context.Context, evts ...shared.DomainEvent) error {
 	for _, e := range evts {
-		p.logger.InfoContext(ctx, "domain event published", "event_name", e.EventName(), "occurred_at", e.OccurredAt())
+		p.logger.InfoContext(ctx, "domain event published", "event_name", sanitizeLog(e.EventName()), "occurred_at", e.OccurredAt())
 	}
 	return nil
 }

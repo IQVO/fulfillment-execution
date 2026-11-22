@@ -98,7 +98,7 @@ func (uc *ApplyWorkReleased) logger() *slog.Logger {
 func (uc *ApplyWorkReleased) boundedLineNo(ctx context.Context, req WorkReleasedRequest) int {
 	if req.LineNo > task.MaxSourceLineNo && req.Transfer == nil {
 		uc.logger().WarnContext(ctx, "WorkReleased line_no above the 32-bit maximum ignored; source line left unknown",
-			"event_id", req.EventId, "work_unit_id", req.WorkUnitId, "line_no", req.LineNo, "max", task.MaxSourceLineNo)
+			"event_id", logSafe(req.EventId), "work_unit_id", logSafe(req.WorkUnitId), "line_no", req.LineNo, "max", task.MaxSourceLineNo)
 	}
 	if req.LineNo < 1 || req.LineNo > task.MaxSourceLineNo {
 		return 0
