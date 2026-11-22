@@ -38,6 +38,15 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["/app/mcp"]
+          # Endpoint-removal drain (capacity step 3 follow-up): Kong routes to pod IPs and drops a terminating
+          # pod only on its next config sync, seconds later, while cmd/mcp closes its listener at SIGTERM and an
+          # idle process exits at once; without this delay Kong keeps sending to a vanished pod IP (a 502 or a
+          # connect timeout through Kong on every roll). The kubelet-native sleep needs no shell (distroless).
+          # terminationGracePeriodSeconds must stay above this sleep + the 10 s HTTP drain.
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 10
           ports:
             - name: http
               containerPort: {{ .Values.mcp.service.targetPort }}

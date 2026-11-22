@@ -13,7 +13,11 @@ routes off, the --set pairs that turn them on (EXTRA_SETS). Renders the chart th
       -a2a Services select only it and each named targetPort resolves to exactly one containerPort, the
       same number as with the flag off; every HTTPRoute and KongPlugin is byte-identical to the flag-off
       render, and no object other than the Deployments and the two Services changes;
-  (c) flag on with a2a.enabled=false: the chart falls back to the standalone mcp Deployment.
+  (c) flag on with a2a.enabled=false: the chart falls back to the standalone mcp Deployment;
+  (d) both renders: every mcp and a2a container carries `lifecycle.preStop.sleep` of at least
+      PRESTOP_MIN_SECONDS (Kong drops a terminating pod IP only on its next config sync, and the binaries
+      close their listener at SIGTERM), and the pod's terminationGracePeriodSeconds exceeds that sleep plus
+      the binaries' HTTP drain (HTTP_DRAIN_SECONDS), so the kubelet never SIGKILLs a draining server.
 
 Run: python3 charts/fulfillment-execution/tests/test_agents_colocation.py
 Needs: helm (HELM overrides the binary), PyYAML. It never skips: a missing tool is a failure.
@@ -44,6 +48,11 @@ HELM = os.environ.get("HELM", "helm")
 COMP = "app.kubernetes.io/component"
 PRUNE_LAST = ("argocd.argoproj.io/sync-options", "PruneLast=true")
 SYNC_WAVE = "argocd.argoproj.io/sync-wave"
+# cmd/mcp and cmd/a2a: shutdownTimeout bounds the HTTP drain (10 s). Kong's target lag on a roll measured
+# >= 5 s (asrs-control 2026-11-21), so the preStop sleep must cover it.
+HTTP_DRAIN_SECONDS = 10
+PRESTOP_MIN_SECONDS = 5
+DEFAULT_GRACE_SECONDS = 30  # Kubernetes default when the pod spec leaves it unset
 
 
 def render(*sets: str) -> list[dict]:
@@ -127,6 +136,26 @@ def strip_argocd(doc: dict) -> dict:
     return d
 
 
+def drain_failures(case: str, dep: dict, comps: tuple[str, ...]) -> list[str]:
+    """preStop sleep on each agent container, and a grace period above sleep + HTTP drain."""
+    out = []
+    spec = dep["spec"]["template"]["spec"]
+    grace = int(spec.get("terminationGracePeriodSeconds", DEFAULT_GRACE_SECONDS))
+    for c in spec["containers"]:
+        if c["name"] not in comps:
+            continue
+        sleep = (((c.get("lifecycle") or {}).get("preStop") or {}).get("sleep") or {}).get("seconds")
+        if not isinstance(sleep, int) or sleep < PRESTOP_MIN_SECONDS:
+            out.append(f"({case}) {dep['metadata']['name']} container {c['name']}: lifecycle.preStop.sleep.seconds is "
+                       f"{sleep!r}, want >= {PRESTOP_MIN_SECONDS} (Kong keeps routing to a terminating pod until its "
+                       f"next sync; without the sleep every roll costs a 502/timeout)")
+            continue
+        if grace <= sleep + HTTP_DRAIN_SECONDS:
+            out.append(f"({case}) {dep['metadata']['name']}: terminationGracePeriodSeconds {grace} must exceed the "
+                       f"{c['name']} preStop sleep {sleep} + HTTP drain {HTTP_DRAIN_SECONDS}")
+    return out
+
+
 def main() -> int:
     failures: list[str] = []
     off, on, fallback = render(), render("agents.colocate=true"), render("agents.colocate=true", "a2a.enabled=false")
@@ -153,6 +182,9 @@ def main() -> int:
                 failures.append(f"(a) ConfigMap {cm} (read by {d['metadata']['name']}) syncs at wave {wave(doc)}: "
                                 f"want {SYNC_WAVE} \"-2\" or earlier, so it lands before the wave -1 pods roll")
 
+    # (d) on the standalone Deployments
+    failures += drain_failures("d", mcp[0], ("mcp",)) + drain_failures("d", a2a[0], ("a2a",))
+
     # (b) flag on
     agents = deployments(on, "agents")
     if len(agents) != 1 or not agents[0]["metadata"]["name"].endswith("-agents"):
@@ -174,6 +206,7 @@ def main() -> int:
         for c in standalone["spec"]["template"]["spec"]["containers"]:
             if renamed(c, comp) != got.get(c["name"]):
                 failures.append(f"(b) container {c['name']} differs from the flag-off {comp} container beyond the port name")
+    failures += drain_failures("d", ag, ("mcp", "a2a"))
     all_deps = [d for d in on if d["kind"] == "Deployment"]
     for comp, standalone in (("mcp", mcp[0]), ("a2a", a2a[0])):
         name = standalone["metadata"]["name"]
@@ -217,7 +250,7 @@ def main() -> int:
         print("FAIL:\n  " + "\n  ".join(failures))
         return 1
     print(f"PASS: agents.colocate ({len(spec['containers'])} containers in {ag['metadata']['name']}, "
-          f"{len(routes)} HTTPRoutes unchanged, fallback without a2a ok)")
+          f"{len(routes)} HTTPRoutes unchanged, fallback without a2a ok, preStop drain ok)")
     return 0
 
 
