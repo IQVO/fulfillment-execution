@@ -1,4 +1,4 @@
-{{- if .Values.a2a.enabled }}
+{{- if and .Values.a2a.enabled (not (include "fulfillment-execution.agentsColocated" .)) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -6,6 +6,12 @@ metadata:
   labels:
     {{- include "fulfillment-execution.labels" . | nindent 4 }}
     app.kubernetes.io/component: a2a
+  annotations:
+    # agents.colocate cutover (ADR 0012): ArgoCD prunes this Deployment only after <release>-agents serves
+    # (PruneLast); on the un-flip wave -1 recreates it Healthy before the wave-0 Services switch back.
+    # Deployment-object annotations: syncing them rolls no pod.
+    argocd.argoproj.io/sync-wave: "-1"
+    argocd.argoproj.io/sync-options: PruneLast=true
 spec:
   replicas: {{ .Values.a2a.replicaCount }}
   selector:
