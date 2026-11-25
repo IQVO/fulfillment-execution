@@ -23,10 +23,11 @@ import (
 
 // The pinned spec copies next to this consuming adapter.
 const (
-	pinnedWorkPlanningSpec     = "testdata/wes-work-planning.asyncapi.yaml"
-	pinnedProductMasterSpec    = "testdata/product-master.asyncapi.yaml"
-	pinnedTaskInterleavingSpec = "testdata/task-interleaving.asyncapi.yaml"
-	pinnedOwnAnalyticsSpec     = "testdata/fulfillment-execution.asyncapi.yaml"
+	pinnedWorkPlanningSpec        = "testdata/wes-work-planning.asyncapi.yaml"
+	pinnedProductMasterSpec       = "testdata/product-master.asyncapi.yaml"
+	pinnedTaskInterleavingSpec    = "testdata/task-interleaving.asyncapi.yaml"
+	pinnedOwnAnalyticsSpec        = "testdata/fulfillment-execution.asyncapi.yaml"
+	pinnedMaterialFlowControlSpec = "testdata/material-flow-control.asyncapi.yaml"
 )
 
 // pinnedAsyncAPI is the minimal slice of AsyncAPI 2.6 the contract tests
@@ -42,6 +43,11 @@ type pinnedAsyncAPI struct {
 type pinnedChannel struct {
 	Subscribe *pinnedOperation `yaml:"subscribe"`
 	Publish   *pinnedOperation `yaml:"publish"`
+	// AsyncAPI 3.0 shape (material-flow-control): channels keyed by
+	// logical name with the topic in address and a channel-level
+	// messages map; Subscribe/Publish stay nil for it.
+	Address  string                      `yaml:"address"`
+	Messages map[string]pinnedMessageRef `yaml:"messages"`
 }
 
 type pinnedOperation struct {
