@@ -105,6 +105,80 @@ func TestMaterialFlowControlConsumedTypesCarryTheDecodedFields(t *testing.T) {
 	}
 }
 
+// mfcEnvelopeRequired names the CloudEvents attributes the pin's
+// CloudEventEnvelope schema requires on every material-flow-control
+// event (the envelope also requires data; the event data fields are
+// pinned per type by mfcConsumedFields).
+var mfcEnvelopeRequired = []string{
+	"specversion", "id", "source", "type", "subject", "time", "datacontenttype", "dataschema",
+}
+
+// carry (Task 1 review): the CloudEvents envelope invariants — the
+// required attribute set, the source and specversion consts, every
+// example carrying id/source/subject/time, and the dataschema urn
+// family — are the E3 gap the review found; a producer dropping subject
+// or moving source must fail here, not first in Task 5's decoder.
+//
+// (Split into two helpers for gocognit; every assertion kept.)
+func TestMaterialFlowControlCloudEventsEnvelopeInvariants(t *testing.T) {
+	doc := loadPinnedAsyncAPI(t, pinnedMaterialFlowControlSpec)
+	ch := materialFlowControlEventsChannel(t, doc)
+	assertEnvelopeSchema(t, doc)
+	assertExamplesCarryEnvelope(t, doc, ch)
+}
+
+// assertEnvelopeSchema pins the CloudEventEnvelope schema's required
+// attribute set and its source/specversion consts.
+func assertEnvelopeSchema(t *testing.T, doc *pinnedAsyncAPI) {
+	t.Helper()
+	raw, ok := doc.Components.Schemas["CloudEventEnvelope"]
+	if !ok {
+		t.Fatalf("pinned spec declares no components/schemas/CloudEventEnvelope")
+	}
+	envelope, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("CloudEventEnvelope schema is not an object")
+	}
+	required := requiredList(envelope)
+	for _, attr := range mfcEnvelopeRequired {
+		if !slices.Contains(required, attr) {
+			t.Errorf("CloudEventEnvelope does not require %q", attr)
+		}
+	}
+	consts := propertyConsts(envelope)
+	if got := consts["source"]; got != "/warehouse/material-flow-control" {
+		t.Errorf("CloudEventEnvelope source const %q, want /warehouse/material-flow-control", got)
+	}
+	if got := consts["specversion"]; got != "1.0" {
+		t.Errorf("CloudEventEnvelope specversion const %q, want 1.0", got)
+	}
+}
+
+// assertExamplesCarryEnvelope pins every message example of the channel
+// to carry id/source/subject/time and a dataschema of the
+// urn:warehouse:material-flow-control:events:<Type>:v1 family.
+func assertExamplesCarryEnvelope(t *testing.T, doc *pinnedAsyncAPI, ch pinnedChannel) {
+	t.Helper()
+	for name := range ch.Messages {
+		msg := channelMessage(t, doc, ch, name)
+		if len(msg.Examples) == 0 {
+			t.Errorf("pinned spec documents %s without examples", name)
+			continue
+		}
+		wantDataschema := "urn:warehouse:material-flow-control:events:" + name + ":v1"
+		for _, ex := range msg.Examples {
+			for _, attr := range []string{"id", "source", "subject", "time"} {
+				if _, ok := ex.Payload[attr]; !ok {
+					t.Errorf("%s example carries no envelope attribute %q", name, attr)
+				}
+			}
+			if got, _ := ex.Payload["dataschema"].(string); got != wantDataschema {
+				t.Errorf("%s example dataschema %q, want %q", name, got, wantDataschema)
+			}
+		}
+	}
+}
+
 // materialFlowControlEventsChannel resolves the pin's
 // materialFlowControlEvents channel and asserts its address pins the
 // consumer's subscription (Task 5).
