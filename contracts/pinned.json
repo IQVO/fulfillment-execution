@@ -1,5 +1,5 @@
 {
-  "_doc": "Every contract copy this repo pins from a producer, and the producer branch it must equal. scripts/harness/pinned_contract_gate.py fails when a copy differs from the producer's develop. Refresh = copy the file, never edit it. The two IQVO/fulfillment-execution pins are SELF-pins: this repo's own reports REST spec (the mcp tool's intra-repo client, REPORTS_BASE_URL) and its own AsyncAPI (the analytics projector consuming this repo's own warehouse.fulfillment.analytics stream) — intentional, not a gate-script mistake.",
+  "_doc": "Every contract copy this repo pins from a producer, and the producer branch it must equal. scripts/harness/pinned_contract_gate.py fails when a copy differs from the producer's develop. Refresh = copy the file, never edit it. The two IQVO/fulfillment-execution pins are SELF-pins: this repo's own reports REST spec (the mcp tool's intra-repo client, REPORTS_BASE_URL) and its own AsyncAPI (the analytics projector consuming this repo's own warehouse.fulfillment.analytics stream) — intentional, not a gate-script mistake. The IQVO/material-flow-control pins are the WCS relationship-1 contract (plan 05b): the REST refusal catalogue the EquipmentCommandPort client classifies and the five event types this repo consumes from warehouse.material-flow-control.events.",
   "pins": [
     {
       "local": "internal/adapters/outbound/facilitylayout/testdata/facility-layout.openapi.yaml",
@@ -42,6 +42,20 @@
       "repo": "IQVO/process-path-management",
       "path": "apis/asyncapi.yaml",
       "ref": "develop"
+    },
+    {
+      "local": "internal/adapters/outbound/materialflow/testdata/material-flow-control.openapi.yaml",
+      "repo": "IQVO/material-flow-control",
+      "path": "apis/openapi.yaml",
+      "ref": "develop",
+      "pinned_commit": "12d2d81678ef6417ca393edce186de8556756a0b"
+    },
+    {
+      "local": "internal/adapters/inbound/kafka/testdata/material-flow-control.asyncapi.yaml",
+      "repo": "IQVO/material-flow-control",
+      "path": "apis/asyncapi.yaml",
+      "ref": "develop",
+      "pinned_commit": "12d2d81678ef6417ca393edce186de8556756a0b"
     },
     {
       "local": "internal/adapters/inbound/kafka/testdata/fulfillment-execution.asyncapi.yaml",

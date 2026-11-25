@@ -1,0 +1,495 @@
+asyncapi: 3.0.0
+info:
+  title: material-flow-control events
+  version: 0.1.0
+  description: >-
+    The facts of material-flow-control, the WCS material flow controller and the one door from the WES to the
+    automation: transport requests accepted or rejected, containers arriving at goods-to-person stations, transports
+    completed or failed, containers sent to clarification, and the aggregated capacity of the AMR fleet, the AS/RS
+    and the stations. CloudEvents 1.0 structured mode; every event is written to warehouse.material-flow-control.events
+    and warehouse.material-flow-control.analytics under the same id; the Kafka key is the subject; every *_at is
+    material-flow-control's own clock. No payload names a robot, leg, node, shuttle, aisle, rack position, port or
+    storage job (seam decision 3). It consumes ten facts of the two subsystem controllers (asrsControlEvents,
+    amrFleetControlEvents; WCS context map relationships 4 and 5) and commits every other type on those topics past.
+  x-classification: Supporting
+  contact:
+    name: material-flow-control maintainers
+    url: https://github.com/IQVO/material-flow-control
+    email: material-flow-control@iqvo.example.com
+  license:
+    name: UNLICENSED
+  tags:
+    - name: material-flow-control
+      description: The material-flow-control bounded context (WCS tier, Supporting).
+    - name: transportrequest
+      description: Facts of the TransportRequest record (a refusal at once).
+    - name: transportorder
+      description: Facts raised by the TransportOrder aggregate.
+    - name: containertrack
+      description: Facts raised by the ContainerTrack aggregate.
+    - name: subsystemcapacity
+      description: Aggregated capacity of the AMR fleet, the AS/RS and the stations.
+servers:
+  cluster:
+    host: kafka.warehouse-systems.svc.cluster.local:9092
+    protocol: kafka
+channels:
+  materialFlowControlEvents:
+    address: warehouse.material-flow-control.events
+    description: The integration stream (fulfillment-execution, wes-work-planning, exception-management consume it).
+    messages:
+      TransportRejected: {$ref: '#/components/messages/TransportRejected'}
+      TransportAccepted: {$ref: '#/components/messages/TransportAccepted'}
+      ContainerArrivedAtStation: {$ref: '#/components/messages/ContainerArrivedAtStation'}
+      TransportCompleted: {$ref: '#/components/messages/TransportCompleted'}
+      TransportFailed: {$ref: '#/components/messages/TransportFailed'}
+      ContainerSentToClarification: {$ref: '#/components/messages/ContainerSentToClarification'}
+      SubsystemCapacityChanged: {$ref: '#/components/messages/SubsystemCapacityChanged'}
+  materialFlowControlAnalytics:
+    address: warehouse.material-flow-control.analytics
+    description: The analytics twin of every event (same id; dataschema urn:warehouse:material-flow-control:analytics:<EventName>:v1).
+    messages:
+      TransportRejected: {$ref: '#/components/messages/TransportRejected'}
+      TransportAccepted: {$ref: '#/components/messages/TransportAccepted'}
+      ContainerArrivedAtStation: {$ref: '#/components/messages/ContainerArrivedAtStation'}
+      TransportCompleted: {$ref: '#/components/messages/TransportCompleted'}
+      TransportFailed: {$ref: '#/components/messages/TransportFailed'}
+      ContainerSentToClarification: {$ref: '#/components/messages/ContainerSentToClarification'}
+      SubsystemCapacityChanged: {$ref: '#/components/messages/SubsystemCapacityChanged'}
+  asrsControlEvents:
+    address: warehouse.asrs-control.events
+    description: asrs-control's integration topic (WCS context map relationship 5), consumed by group MFC_ASRS_CONSUMER_GROUP; every other type on it is committed past.
+    messages:
+      ConsumedContainerStored: {$ref: '#/components/messages/ConsumedContainerStored'}
+      ConsumedContainerPresentedAtPort: {$ref: '#/components/messages/ConsumedContainerPresentedAtPort'}
+      ConsumedStorageJobFailed: {$ref: '#/components/messages/ConsumedStorageJobFailed'}
+      ConsumedEquipmentStateChanged: {$ref: '#/components/messages/ConsumedEquipmentStateChanged'}
+      ConsumedAsrsCapacityChanged: {$ref: '#/components/messages/ConsumedAsrsCapacityChanged'}
+  amrFleetControlEvents:
+    address: warehouse.amr-fleet-control.events
+    description: amr-fleet-control's integration topic (WCS context map relationship 4), consumed by group MFC_AMR_CONSUMER_GROUP; RobotStateChanged, DeadlockDetected and every other type on it are committed past.
+    messages:
+      ConsumedLegAssigned: {$ref: '#/components/messages/ConsumedLegAssigned'}
+      ConsumedContainerPickedUp: {$ref: '#/components/messages/ConsumedContainerPickedUp'}
+      ConsumedLegCompleted: {$ref: '#/components/messages/ConsumedLegCompleted'}
+      ConsumedLegFailed: {$ref: '#/components/messages/ConsumedLegFailed'}
+      ConsumedFleetCapacityChanged: {$ref: '#/components/messages/ConsumedFleetCapacityChanged'}
+operations:
+  publishTransportRejected: {action: send, description: 'A transport request was refused at once (UNKNOWN_CONTAINER, CONTAINER_BUSY, DESTINATION_UNREACHABLE, SUBSYSTEM_UNAVAILABLE); written with the stored 422 answer.', channel: {$ref: '#/channels/materialFlowControlEvents'}, messages: [{$ref: '#/channels/materialFlowControlEvents/messages/TransportRejected'}]}
+  publishTransportAccepted: {action: send, description: 'A transport request was accepted and its transport order created; the first leg is requested after commit.', channel: {$ref: '#/channels/materialFlowControlEvents'}, messages: [{$ref: '#/channels/materialFlowControlEvents/messages/TransportAccepted'}]}
+  publishContainerArrivedAtStation: {action: send, description: 'A container bound for a goods-to-person station was admitted under the station buffer limit.', channel: {$ref: '#/channels/materialFlowControlEvents'}, messages: [{$ref: '#/channels/materialFlowControlEvents/messages/ContainerArrivedAtStation'}]}
+  publishTransportCompleted: {action: send, description: 'A transport order reached its destination.', channel: {$ref: '#/channels/materialFlowControlEvents'}, messages: [{$ref: '#/channels/materialFlowControlEvents/messages/TransportCompleted'}]}
+  publishTransportFailed: {action: send, description: 'A transport order ended without reaching its destination, with a reason code.', channel: {$ref: '#/channels/materialFlowControlEvents'}, messages: [{$ref: '#/channels/materialFlowControlEvents/messages/TransportFailed'}]}
+  publishContainerSentToClarification: {action: send, description: 'A container was held at clarification (no read, mismatch, not at source or port, storage map mismatch, on a failed robot).', channel: {$ref: '#/channels/materialFlowControlEvents'}, messages: [{$ref: '#/channels/materialFlowControlEvents/messages/ContainerSentToClarification'}]}
+  publishSubsystemCapacityChanged: {action: send, description: 'A subsystem or station capacity snapshot changed (published on change, never periodically).', channel: {$ref: '#/channels/materialFlowControlEvents'}, messages: [{$ref: '#/channels/materialFlowControlEvents/messages/SubsystemCapacityChanged'}]}
+  receiveAsrsControlEvents: {action: receive, description: 'The five asrs-control facts that confirm or fail an AS/RS leg and feed the routing and capacity views; inbox claim and effect in one unit of work, bounded retry then warehouse.asrs-control.events.dlq.', channel: {$ref: '#/channels/asrsControlEvents'}, messages: [{$ref: '#/channels/asrsControlEvents/messages/ConsumedContainerStored'}, {$ref: '#/channels/asrsControlEvents/messages/ConsumedContainerPresentedAtPort'}, {$ref: '#/channels/asrsControlEvents/messages/ConsumedStorageJobFailed'}, {$ref: '#/channels/asrsControlEvents/messages/ConsumedEquipmentStateChanged'}, {$ref: '#/channels/asrsControlEvents/messages/ConsumedAsrsCapacityChanged'}]}
+  receiveAmrFleetControlEvents: {action: receive, description: 'The five amr-fleet-control facts that confirm or fail an AMR leg and feed the capacity view; inbox claim and effect in one unit of work, bounded retry then warehouse.amr-fleet-control.events.dlq.', channel: {$ref: '#/channels/amrFleetControlEvents'}, messages: [{$ref: '#/channels/amrFleetControlEvents/messages/ConsumedLegAssigned'}, {$ref: '#/channels/amrFleetControlEvents/messages/ConsumedContainerPickedUp'}, {$ref: '#/channels/amrFleetControlEvents/messages/ConsumedLegCompleted'}, {$ref: '#/channels/amrFleetControlEvents/messages/ConsumedLegFailed'}, {$ref: '#/channels/amrFleetControlEvents/messages/ConsumedFleetCapacityChanged'}]}
+components:
+  messages:
+    TransportRejected:
+      title: Transport rejected
+      summary: A transport request was refused at once; no transport order exists.
+      description: '`type` = `com.warehouse.wes.material-flow-control.transportrequest.TransportRejected`; subject and key = the transport_request_id. The same id stays rejected: send a new id to try again.'
+      contentType: application/cloudevents+json
+      x-no-consumer-reason: 'pending: fulfillment-execution EquipmentCommandPort adapter (plan 05b) reads the 422 answer and this fact'
+      payload: {$ref: '#/components/schemas/TransportRejectedEvent'}
+      examples:
+        - payload: {specversion: '1.0', id: 6a3f2c1e-0000-4000-8000-000000000001, source: /warehouse/material-flow-control,
+                    type: com.warehouse.wes.material-flow-control.transportrequest.TransportRejected, subject: task-1.1,
+                    time: '2026-11-20T08:00:00Z', datacontenttype: application/json,
+                    dataschema: 'urn:warehouse:material-flow-control:events:TransportRejected:v1',
+                    data: {transport_request_id: task-1.1, container_id: TOTE-1, source: WH1-AUTO-ASRS-ASRS1-00-00-S, destination: ST1,
+                           purpose: PICK, reason: CONTAINER_BUSY, detail: the container has an active transport order, rejected_at: '2026-11-20T08:00:00Z'}}
+    TransportAccepted:
+      title: Transport accepted
+      summary: A transport request was accepted; a transport order now moves the container.
+      description: '`type` = `com.warehouse.wes.material-flow-control.transportorder.TransportAccepted`; subject and key = the transport order id. Every accepted request ends in exactly one TransportCompleted or TransportFailed; `legs_planned` is a count, never a leg identity.'
+      contentType: application/cloudevents+json
+      x-no-consumer-reason: 'pending: fulfillment-execution (plan 05b)'
+      payload: {$ref: '#/components/schemas/TransportAcceptedEvent'}
+      examples:
+        - payload: {specversion: '1.0', id: 6a3f2c1e-0000-4000-8000-000000000002, source: /warehouse/material-flow-control,
+                    type: com.warehouse.wes.material-flow-control.transportorder.TransportAccepted, subject: to-1,
+                    time: '2026-11-20T08:00:00Z', datacontenttype: application/json,
+                    dataschema: 'urn:warehouse:material-flow-control:events:TransportAccepted:v1',
+                    data: {transport_order_id: to-1, transport_request_id: task-1.1, container_id: TOTE-1, source: WH1-AUTO-ASRS-ASRS1-00-00-S,
+                           destination: ST1, purpose: PICK, priority: URGENT, due_by: '2026-11-20T09:30:00Z', legs_planned: 2, accepted_at: '2026-11-20T08:00:00Z'}}
+    ContainerArrivedAtStation:
+      title: Container arrived at station
+      summary: The container was admitted to its goods-to-person station; the pick can start.
+      description: '`type` = `com.warehouse.wes.material-flow-control.transportorder.ContainerArrivedAtStation`; subject and key = the transport order id. `queue_position` is the 1-based position among the station''s occupants (StationQueue order).'
+      contentType: application/cloudevents+json
+      x-no-consumer-reason: 'pending: fulfillment-execution (plan 05b)'
+      payload: {$ref: '#/components/schemas/ContainerArrivedAtStationEvent'}
+      examples:
+        - payload: {specversion: '1.0', id: 6a3f2c1e-0000-4000-8000-000000000003, source: /warehouse/material-flow-control,
+                    type: com.warehouse.wes.material-flow-control.transportorder.ContainerArrivedAtStation, subject: to-1,
+                    time: '2026-11-20T08:00:00Z', datacontenttype: application/json,
+                    dataschema: 'urn:warehouse:material-flow-control:events:ContainerArrivedAtStation:v1',
+                    data: {transport_order_id: to-1, transport_request_id: task-1.1, container_id: TOTE-1, station_id: ST1, purpose: PICK,
+                           priority: URGENT, due_by: '2026-11-20T09:30:00Z', queue_position: 2, arrived_at: '2026-11-20T08:00:00Z'}}
+    TransportCompleted:
+      title: Transport completed
+      summary: The container reached the destination; the transport order ended successfully.
+      description: '`type` = `com.warehouse.wes.material-flow-control.transportorder.TransportCompleted`; subject and key = the transport order id. One of the two outcomes of an accepted request.'
+      contentType: application/cloudevents+json
+      x-no-consumer-reason: 'pending: fulfillment-execution (plan 05b)'
+      payload: {$ref: '#/components/schemas/TransportCompletedEvent'}
+      examples:
+        - payload: {specversion: '1.0', id: 6a3f2c1e-0000-4000-8000-000000000004, source: /warehouse/material-flow-control,
+                    type: com.warehouse.wes.material-flow-control.transportorder.TransportCompleted, subject: to-1,
+                    time: '2026-11-20T08:00:00Z', datacontenttype: application/json,
+                    dataschema: 'urn:warehouse:material-flow-control:events:TransportCompleted:v1',
+                    data: {transport_order_id: to-1, transport_request_id: task-1.1, container_id: TOTE-1, destination: ST1, purpose: PICK,
+                           completed_at: '2026-11-20T08:00:00Z'}}
+    TransportFailed:
+      title: Transport failed
+      summary: The transport order ended without reaching the destination, with a reason code.
+      description: '`type` = `com.warehouse.wes.material-flow-control.transportorder.TransportFailed`; subject and key = the transport order id. The other outcome of an accepted request; `subsystem_reason` is the subsystem''s bare reason and `container_location` the container''s last confirmed location, each omitted when unknown.'
+      contentType: application/cloudevents+json
+      x-no-consumer-reason: 'pending: fulfillment-execution (plan 05b)'
+      payload: {$ref: '#/components/schemas/TransportFailedEvent'}
+      examples:
+        - payload: {specversion: '1.0', id: 6a3f2c1e-0000-4000-8000-000000000005, source: /warehouse/material-flow-control,
+                    type: com.warehouse.wes.material-flow-control.transportorder.TransportFailed, subject: to-2,
+                    time: '2026-11-20T08:00:00Z', datacontenttype: application/json,
+                    dataschema: 'urn:warehouse:material-flow-control:events:TransportFailed:v1',
+                    data: {transport_order_id: to-2, transport_request_id: task-2.1, container_id: TOTE-2, purpose: PUTAWAY, reason: SUBSYSTEM_FAULT,
+                           subsystem_reason: ROBOT_BLOCKED, container_location: WH1-RCV-DEC1, failed_at: '2026-11-20T08:00:00Z'}}
+    ContainerSentToClarification:
+      title: Container sent to clarification
+      summary: The container is held at clarification and is never dispatched until resolved.
+      description: '`type` = `com.warehouse.wes.material-flow-control.containertrack.ContainerSentToClarification`; subject and key = the container id. `detected_at_location` is the location code or station id where the problem was detected; for a container on a failed robot, the place the failed leg started from. `transport_order_id` may name an internal clarification move, and then `transport_request_id` is absent. `clarification_point` is set when the container is moved there.'
+      contentType: application/cloudevents+json
+      x-no-consumer-reason: 'pending: exception-management WCS anomalies (plan 05b)'
+      payload: {$ref: '#/components/schemas/ContainerSentToClarificationEvent'}
+      examples:
+        - payload: {specversion: '1.0', id: 6a3f2c1e-0000-4000-8000-000000000006, source: /warehouse/material-flow-control,
+                    type: com.warehouse.wes.material-flow-control.containertrack.ContainerSentToClarification, subject: TOTE-4,
+                    time: '2026-11-20T08:00:00Z', datacontenttype: application/json,
+                    dataschema: 'urn:warehouse:material-flow-control:events:ContainerSentToClarification:v1',
+                    data: {container_id: TOTE-4, transport_order_id: to-4, transport_request_id: task-4.1, reason: MISMATCH, scanned_container_id: TOTE-9,
+                           detected_at_location: WH1-AUTO-ASRS-ASRS1-01-00-OUT1, clarification_point: WH1-CLR-CLR1, sent_at: '2026-11-20T08:00:00Z'}}
+    SubsystemCapacityChanged:
+      # carry (Task 7 review): the consumer branches on subsystem_kind (PLAN-05b input).
+      title: Subsystem capacity changed
+      summary: The aggregated capacity of the AMR fleet, an AS/RS or a station changed.
+      description: >-
+        `type` = `com.warehouse.wes.material-flow-control.subsystemcapacity.SubsystemCapacityChanged`; subject and key =
+        `<subsystem_kind>/<subsystem_id>`. Published when any field other than `measured_at` changed, never periodically
+        (ADR 0006). A consumer must branch on `subsystem_kind`: `buffer_limit`, `occupied` and `queue_depth` are meaningful only for `STATION` (0 for `AMR_FLEET` and `ASRS`),
+        and the units mean different things per kind, so never sum `units_available` or `open_work` across kinds
+        (`AMR_FLEET` available = idle and assignable robots and above the charge threshold; `ASRS` available = units not HELD, which may be busy).
+      contentType: application/cloudevents+json
+      x-no-consumer-reason: 'pending: wes-work-planning capacity consumer (plan 05b)'
+      payload: {$ref: '#/components/schemas/SubsystemCapacityChangedEvent'}
+      examples:
+        - payload: {specversion: '1.0', id: 6a3f2c1e-0000-4000-8000-000000000007, source: /warehouse/material-flow-control,
+                    type: com.warehouse.wes.material-flow-control.subsystemcapacity.SubsystemCapacityChanged, subject: AMR_FLEET/AMR1,
+                    time: '2026-11-20T08:00:00Z', datacontenttype: application/json,
+                    dataschema: 'urn:warehouse:material-flow-control:events:SubsystemCapacityChanged:v1',
+                    data: {subsystem_kind: AMR_FLEET, subsystem_id: AMR1, status: UNAVAILABLE, units_total: 0, units_available: 0, open_work: 3,
+                           capacity_per_hour: 0, buffer_limit: 0, occupied: 0, queue_depth: 0, measured_at: '2026-11-20T08:00:00Z'}}
+    ConsumedContainerStored:
+      name: ContainerStored
+      title: ContainerStored (consumed)
+      summary: A storage job stored a container; its track moves into the AS/RS and the STORE leg ends.
+      description: '`type` = `com.warehouse.wes.asrs-control.storagejob.ContainerStored`. The producer''s own contract (pinned at contracts/asrs-control.asyncapi.yaml) is authoritative; restated here are only the fields this consumer reads, and a fact missing a required one is dead-lettered.'
+      contentType: application/cloudevents+json
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ConsumedEvent'
+          - type: object
+            properties:
+              type: {type: string, const: com.warehouse.wes.asrs-control.storagejob.ContainerStored}
+              data: {type: object, required: [storage_job_id, asrs_id, container_id, port_id, stored_at], properties: {storage_job_id: {}, asrs_id: {}, container_id: {}, port_id: {}, stored_at: {}, reference: {}}}
+    ConsumedContainerPresentedAtPort:
+      name: ContainerPresentedAtPort
+      title: ContainerPresentedAtPort (consumed)
+      summary: A retrieve presented a container at an output port; scan_result READ starts the next leg, NO_READ or MISMATCH sends it to clarification.
+      description: '`type` = `com.warehouse.wes.asrs-control.storagejob.ContainerPresentedAtPort`. The producer''s own contract (pinned at contracts/asrs-control.asyncapi.yaml) is authoritative; restated here are only the fields this consumer reads, and a fact missing a required one is dead-lettered.'
+      contentType: application/cloudevents+json
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ConsumedEvent'
+          - type: object
+            properties:
+              type: {type: string, const: com.warehouse.wes.asrs-control.storagejob.ContainerPresentedAtPort}
+              data: {type: object, required: [storage_job_id, asrs_id, container_id, port_id, scan_result, presented_at], properties: {storage_job_id: {}, asrs_id: {}, container_id: {}, port_id: {}, scan_result: {}, presented_at: {}, reference: {}, scanned_container_id: {}}}
+    ConsumedStorageJobFailed:
+      name: StorageJobFailed
+      title: StorageJobFailed (consumed)
+      summary: A storage job failed; a STORE is re-planned once through another input port, a RETRIEVE fails the transport, CONTAINER_NOT_AT_PORT and STORAGE_MAP_MISMATCH send the container to clarification.
+      description: '`type` = `com.warehouse.wes.asrs-control.storagejob.StorageJobFailed`. The producer''s own contract (pinned at contracts/asrs-control.asyncapi.yaml) is authoritative; restated here are only the fields this consumer reads, and a fact missing a required one is dead-lettered.'
+      contentType: application/cloudevents+json
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ConsumedEvent'
+          - type: object
+            properties:
+              type: {type: string, const: com.warehouse.wes.asrs-control.storagejob.StorageJobFailed}
+              data: {type: object, required: [storage_job_id, asrs_id, job_kind, container_id, port_id, reason, failed_at], properties: {storage_job_id: {}, asrs_id: {}, job_kind: {}, container_id: {}, port_id: {}, reason: {}, failed_at: {}, reference: {}, plc_reason: {}}}
+    ConsumedEquipmentStateChanged:
+      name: EquipmentStateChanged
+      title: EquipmentStateChanged (consumed)
+      summary: An AS/RS unit changed its PackML state; feeds the routing view of available aisles.
+      description: '`type` = `com.warehouse.wes.asrs-control.equipmentunit.EquipmentStateChanged`. The producer''s own contract (pinned at contracts/asrs-control.asyncapi.yaml) is authoritative; restated here are only the fields this consumer reads, and a fact missing a required one is dead-lettered.'
+      contentType: application/cloudevents+json
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ConsumedEvent'
+          - type: object
+            properties:
+              type: {type: string, const: com.warehouse.wes.asrs-control.equipmentunit.EquipmentStateChanged}
+              data: {type: object, required: [asrs_id, unit_id, aisle, state, previous_state, changed_at], properties: {asrs_id: {}, unit_id: {}, aisle: {}, state: {}, previous_state: {}, changed_at: {}}}
+    ConsumedAsrsCapacityChanged:
+      name: AsrsCapacityChanged
+      title: AsrsCapacityChanged (consumed)
+      summary: The AS/RS capacity snapshot; copied into SubsystemCapacityChanged for kind ASRS.
+      description: '`type` = `com.warehouse.wes.asrs-control.asrs.AsrsCapacityChanged`. The producer''s own contract (pinned at contracts/asrs-control.asyncapi.yaml) is authoritative; restated here are only the fields this consumer reads, and a fact missing a required one is dead-lettered.'
+      contentType: application/cloudevents+json
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ConsumedEvent'
+          - type: object
+            properties:
+              type: {type: string, const: com.warehouse.wes.asrs-control.asrs.AsrsCapacityChanged}
+              data: {type: object, required: [asrs_id, units_total, units_available, positions_total, positions_free, open_jobs, measured_at], properties: {asrs_id: {}, units_total: {}, units_available: {}, positions_total: {}, positions_free: {}, open_jobs: {}, measured_at: {}}}
+    ConsumedLegAssigned:
+      name: LegAssigned
+      title: LegAssigned (consumed)
+      summary: A leg was assigned to a robot; the leg is in progress (matched by reference).
+      description: '`type` = `com.warehouse.wes.amr-fleet-control.mission.LegAssigned`. The producer''s own contract (pinned at contracts/amr-fleet-control.asyncapi.yaml) is authoritative; restated here are only the fields this consumer reads, and a fact missing a required one is dead-lettered.'
+      contentType: application/cloudevents+json
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ConsumedEvent'
+          - type: object
+            properties:
+              type: {type: string, const: com.warehouse.wes.amr-fleet-control.mission.LegAssigned}
+              data: {type: object, required: [leg_id, fleet_id, container_id, from_handoff_point_id, to_handoff_point_id, robot, map_version, assigned_at], properties: {leg_id: {}, fleet_id: {}, container_id: {}, from_handoff_point_id: {}, to_handoff_point_id: {}, robot: {}, map_version: {}, assigned_at: {}, reference: {}}}
+    ConsumedContainerPickedUp:
+      name: ContainerPickedUp
+      title: ContainerPickedUp (consumed)
+      summary: A robot picked the container up; the track moves onto the robot, an AS/RS output-port pickup is confirmed to asrs-control, a station slot is freed.
+      description: '`type` = `com.warehouse.wes.amr-fleet-control.mission.ContainerPickedUp`. The producer''s own contract (pinned at contracts/amr-fleet-control.asyncapi.yaml) is authoritative; restated here are only the fields this consumer reads, and a fact missing a required one is dead-lettered.'
+      contentType: application/cloudevents+json
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ConsumedEvent'
+          - type: object
+            properties:
+              type: {type: string, const: com.warehouse.wes.amr-fleet-control.mission.ContainerPickedUp}
+              data: {type: object, required: [leg_id, fleet_id, container_id, from_handoff_point_id, robot, picked_up_at], properties: {leg_id: {}, fleet_id: {}, container_id: {}, from_handoff_point_id: {}, robot: {}, picked_up_at: {}, reference: {}}}
+    ConsumedLegCompleted:
+      name: LegCompleted
+      title: LegCompleted (consumed)
+      summary: A leg reached its target handoff point; the next leg starts or the transport completes.
+      description: '`type` = `com.warehouse.wes.amr-fleet-control.mission.LegCompleted`. The producer''s own contract (pinned at contracts/amr-fleet-control.asyncapi.yaml) is authoritative; restated here are only the fields this consumer reads, and a fact missing a required one is dead-lettered.'
+      contentType: application/cloudevents+json
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ConsumedEvent'
+          - type: object
+            properties:
+              type: {type: string, const: com.warehouse.wes.amr-fleet-control.mission.LegCompleted}
+              data: {type: object, required: [leg_id, fleet_id, container_id, to_handoff_point_id, robot, completed_at], properties: {leg_id: {}, fleet_id: {}, container_id: {}, to_handoff_point_id: {}, robot: {}, completed_at: {}, reference: {}}}
+    ConsumedLegFailed:
+      name: LegFailed
+      title: LegFailed (consumed)
+      summary: A leg failed; before the pickup it is retried as a new attempt up to LEG_RETRY_LIMIT, PICK_FAILED or a container on a failed robot sends it to clarification.
+      description: '`type` = `com.warehouse.wes.amr-fleet-control.mission.LegFailed`. The producer''s own contract (pinned at contracts/amr-fleet-control.asyncapi.yaml) is authoritative; restated here are only the fields this consumer reads, and a fact missing a required one is dead-lettered.'
+      contentType: application/cloudevents+json
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ConsumedEvent'
+          - type: object
+            properties:
+              type: {type: string, const: com.warehouse.wes.amr-fleet-control.mission.LegFailed}
+              data: {type: object, required: [leg_id, fleet_id, container_id, from_handoff_point_id, to_handoff_point_id, reason, container_on_robot, failed_at], properties: {leg_id: {}, fleet_id: {}, container_id: {}, from_handoff_point_id: {}, to_handoff_point_id: {}, reason: {}, container_on_robot: {}, failed_at: {}, reference: {}, robot: {}, robot_error: {}}}
+    ConsumedFleetCapacityChanged:
+      name: FleetCapacityChanged
+      title: FleetCapacityChanged (consumed)
+      summary: The AMR fleet capacity snapshot; copied into SubsystemCapacityChanged for kind AMR_FLEET.
+      description: '`type` = `com.warehouse.wes.amr-fleet-control.fleet.FleetCapacityChanged`. The producer''s own contract (pinned at contracts/amr-fleet-control.asyncapi.yaml) is authoritative; restated here are only the fields this consumer reads, and a fact missing a required one is dead-lettered.'
+      contentType: application/cloudevents+json
+      payload:
+        allOf:
+          - $ref: '#/components/schemas/ConsumedEvent'
+          - type: object
+            properties:
+              type: {type: string, const: com.warehouse.wes.amr-fleet-control.fleet.FleetCapacityChanged}
+              data: {type: object, required: [fleet_id, robots_total, robots_online, robots_available, robots_charging, robots_held, legs_queued, legs_active, changed_at], properties: {fleet_id: {}, robots_total: {}, robots_online: {}, robots_available: {}, robots_charging: {}, robots_held: {}, legs_queued: {}, legs_active: {}, changed_at: {}}}
+  schemas:
+    CloudEventEnvelope:
+      type: object
+      required: [specversion, id, source, type, subject, time, datacontenttype, dataschema, data]
+      properties:
+        specversion: {type: string, const: '1.0'}
+        id: {type: string, format: uuid}
+        source: {type: string, const: /warehouse/material-flow-control}
+        type: {type: string}
+        subject: {type: string}
+        time: {type: string, format: date-time}
+        datacontenttype: {type: string, const: application/json}
+        dataschema: {type: string}
+        data: {type: object}
+    ConsumedEvent:
+      description: The CloudEvents 1.0 structured envelope of a consumed subsystem fact (its producer sets source and dataschema).
+      type: object
+      required: [specversion, id, source, type, time, data]
+      properties:
+        specversion: {type: string, const: '1.0'}
+        id: {type: string}
+        source: {type: string}
+        type: {type: string}
+        subject: {type: string}
+        time: {type: string, format: date-time}
+        data: {type: object}
+    TransportRejectedEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventEnvelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              additionalProperties: false
+              required: [transport_request_id, container_id, source, destination, purpose, reason, detail, rejected_at]
+              properties:
+                transport_request_id: {type: string, minLength: 1, maxLength: 128}
+                container_id: {type: string, pattern: '^[A-Za-z0-9._-]{1,64}$'}
+                source: {type: string, description: A LocationCode, the AS/RS logical location or a station id}
+                destination: {type: string}
+                purpose: {type: string, enum: [PICK, PUTAWAY, REPLENISH, OUTBOUND, RETURN]}
+                reason: {type: string, enum: [UNKNOWN_CONTAINER, CONTAINER_BUSY, DESTINATION_UNREACHABLE, SUBSYSTEM_UNAVAILABLE]}
+                detail: {type: string}
+                rejected_at: {type: string, format: date-time}
+    TransportAcceptedEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventEnvelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              additionalProperties: false
+              required: [transport_order_id, transport_request_id, container_id, source, destination, purpose, priority, due_by, legs_planned, accepted_at]
+              properties:
+                transport_order_id: {type: string, minLength: 1, maxLength: 128}
+                transport_request_id: {type: string, minLength: 1, maxLength: 128}
+                container_id: {type: string, pattern: '^[A-Za-z0-9._-]{1,64}$'}
+                source: {type: string, description: A LocationCode, the AS/RS logical location or a station id}
+                destination: {type: string}
+                purpose: {type: string, enum: [PICK, PUTAWAY, REPLENISH, OUTBOUND, RETURN]}
+                priority: {type: string, enum: [NORMAL, URGENT]}
+                due_by: {type: string, format: date-time}
+                legs_planned: {type: integer, minimum: 0}
+                accepted_at: {type: string, format: date-time}
+    ContainerArrivedAtStationEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventEnvelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              additionalProperties: false
+              required: [transport_order_id, transport_request_id, container_id, station_id, purpose, priority, due_by, queue_position, arrived_at]
+              properties:
+                transport_order_id: {type: string, minLength: 1, maxLength: 128}
+                transport_request_id: {type: string, minLength: 1, maxLength: 128}
+                container_id: {type: string, pattern: '^[A-Za-z0-9._-]{1,64}$'}
+                station_id: {type: string}
+                purpose: {type: string, enum: [PICK, PUTAWAY, REPLENISH, OUTBOUND, RETURN]}
+                priority: {type: string, enum: [NORMAL, URGENT]}
+                due_by: {type: string, format: date-time}
+                queue_position: {type: integer, minimum: 1}
+                arrived_at: {type: string, format: date-time}
+    TransportCompletedEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventEnvelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              additionalProperties: false
+              required: [transport_order_id, transport_request_id, container_id, destination, purpose, completed_at]
+              properties:
+                transport_order_id: {type: string, minLength: 1, maxLength: 128}
+                transport_request_id: {type: string, minLength: 1, maxLength: 128}
+                container_id: {type: string, pattern: '^[A-Za-z0-9._-]{1,64}$'}
+                destination: {type: string}
+                purpose: {type: string, enum: [PICK, PUTAWAY, REPLENISH, OUTBOUND, RETURN]}
+                completed_at: {type: string, format: date-time}
+    TransportFailedEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventEnvelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              additionalProperties: false
+              required: [transport_order_id, transport_request_id, container_id, purpose, reason, failed_at]
+              properties:
+                transport_order_id: {type: string, minLength: 1, maxLength: 128}
+                transport_request_id: {type: string, minLength: 1, maxLength: 128}
+                container_id: {type: string, pattern: '^[A-Za-z0-9._-]{1,64}$'}
+                purpose: {type: string, enum: [PICK, PUTAWAY, REPLENISH, OUTBOUND, RETURN]}
+                reason: {type: string, enum: [CLARIFICATION, SUBSYSTEM_FAULT, CANCELLED, TIMEOUT]}
+                subsystem_reason: {type: string, description: The subsystem's bare reason code (for example ROBOT_BLOCKED)}
+                container_location: {type: string, description: The container's last confirmed location (a location code or station id)}
+                failed_at: {type: string, format: date-time}
+    ContainerSentToClarificationEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventEnvelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              additionalProperties: false
+              required: [container_id, reason, detected_at_location, sent_at]
+              properties:
+                container_id: {type: string, pattern: '^[A-Za-z0-9._-]{1,64}$'}
+                transport_order_id: {type: string, minLength: 1, maxLength: 128, description: 'The transport order whose leg found the problem; may name an internal clarification move, and then transport_request_id is absent'}
+                transport_request_id: {type: string, minLength: 1, maxLength: 128, description: 'The WES request of that transport; absent for an internal clarification move'}
+                reason: {type: string, enum: [NO_READ, MISMATCH, CONTAINER_NOT_AT_SOURCE, CONTAINER_NOT_AT_PORT, STORAGE_MAP_MISMATCH, CONTAINER_ON_FAILED_ROBOT]}
+                scanned_container_id: {type: string}
+                detected_at_location: {type: string, description: 'The location code or station id where the problem was detected; for a container on a failed robot, the place the failed leg started from'}
+                clarification_point: {type: string, description: The clarification point's location code, set when the container is moved there}
+                sent_at: {type: string, format: date-time}
+    SubsystemCapacityChangedEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventEnvelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              additionalProperties: false
+              description: |
+                D17 mapping (ADR 0006), copied from the subsystem facts, never recomputed:
+
+                | Published field | AMR_FLEET (FleetCapacityChanged) | ASRS (AsrsCapacityChanged) | STATION (its queue) |
+                | --- | --- | --- | --- |
+                | `subsystem_id` (subject `<kind>/<id>`) | `fleet_id` | `asrs_id` | station id |
+                | `units_total` | `robots_total` (0 accepted) | `units_total` (0 accepted, never sent) | `buffer_limit` |
+                | `units_available` = idle-and-dispatchable | `robots_available` (idle, assignable and above the charge threshold; a robot runs one leg at a time) | `units_available` (an aisle unit queues jobs, so a not-HELD unit is dispatchable) | `buffer_limit - occupied` (min 0) |
+                | `open_work` = queued + active | `legs_queued + legs_active` | `open_jobs` (queued and executing) | `occupied + waiting` |
+                | `status` UNAVAILABLE | `robots_online` = 0 (includes `robots_total` 0) | `units_available` = 0 | never |
+                | `status` DEGRADED | available < total | available < total | arrivals wait upstream |
+                | `capacity_per_hour` | available x `legsPerRobotHour` (30) | available x `retrievalsPerUnitHour` (60) | 0 |
+                | `buffer_limit`, `occupied`, `queue_depth` | 0 | 0 | the queue's |
+                | not published | `robots_online` (status only), `robots_charging`, `robots_held` | `positions_total`, `positions_free` | — |
+                | `measured_at` | this context's clock when the fact was applied; `changed_at` is never copied | this context's clock; asrs-control's `measured_at` is never copied | this context's clock |
+
+                Negative counts clamp to 0.
+              required: [subsystem_kind, subsystem_id, status, units_total, units_available, open_work, capacity_per_hour, buffer_limit, occupied, queue_depth, measured_at]
+              properties:
+                subsystem_kind: {type: string, enum: [AMR_FLEET, ASRS, STATION]}
+                subsystem_id: {type: string}
+                status: {type: string, enum: [AVAILABLE, DEGRADED, UNAVAILABLE]}
+                units_total: {type: integer, minimum: 0}
+                units_available: {type: integer, minimum: 0}
+                open_work: {type: integer, minimum: 0}
+                capacity_per_hour: {type: integer, minimum: 0}
+                buffer_limit: {type: integer, minimum: 0}
+                occupied: {type: integer, minimum: 0}
+                queue_depth: {type: integer, minimum: 0}
+                measured_at: {type: string, format: date-time}

@@ -1,0 +1,433 @@
+openapi: 3.1.0
+
+info:
+  title: material-flow-control
+  version: 0.1.0
+  x-classification: Supporting
+  contact:
+    name: material-flow-control maintainers
+    url: https://github.com/IQVO/material-flow-control
+    email: material-flow-control@iqvo.example.com
+  license:
+    name: UNLICENSED
+  description: |
+    The relationship-1 interface of **material-flow-control** (WCS tier, Supporting; ADR 0001, ADR 0005): the one
+    door from the WES (fulfillment-execution) to the automation. A transport request is accepted or rejected at
+    once (`202` or `422`); its progress is reported only through events on `warehouse.material-flow-control.events`
+    (TransportAccepted, ContainerArrivedAtStation, TransportCompleted, TransportFailed), never by polling.
+
+    Base path: the Service `material-flow-control` on :8080 (in-cluster
+    `http://material-flow-control.warehouse-systems.svc.cluster.local`), through Kong at
+    `/api/material-flow-control`. Every POST requires `Idempotency-Key` (1-128 printable ASCII characters); a replayed answer carries
+    `Idempotency-Replayed: true`. Bodies snake_case; errors RFC 9457 `application/problem+json` with a stable
+    `code`. No authentication. Location vocabulary: the AS/RS is addressed by its logical `LocationCode`
+    (`WH1-AUTO-ASRS-ASRS1-00-00-S`, plan 05a D14); a goods-to-person station by its station id (`ST1`) or its
+    `LocationCode`; any other place (decant, pack station, dock door, forward-area handoff, clarification point)
+    by its `LocationCode`. No route or body names a robot, a leg, a node or a storage job.
+
+    **Two idempotency layers.** The fleet `Idempotency-Key` (24 hours) and the domain key `transport_request_id`
+    (a retry of the same id and request returns the original outcome and creates nothing; the same id with
+    another request is `409 transport-request-conflict`; a rejected id stays rejected, so the caller sends a NEW
+    `transport_request_id`, derived from the task id and the attempt, to try again).
+
+    **Retention.** A request record is never deleted. Once the retention purges an ended transport's order
+    (`ORDER_RETENTION_HOURS`, ADR 0008), its `transport_request_id` answers `410 transport-request-expired` on a
+    read, a retried request and a cancellation: the id is never accepted again, so the caller never reuses it.
+
+    **Replay classes** (every problem type declares one): FINAL — a function of the request alone, stored and
+    replayed (`bad-request`, `invalid-parameter`, `transport-request-conflict`, `station-not-found`,
+    `unknown-location`, `idempotency-key-required`, `idempotency-key-invalid`, `idempotency-key-reused`,
+    `transport-request-expired`); OUTCOME — the four rejections
+    (`unknown-container`, `container-busy`, `destination-unreachable`, `subsystem-unavailable`): the rejection
+    record and `TransportRejected` commit WITH
+    the stored answer, and a replay creates nothing; RETRYABLE — the key is released, so a retry under the same key
+    executes again (`transport-request-not-found`, `container-track-not-found` — the caller mints the
+    `transport_request_id` and a `ContainerStored` fact or an acceptance creates a track, so the target can exist
+    by the retry; `transport-not-cancellable`, `transport-ended`, `not-in-clarification`, `internal-error`,
+    `dependency-unavailable`). 2xx answers are stored; 5xx answers and panics never are. Releasing a key means the
+    same key with another body is a NEW request, not `idempotency-key-reused`.
+
+servers:
+  - url: http://material-flow-control.warehouse-systems.svc.cluster.local
+    description: In-cluster Service (port 80 -> :8080).
+  - url: /api/material-flow-control
+    description: Through Kong.
+
+tags:
+  - name: transport-requests
+    description: Relationship-1 transport requests, their outcome view and their cancellation.
+  - name: container-tracks
+    description: The physical position of each container inside the automation, and clarification.
+  - name: stations
+    description: Goods-to-person station queues.
+  - name: subsystems
+    description: The capacity snapshots published as SubsystemCapacityChanged.
+  - name: probes
+    description: Liveness and readiness.
+
+paths:
+  /healthz:
+    get:
+      operationId: healthz
+      summary: Liveness
+      description: 200 while the process runs.
+      tags: [probes]
+      responses:
+        '200': {description: Alive., content: {application/json: {schema: {$ref: '#/components/schemas/Status'}}}}
+  /readyz:
+    get:
+      operationId: readyz
+      summary: Readiness
+      description: 200 when Postgres and Kafka are reachable; 503 while draining or while one is not.
+      tags: [probes]
+      responses:
+        '200': {description: Ready., content: {application/json: {schema: {$ref: '#/components/schemas/Status'}}}}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /transport-requests:
+    post:
+      operationId: requestTransport
+      summary: Request a transport
+      description: |
+        Accepted or rejected at once, from local state only (no subsystem is called before the answer). `202`
+        answers the order view with `Location`; the first leg is requested after commit and progress follows as
+        events. `422` carries one of the four rejection reasons and the `transport_request_id`, and publishes
+        `TransportRejected`. A retry of the same `transport_request_id` and request answers the original outcome
+        (`202` with the current view, or the same `422`); once the retention purged that transport's ended order,
+        `410 transport-request-expired` (the request is never executed again).
+      tags: [transport-requests]
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/TransportRequest'}}}
+      responses:
+        '202':
+          description: Accepted. Progress follows as events.
+          headers:
+            Location: {description: '`/transport-requests/{transportRequestId}`.', schema: {type: string}}
+            Idempotency-Replayed: {$ref: '#/components/headers/IdempotencyReplayed'}
+          content: {application/json: {schema: {$ref: '#/components/schemas/TransportOrder'}}}
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: '`bad-request` (malformed body), `invalid-parameter` (field rules, source = destination, the purpose rule), `idempotency-key-required`, `idempotency-key-invalid`. Replay class FINAL.'
+        '409':
+          $ref: '#/components/responses/Conflict'
+          description: '`transport-request-conflict` (the same `transport_request_id` with another request), `idempotency-key-reused`. Replay class FINAL.'
+        '422':
+          $ref: '#/components/responses/Rejected'
+          description: '`unknown-container`, `container-busy`, `destination-unreachable`, `subsystem-unavailable` (with `reason` and `transport_request_id`). Replay class OUTCOME.'
+        '410': {$ref: '#/components/responses/Expired'}
+        '500': {$ref: '#/components/responses/Internal'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /transport-requests/{transportRequestId}:
+    get:
+      operationId: getTransport
+      summary: Read a transport request
+      description: |
+        The request's outcome view (status `REJECTED` with `reason` for a rejected id), for operators and agents —
+        not for polling: progress is reported only through events (seam decision 3).
+      tags: [transport-requests]
+      parameters: [{$ref: '#/components/parameters/TransportRequestId'}]
+      responses:
+        '200': {description: The transport request., content: {application/json: {schema: {$ref: '#/components/schemas/TransportOrder'}}}}
+        '400': {$ref: '#/components/responses/BadRequest', description: '`invalid-parameter`.'}
+        '404': {$ref: '#/components/responses/NotFound', description: '`transport-request-not-found`.'}
+        '410': {$ref: '#/components/responses/Expired'}
+        '500': {$ref: '#/components/responses/Internal'}
+  /transport-requests/{transportRequestId}/cancellation:
+    post:
+      operationId: cancelTransport
+      summary: Cancel a transport
+      description: |
+        Between legs, with the container at a confirmed handoff that is not an AS/RS output port (including
+        waiting for a station slot): `200`, status `FAILED` reason `CANCELLED`, `TransportFailed` at once. A leg in
+        flight not yet picked up: `202`, status `CANCEL_REQUESTED` (the subsystem's answer decides; a refused
+        cancellation lets the transport run to its outcome). The container on a robot, or waiting on an AS/RS
+        output port: `409 transport-not-cancellable`. An ended or rejected request: `409 transport-ended`. No body.
+      tags: [transport-requests]
+      parameters: [{$ref: '#/components/parameters/TransportRequestId'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      responses:
+        '200':
+          description: Cancelled now.
+          headers: {Idempotency-Replayed: {$ref: '#/components/headers/IdempotencyReplayed'}}
+          content: {application/json: {schema: {$ref: '#/components/schemas/TransportOrder'}}}
+        '202':
+          description: The subsystem was asked to cancel the leg in flight.
+          headers: {Idempotency-Replayed: {$ref: '#/components/headers/IdempotencyReplayed'}}
+          content: {application/json: {schema: {$ref: '#/components/schemas/TransportOrder'}}}
+        '400': {$ref: '#/components/responses/BadRequest', description: '`invalid-parameter`, `idempotency-key-required`, `idempotency-key-invalid`. Replay class FINAL.'}
+        '404': {$ref: '#/components/responses/NotFound', description: '`transport-request-not-found`. Replay class RETRYABLE (the key is released: the request may be created after this answer).'}
+        '409':
+          $ref: '#/components/responses/Conflict'
+          description: '`transport-not-cancellable`, `transport-ended` — Replay class RETRYABLE (the key is released); `idempotency-key-reused` — Replay class FINAL.'
+        '410': {$ref: '#/components/responses/Expired'}
+        '500': {$ref: '#/components/responses/Internal'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /container-tracks/{containerId}:
+    get:
+      operationId: getContainerTrack
+      summary: Read a container's track
+      description: The container's one physical position inside the automation, its active transport request, its clarification hold and its last 20 moves.
+      tags: [container-tracks]
+      parameters: [{$ref: '#/components/parameters/ContainerId'}]
+      responses:
+        '200': {description: The track., content: {application/json: {schema: {$ref: '#/components/schemas/ContainerTrack'}}}}
+        '400': {$ref: '#/components/responses/BadRequest', description: '`invalid-parameter`.'}
+        '404': {$ref: '#/components/responses/NotFound', description: '`container-track-not-found`.'}
+        '500': {$ref: '#/components/responses/Internal'}
+  /container-tracks/{containerId}/clarification-resolution:
+    post:
+      operationId: resolveClarification
+      summary: Resolve a container's clarification
+      description: |
+        An operator (later exception-management) releases the clarification hold; the optional `location` names
+        where the container now is (a place reference; default: where the track is). The container can then be
+        requested again.
+      tags: [container-tracks]
+      parameters: [{$ref: '#/components/parameters/ContainerId'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: false
+        content: {application/json: {schema: {$ref: '#/components/schemas/ClarificationResolution'}}}
+      responses:
+        '200':
+          description: Resolved.
+          headers: {Idempotency-Replayed: {$ref: '#/components/headers/IdempotencyReplayed'}}
+          content: {application/json: {schema: {$ref: '#/components/schemas/ContainerTrack'}}}
+        '400': {$ref: '#/components/responses/BadRequest', description: '`bad-request`, `invalid-parameter`, `idempotency-key-required`, `idempotency-key-invalid`. Replay class FINAL.'}
+        '404': {$ref: '#/components/responses/NotFound', description: '`container-track-not-found`. Replay class RETRYABLE (the key is released: the track may be created after this answer).'}
+        '409':
+          $ref: '#/components/responses/Conflict'
+          description: '`not-in-clarification` — Replay class RETRYABLE (the key is released); `idempotency-key-reused` — Replay class FINAL.'
+        '422':
+          description: '`unknown-location` (the location is not a place of this automation). Replay class FINAL.'
+          content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}
+        '500': {$ref: '#/components/responses/Internal'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+  /stations/{stationId}:
+    get:
+      operationId: getStation
+      summary: Read a station queue
+      description: The station's buffer limit, its occupants in arrival order and the transports waiting upstream in admission order (URGENT before NORMAL, then earlier `due_by`).
+      tags: [stations]
+      parameters: [{$ref: '#/components/parameters/StationId'}]
+      responses:
+        '200': {description: The station queue., content: {application/json: {schema: {$ref: '#/components/schemas/StationQueue'}}}}
+        '400': {$ref: '#/components/responses/BadRequest', description: '`invalid-parameter`.'}
+        '404': {$ref: '#/components/responses/NotFound', description: '`station-not-found`.'}
+        '500': {$ref: '#/components/responses/Internal'}
+  /subsystems:
+    get:
+      operationId: listSubsystems
+      summary: List the subsystem capacity snapshots
+      description: Every subsystem and station snapshot, sorted by kind then id (a bounded set, one per layout entry).
+      tags: [subsystems]
+      x-pagination-exempt: view
+      responses:
+        '200': {description: The snapshots., content: {application/json: {schema: {$ref: '#/components/schemas/Subsystems'}}}}
+        '500': {$ref: '#/components/responses/Internal'}
+
+components:
+  parameters:
+    TransportRequestId: {name: transportRequestId, in: path, required: true, description: The caller's transport request id., schema: {$ref: '#/components/schemas/Id'}}
+    ContainerId: {name: containerId, in: path, required: true, description: The container id (LPN)., schema: {$ref: '#/components/schemas/Id'}}
+    StationId: {name: stationId, in: path, required: true, description: A goods-to-person station id of the layout., schema: {$ref: '#/components/schemas/Id'}}
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Caller-minted key, 1 to 128 printable ASCII characters (fleet guideline R3-R5); a missing one is `400 idempotency-key-required`, any other outside the rule `400 idempotency-key-invalid`.
+      schema: {type: string, minLength: 1, maxLength: 128, pattern: '^[\x21-\x7E]+$'}
+  headers:
+    IdempotencyReplayed:
+      description: '`true` on an answer replayed from the idempotency store; absent on a first execution.'
+      schema: {type: string, enum: ['true']}
+  responses:
+    BadRequest:
+      description: '`bad-request`, `invalid-parameter`, `idempotency-key-required`, `idempotency-key-invalid`. Replay class FINAL.'
+      content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}
+    NotFound:
+      description: '`transport-request-not-found`, `container-track-not-found` — Replay class RETRYABLE on the keyed routes (the id can be created later); `station-not-found` — read route only.'
+      content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}
+    Conflict:
+      description: '`transport-request-conflict`, `idempotency-key-reused` — Replay class FINAL; `transport-not-cancellable`, `transport-ended`, `not-in-clarification` — Replay class RETRYABLE.'
+      content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}
+    Expired:
+      description: '`transport-request-expired`: the retention purged this ended transport''s order (ADR 0008); the request record is kept, so the id is never accepted again — use a new `transport_request_id`. Replay class FINAL.'
+      content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}
+    Rejected:
+      description: '`unknown-container`, `container-busy`, `destination-unreachable`, `subsystem-unavailable`. Replay class OUTCOME: the rejection record and `TransportRejected` commit with the stored answer.'
+      content: {application/problem+json: {schema: {$ref: '#/components/schemas/RejectionProblem'}}}
+    Internal:
+      description: '`internal-error`. Replay class RETRYABLE (never stored).'
+      content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}
+    Unavailable:
+      description: 'Draining (`status: not_ready`), or `dependency-unavailable`: Postgres or Kafka is down, or (from boot until both subsystem consumers have committed the end offsets sampled at boot) the subsystem facts are still being replayed, when no POST is decided and `/readyz` names `subsystem-facts`. Replay class RETRYABLE (the key is released).'
+      content:
+        application/json: {schema: {$ref: '#/components/schemas/Status'}}
+        application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}
+  schemas:
+    Id: {type: string, minLength: 1, maxLength: 128, description: No control characters.}
+    Status:
+      type: object
+      required: [status]
+      properties: {status: {type: string, examples: [ok, ready, not_ready]}}
+    Problem:
+      type: object
+      description: An RFC 9457 problem with the fleet's stable `code`.
+      required: [type, title, status, code]
+      properties:
+        type: {type: string}
+        title: {type: string}
+        status: {type: integer}
+        code: {type: string, description: Stable fleet error code., examples: [transport-request-conflict]}
+        detail: {type: string}
+        instance: {type: string}
+    RejectionProblem:
+      description: The 422 of a rejected transport request (seam decision 3).
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          required: [reason, transport_request_id]
+          properties:
+            reason: {type: string, enum: [UNKNOWN_CONTAINER, CONTAINER_BUSY, DESTINATION_UNREACHABLE, SUBSYSTEM_UNAVAILABLE]}
+            transport_request_id: {type: string}
+    TransportRequest:
+      type: object
+      description: |
+        Purpose rules (decision D4): `PICK` to a station; `PUTAWAY` and `RETURN` to the AS/RS from a place that is
+        not the AS/RS; `REPLENISH` from the AS/RS to a station or a handoff; `OUTBOUND` from a place that is not the
+        AS/RS to a station or a handoff. A request breaking its purpose rule, or with source = destination, is
+        `400 invalid-parameter`.
+      required: [transport_request_id, container_id, source, destination, purpose, priority, due_by]
+      additionalProperties: false
+      properties:
+        transport_request_id: {$ref: '#/components/schemas/Id', description: Idempotency and correlation key, derived from the task id and the attempt.}
+        container_id: {type: string, minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9._-]+$', description: The container's LPN.}
+        source: {$ref: '#/components/schemas/Id', description: 'A LocationCode, or the AS/RS logical location.'}
+        destination: {$ref: '#/components/schemas/Id', description: 'A station id or LocationCode, a handoff LocationCode, or the AS/RS logical location.'}
+        purpose: {type: string, enum: [PICK, PUTAWAY, REPLENISH, OUTBOUND, RETURN]}
+        priority: {type: string, enum: [NORMAL, URGENT]}
+        due_by: {type: string, format: date-time}
+    TransportOrder:
+      type: object
+      required: [transport_request_id, container_id, source, destination, purpose, priority, due_by, status, legs_total, legs_done]
+      properties:
+        transport_request_id: {type: string}
+        transport_order_id: {type: string, description: Absent when the request was rejected.}
+        container_id: {type: string}
+        source: {type: string}
+        destination: {type: string}
+        purpose: {type: string, enum: [PICK, PUTAWAY, REPLENISH, OUTBOUND, RETURN]}
+        priority: {type: string, enum: [NORMAL, URGENT]}
+        due_by: {type: string, format: date-time}
+        status: {type: string, enum: [IN_PROGRESS, CANCEL_REQUESTED, COMPLETED, FAILED, REJECTED]}
+        reason:
+          type: string
+          description: '`CLARIFICATION`, `SUBSYSTEM_FAULT`, `CANCELLED` or `TIMEOUT` when FAILED; the rejection reason when REJECTED.'
+          enum: [CLARIFICATION, SUBSYSTEM_FAULT, CANCELLED, TIMEOUT, UNKNOWN_CONTAINER, CONTAINER_BUSY, DESTINATION_UNREACHABLE, SUBSYSTEM_UNAVAILABLE]
+        container_location: {type: string, description: 'The container''s last confirmed location: a location code or station id; absent while on a robot or unknown.'}
+        legs_total: {type: integer, minimum: 0}
+        legs_done: {type: integer, minimum: 0}
+        accepted_at: {type: string, format: date-time}
+        rejected_at: {type: string, format: date-time}
+        ended_at: {type: string, format: date-time}
+    Position:
+      type: object
+      required: [kind]
+      properties:
+        kind: {type: string, enum: [IN_ASRS, AT_PORT, ON_ROBOT, AT_STATION, AT_HANDOFF, AT_CLARIFICATION, UNKNOWN]}
+        code: {type: string, description: 'The location code or station id; for ON_ROBOT the fleet id.'}
+    Clarification:
+      type: object
+      required: [reason, detected_at_location, since]
+      properties:
+        reason: {type: string, enum: [NO_READ, MISMATCH, CONTAINER_NOT_AT_SOURCE, CONTAINER_NOT_AT_PORT, STORAGE_MAP_MISMATCH, CONTAINER_ON_FAILED_ROBOT]}
+        detected_at_location: {type: string, description: 'The location code or station id where the problem was detected; for a container on a failed robot, the place the failed leg started from.'}
+        scanned_container_id: {type: string}
+        since: {type: string, format: date-time}
+    Move:
+      type: object
+      required: [from, to, at]
+      properties:
+        from: {$ref: '#/components/schemas/Position'}
+        to: {$ref: '#/components/schemas/Position'}
+        transport_request_id: {type: string}
+        at: {type: string, format: date-time}
+    ContainerTrack:
+      type: object
+      required: [container_id, position, updated_at, history]
+      properties:
+        container_id: {type: string}
+        position: {$ref: '#/components/schemas/Position'}
+        active_transport_request_id: {type: string}
+        clarification: {$ref: '#/components/schemas/Clarification'}
+        updated_at: {type: string, format: date-time}
+        history: {type: array, maxItems: 20, description: The last 20 moves., items: {$ref: '#/components/schemas/Move'}}
+    Occupant:
+      type: object
+      required: [container_id, transport_request_id, position, admitted_at]
+      properties:
+        container_id: {type: string}
+        transport_request_id: {type: string}
+        position: {type: integer, minimum: 1, description: 1-based position among the occupants.}
+        admitted_at: {type: string, format: date-time}
+    WaitingEntry:
+      type: object
+      required: [container_id, transport_request_id, priority, due_by, ready_at]
+      properties:
+        container_id: {type: string}
+        transport_request_id: {type: string}
+        priority: {type: string, enum: [NORMAL, URGENT]}
+        due_by: {type: string, format: date-time}
+        ready_at: {type: string, format: date-time}
+    StationQueue:
+      type: object
+      required: [station_id, buffer_limit, occupied, occupants, waiting]
+      properties:
+        station_id: {type: string}
+        buffer_limit: {type: integer, minimum: 1}
+        occupied: {type: integer, minimum: 0}
+        occupants: {type: array, items: {$ref: '#/components/schemas/Occupant'}}
+        waiting: {type: array, description: In admission order., items: {$ref: '#/components/schemas/WaitingEntry'}}
+    SubsystemCapacity:
+      type: object
+      description: |
+        One snapshot per subsystem and station (ADR 0006), the body of `SubsystemCapacityChanged`. Branch on
+        `subsystem_kind`: `buffer_limit`, `occupied` and `queue_depth` are meaningful only for STATION (0
+        elsewhere); never sum `units_available` or `open_work` across kinds.
+
+        | Field | AMR_FLEET (FleetCapacityChanged) | ASRS (AsrsCapacityChanged) | STATION (its queue) |
+        | --- | --- | --- | --- |
+        | `subsystem_id` | `fleet_id` | `asrs_id` | station id |
+        | `units_total` | `robots_total` (0 accepted) | `units_total` (0 accepted, never sent) | `buffer_limit` |
+        | `units_available` = idle-and-dispatchable | `robots_available` (idle, assignable and above the charge threshold; a robot runs one leg at a time) | `units_available` (not HELD; an aisle unit queues jobs) | `buffer_limit - occupied` (min 0) |
+        | `open_work` = queued + active | `legs_queued + legs_active` | `open_jobs` (queued and executing) | `occupied + waiting` |
+        | `status` UNAVAILABLE | `robots_online` = 0 (includes `robots_total` 0) | `units_available` = 0 | never |
+        | `status` DEGRADED | available < total | available < total | arrivals wait upstream |
+        | `capacity_per_hour` | available x `legsPerRobotHour` (30) | available x `retrievalsPerUnitHour` (60) | 0 |
+        | `buffer_limit`, `occupied`, `queue_depth` | 0 | 0 | the queue's |
+        | `measured_at` | this context's clock | this context's clock | this context's clock |
+
+        Negative counts clamp to 0.
+      required: [subsystem_kind, subsystem_id, status, units_total, units_available, open_work, capacity_per_hour, buffer_limit, occupied, queue_depth, measured_at]
+      properties:
+        subsystem_kind: {type: string, enum: [AMR_FLEET, ASRS, STATION]}
+        subsystem_id: {type: string}
+        status: {type: string, enum: [AVAILABLE, DEGRADED, UNAVAILABLE]}
+        units_total: {type: integer, minimum: 0}
+        units_available: {type: integer, minimum: 0}
+        open_work: {type: integer, minimum: 0}
+        capacity_per_hour: {type: integer, minimum: 0}
+        buffer_limit: {type: integer, minimum: 0}
+        occupied: {type: integer, minimum: 0}
+        queue_depth: {type: integer, minimum: 0}
+        measured_at: {type: string, format: date-time}
+    Subsystems:
+      type: object
+      required: [subsystems]
+      properties:
+        subsystems: {type: array, description: Sorted by kind then id., items: {$ref: '#/components/schemas/SubsystemCapacity'}}
+    ClarificationResolution:
+      type: object
+      additionalProperties: false
+      properties:
+        location: {$ref: '#/components/schemas/Id', description: 'Where the container now is (a place reference); default: where the track is.'}
