@@ -29,7 +29,7 @@ func TestTheRefusalCatalogueMatchesThePinnedOpenAPI(t *testing.T) {
 	doc := loadPinnedOpenAPI(t)
 
 	post := operation(t, doc, "/transport-requests", "post")
-	operation(t, doc, "/transport-requests/{transportRequestId}/cancellation", "post")
+	cancellation := operation(t, doc, "/transport-requests/{transportRequestId}/cancellation", "post")
 
 	t.Run("transport request schema", func(t *testing.T) {
 		assertTransportRequestSchema(t, doc)
@@ -53,6 +53,16 @@ func TestTheRefusalCatalogueMatchesThePinnedOpenAPI(t *testing.T) {
 		}
 	})
 
+	// carry (Task 1 review): the Task 4 client sends Idempotency-Key on
+	// every POST and maps idempotency-key-required/-invalid/-reused — a
+	// producer dropping, renaming or weakening the parameter must fail
+	// here.
+	t.Run("Idempotency-Key parameter on both POSTs", func(t *testing.T) {
+		assertIdempotencyKeyRef(t, "POST /transport-requests", post)
+		assertIdempotencyKeyRef(t, "POST cancellation", cancellation)
+		assertIdempotencyKeyComponent(t, doc)
+	})
+
 	t.Run("422 rejected is OUTCOME with the four reasons", func(t *testing.T) {
 		desc := stringOf(component(t, doc, "responses", "Rejected"), "description")
 		for _, want := range []string{
@@ -63,6 +73,56 @@ func TestTheRefusalCatalogueMatchesThePinnedOpenAPI(t *testing.T) {
 			}
 		}
 	})
+}
+
+// assertIdempotencyKeyComponent pins the shape of
+// components/parameters/IdempotencyKey itself: a required header of
+// 1-128 printable ASCII characters (fleet guideline R3-R5).
+func assertIdempotencyKeyComponent(t *testing.T, doc map[string]any) {
+	t.Helper()
+	key := component(t, doc, "parameters", "IdempotencyKey")
+	if got := stringOf(key, "name"); got != "Idempotency-Key" {
+		t.Errorf("IdempotencyKey parameter name %q, want Idempotency-Key", got)
+	}
+	if got := stringOf(key, "in"); got != "header" {
+		t.Errorf("IdempotencyKey parameter in %q, want header", got)
+	}
+	if required, _ := key["required"].(bool); !required {
+		t.Errorf("IdempotencyKey parameter required %v, want true", key["required"])
+	}
+	schema := mapOf(t, key, "schema")
+	if got := stringOf(schema, "type"); got != "string" {
+		t.Errorf("IdempotencyKey schema type %q, want string", got)
+	}
+	if got := schema["minLength"]; got != 1 {
+		t.Errorf("IdempotencyKey schema minLength %v, want 1", got)
+	}
+	if got := schema["maxLength"]; got != 128 {
+		t.Errorf("IdempotencyKey schema maxLength %v, want 128", got)
+	}
+	if got := stringOf(schema, "pattern"); got != `^[\x21-\x7E]+$` {
+		t.Errorf("IdempotencyKey schema pattern %q, want printable ASCII", got)
+	}
+}
+
+// assertIdempotencyKeyRef asserts the operation's parameters list
+// references components/parameters/IdempotencyKey (its shape is asserted
+// once, at the component).
+func assertIdempotencyKeyRef(t *testing.T, opName string, op map[string]any) {
+	t.Helper()
+	params, ok := op["parameters"].([]any)
+	if !ok {
+		t.Errorf("%s declares no parameters list (Idempotency-Key must be one)", opName)
+		return
+	}
+	for _, p := range params {
+		if pm, ok := p.(map[string]any); ok {
+			if ref, _ := pm["$ref"].(string); ref == "#/components/parameters/IdempotencyKey" {
+				return
+			}
+		}
+	}
+	t.Errorf("%s parameters do not reference #/components/parameters/IdempotencyKey", opName)
 }
 
 // assertTransportRequestSchema pins the create body the Task 4 client
