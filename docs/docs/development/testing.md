@@ -127,6 +127,18 @@ cannot express; `schemathesis.toml` widens accepted statuses for
 `arriveAtRebin` only (a `422 rebin-unknown-line` on a schema-valid body).
 Install with `python3 -m pip install 'schemathesis==4.28.0'`.
 
+### Pinned producer contracts
+
+The consumer contract tests validate against byte-copies of producer
+specs registered in `contracts/pinned.json`; the `pinned-contracts` CI
+job (`scripts/harness/pinned_contract_gate.py`) re-reads each producer's
+branch and fails when a copy drifts. A refresh round copies the
+producer's file over the pin and fixes what fails — and must also bump
+the pin's `pinned_commit` in `contracts/pinned.json` (where the pin
+carries one) to the producer head the copy was taken from: the gate
+compares file content only, so an un-bumped `pinned_commit` silently
+goes stale.
+
 ### Mutation testing
 
 | Target | Scope | When | Gate |
