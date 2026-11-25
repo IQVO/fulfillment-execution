@@ -32,13 +32,33 @@ import (
 const materialFlowControlTopic = "warehouse.material-flow-control.events"
 
 // mfcConsumedFields maps each consumed event schema to the data fields
-// the plan decodes from it (D6: exactly these five types).
-var mfcConsumedFields = map[string][]string{
-	"TransportAcceptedEvent":         {"transport_order_id", "transport_request_id", "container_id", "purpose", "accepted_at"},
-	"TransportRejectedEvent":         {"transport_request_id", "container_id", "reason", "rejected_at"},
-	"ContainerArrivedAtStationEvent": {"transport_order_id", "transport_request_id", "container_id", "station_id", "queue_position", "arrived_at"},
-	"TransportCompletedEvent":        {"transport_order_id", "transport_request_id", "container_id", "destination", "completed_at"},
-	"TransportFailedEvent":           {"transport_order_id", "transport_request_id", "container_id", "reason", "failed_at"},
+// the plan decodes from it (D6: exactly these five types), each field
+// paired with the JSON type the pin declares for it.
+//
+// carry (Task 1 review): the field->type pairs pin the TYPE, not only
+// presence/required — a producer refactor flipping queue_position from
+// integer to string must fail here, not first in Task 5's decoder.
+var mfcConsumedFields = map[string]map[string]string{
+	"TransportAcceptedEvent": {
+		"transport_order_id": "string", "transport_request_id": "string", "container_id": "string",
+		"purpose": "string", "accepted_at": "string",
+	},
+	"TransportRejectedEvent": {
+		"transport_request_id": "string", "container_id": "string",
+		"reason": "string", "rejected_at": "string",
+	},
+	"ContainerArrivedAtStationEvent": {
+		"transport_order_id": "string", "transport_request_id": "string", "container_id": "string",
+		"station_id": "string", "queue_position": "integer", "arrived_at": "string",
+	},
+	"TransportCompletedEvent": {
+		"transport_order_id": "string", "transport_request_id": "string", "container_id": "string",
+		"destination": "string", "completed_at": "string",
+	},
+	"TransportFailedEvent": {
+		"transport_order_id": "string", "transport_request_id": "string", "container_id": "string",
+		"reason": "string", "failed_at": "string",
+	},
 }
 
 func TestMaterialFlowControlConsumedTypesCarryTheDecodedFields(t *testing.T) {
@@ -52,6 +72,24 @@ func TestMaterialFlowControlConsumedTypesCarryTheDecodedFields(t *testing.T) {
 			assertExamplesCarryFields(t, schema, msg, fields)
 		})
 	}
+
+	// carry (Task 1 review): the TransportRejected reason enum is what
+	// Task 5's table test switches on.
+	t.Run("TransportRejectedEvent reason enum", func(t *testing.T) {
+		data := eventDataSubschema(t, doc, "TransportRejectedEvent")
+		props, ok := data["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("TransportRejectedEvent data object declares no properties")
+		}
+		reason, ok := props["reason"].(map[string]any)
+		if !ok {
+			t.Fatalf("TransportRejectedEvent data declares no reason property")
+		}
+		want := []string{"UNKNOWN_CONTAINER", "CONTAINER_BUSY", "DESTINATION_UNREACHABLE", "SUBSYSTEM_UNAVAILABLE"}
+		if got := stringList(reason, "enum"); !slices.Equal(got, want) {
+			t.Errorf("TransportRejectedEvent reason enum %v, want %v", got, want)
+		}
+	})
 
 	// D6: the channel documents exactly the seven types of the pin; FE
 	// consumes five and must skip (never DLQ) ContainerSentToClarification
@@ -97,10 +135,10 @@ func channelMessage(t *testing.T, doc *pinnedAsyncAPI, ch pinnedChannel, name st
 }
 
 // assertSchemaCarriesFields asserts the event schema's data object
-// DECLARES every field the plan decodes (as a property) and REQUIRES it
+// DECLARES every field the plan decodes (as a property), REQUIRES it
 // (allOf-aware: the pin composes the CloudEvents envelope and a data
-// overlay).
-func assertSchemaCarriesFields(t *testing.T, doc *pinnedAsyncAPI, schema string, fields []string) {
+// overlay) and declares it with the pinned JSON type.
+func assertSchemaCarriesFields(t *testing.T, doc *pinnedAsyncAPI, schema string, fields map[string]string) {
 	t.Helper()
 	data := eventDataSubschema(t, doc, schema)
 	props, ok := data["properties"].(map[string]any)
@@ -108,12 +146,19 @@ func assertSchemaCarriesFields(t *testing.T, doc *pinnedAsyncAPI, schema string,
 		t.Fatalf("%s data object declares no properties", schema)
 	}
 	required := requiredList(data)
-	for _, f := range fields {
-		if _, ok := props[f]; !ok {
+	for f, wantType := range fields {
+		p, ok := props[f].(map[string]any)
+		if !ok {
 			t.Errorf("%s data has no property %q (the plan decodes it)", schema, f)
+			continue
 		}
 		if !slices.Contains(required, f) {
 			t.Errorf("%s data does not require %q (the plan decodes it unconditionally)", schema, f)
+		}
+		// carry (Task 1 review): the type flip is the drift a producer
+		// refactor produces; presence and required alone do not bite.
+		if got, _ := p["type"].(string); got != wantType {
+			t.Errorf("%s data property %q has type %q, want the pinned %q", schema, f, got, wantType)
 		}
 	}
 }
@@ -121,7 +166,7 @@ func assertSchemaCarriesFields(t *testing.T, doc *pinnedAsyncAPI, schema string,
 // assertExamplesCarryFields asserts every pinned example of the message
 // is a CloudEvents document of a com.warehouse.wes.material-flow-control.*
 // type whose data map carries every decoded field.
-func assertExamplesCarryFields(t *testing.T, schema string, msg pinnedMessage, fields []string) {
+func assertExamplesCarryFields(t *testing.T, schema string, msg pinnedMessage, fields map[string]string) {
 	t.Helper()
 	if len(msg.Examples) == 0 {
 		t.Fatalf("pinned material-flow-control spec documents %s without examples", schema)
@@ -136,12 +181,25 @@ func assertExamplesCarryFields(t *testing.T, schema string, msg pinnedMessage, f
 			t.Errorf("%s example of type %s carries no data object", schema, typ)
 			continue
 		}
-		for _, f := range fields {
+		for f := range fields {
 			if _, ok := data[f]; !ok {
 				t.Errorf("%s example of type %s data misses %q", schema, typ, f)
 			}
 		}
 	}
+}
+
+// stringList returns node's string list under key (nil when absent), for
+// enum-style assertions on raw schema maps.
+func stringList(node map[string]any, key string) []string {
+	raw, _ := node[key].([]any)
+	out := make([]string, 0, len(raw))
+	for _, v := range raw {
+		if s, ok := v.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // eventDataSubschema resolves an event schema (envelope $ref + data
