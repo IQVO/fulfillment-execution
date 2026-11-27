@@ -198,4 +198,11 @@ REFERENCE implementation for the outbox pattern (see
 Fleet REST guideline (ADR-0060): every POST above is idempotent — send a
 fresh `Idempotency-Key` per logical request; a replayed answer carries
 `Idempotency-Replayed: true`; reusing a key with a different request is 409
-`idempotency-key-reused` (never 422).
+`idempotency-key-reused` (never 422). Replay classes (ADR-0066): a 2xx and
+a FINAL refusal (a function of the request alone, a terminal state) are
+stored and replayed; a RETRYABLE refusal (a referenced fact not known yet,
+an aggregate state not reached yet, a claim held right now, a dependency
+not ready) is not stored — its key row rolls back with the request and the
+retry executes. The class is declared on the problem's catalogue entry
+(errors.go / problems.go); a problem type without a class fails a unit
+test.

@@ -10,34 +10,37 @@ type ProblemTypeForTest struct {
 	Class  string
 }
 
-// ProblemTypesForTest is the whole catalogue, one entry per slug and status.
-// The class column is empty until the catalogue entries declare it — the
-// replay-class tests go red on exactly that.
+// ProblemTypesForTest is the whole catalogue (allProblemTypes), one entry
+// per slug and status.
 func ProblemTypesForTest() []ProblemTypeForTest {
 	var out []ProblemTypeForTest
 	seen := map[string]bool{}
-	for _, e := range problemCatalog {
-		slug, _ := problemTypeAndTitle(e.err)
-		key := slug + http.StatusText(statusFor(e.err))
+	for _, p := range allProblemTypes() {
+		key := p.Slug + http.StatusText(p.Status)
 		if seen[key] {
 			continue
 		}
 		seen[key] = true
-		out = append(out, ProblemTypeForTest{Slug: slug, Status: statusFor(e.err), Class: ""})
+		out = append(out, ProblemTypeForTest{Slug: p.Slug, Status: p.Status, Class: string(p.Class)})
 	}
 	return out
 }
 
 // RefuseForTest answers the problem type (slug, status) through the
-// production error writer, so the production class marking (once it exists)
-// is what the middleware's capture reads.
+// production error writer: the typed domain error through writeError, any
+// other through writeProblem, so the class marking the middleware reads is
+// the production one.
 func RefuseForTest(w http.ResponseWriter, r *http.Request, slug string, status int) {
-	for _, e := range problemCatalog {
-		entrySlug, _ := problemTypeAndTitle(e.err)
-		if entrySlug == slug && statusFor(e.err) == status {
-			writeError(w, r, e.err)
+	for _, p := range allProblemTypes() {
+		if p.Slug != slug || p.Status != status {
+			continue
+		}
+		if p.err != nil {
+			writeError(w, r, p.err)
 			return
 		}
+		writeProblem(w, p.Status, p.info, "refused for the test", r.URL.Path)
+		return
 	}
 	panic("no problem type " + slug)
 }

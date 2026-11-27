@@ -107,16 +107,21 @@ paths:
         selects the earliest-CPT pending task a station is equipped for.
 
 
-        **Idempotent per `Idempotency-Key` (ADR-0028).** Send a
+        **Idempotent per `Idempotency-Key` (ADR-0028, ADR-0066).** Send a
         caller-chosen `Idempotency-Key` header on every call. The first
         request with a given key creates the task; a retry with the same
         key and the same body replays the stored response verbatim (same
-        status, headers and task id — including a cached 4xx) instead of
-        creating a duplicate. Reusing a key with a different body is
-        rejected with `409 idempotency-key-reused`; omitting the header is
-        `400 idempotency-key-required`. Postgres is the only runtime, so
-        the check is on in every deployment. Without a repeated key every
-        call creates a new task with a fresh, server-generated id.
+        status, headers and task id) instead of creating a duplicate. A
+        stored answer is a 2xx or a refusal that is FINAL for the request
+        (a function of the request alone, e.g. `invalid-request`); a
+        refusal whose cause is state that can change is NOT stored — the
+        key is released and a retry executes again. Reusing a key with a
+        different body is rejected with `409 idempotency-key-reused` (after
+        a released refusal the key is free, so a different body is a new
+        request); omitting the header is `400 idempotency-key-required`.
+        Postgres is the only runtime, so the check is on in every
+        deployment. Without a repeated key every call creates a new task
+        with a fresh, server-generated id.
       parameters:
         - name: Idempotency-Key
           in: header
@@ -1023,15 +1028,21 @@ paths:
         unchanged. A rejected scan changes nothing.
 
 
-        **Idempotent per `Idempotency-Key` (ADR-0055).** Send a fresh
-        `Idempotency-Key` for each physical scan and reuse it only when
-        retrying that scan after a lost response. A retry with the same key
-        and the same body on the same path replays the stored answer
-        verbatim (same status and body, including a cached 4xx) and does
-        not count the scan again; two scans with different keys both
-        count. Reusing a key with a different body or on another task is
-        `409 idempotency-key-reused`; omitting the header is
-        `400 idempotency-key-required`.
+        **Idempotent per `Idempotency-Key` (ADR-0055, ADR-0066).** Send a
+        fresh `Idempotency-Key` for each physical scan and reuse it only
+        when retrying that scan after a lost response. A retry with the
+        same key and the same body on the same path replays the stored
+        answer verbatim (same status and body) and does not count the scan
+        again; two scans with different keys both count. A rejected scan
+        whose cause is state that can change (`pick-over-quantity`,
+        `unknown-gtin`, `scan-sku-mismatch`, `scan-level-mismatch`,
+        `no-pick-plan`, `pick-incomplete`) is NOT stored: the key is
+        released and a retry under the same key executes again, so a scan
+        refused before its facts were known can succeed once they are.
+        Only a FINAL refusal (`invalid-scanned-gtin`, `invalid-scan-count`)
+        is stored and replayed. Reusing a key with a different body or on
+        another task is `409 idempotency-key-reused`; omitting the header
+        is `400 idempotency-key-required`.
       parameters:
         - name: id
           in: path
@@ -2104,7 +2115,11 @@ components:
         with the same method, path and body replays the stored answer (status,
         body and `Location`) with `Idempotency-Replayed: true` and runs
         nothing; the same key with a different method, path or body is
-        `409 idempotency-key-reused`.
+        `409 idempotency-key-reused`. Stored answers are a 2xx and the
+        refusals that are FINAL for the request (ADR-0066); a refusal whose
+        cause is state that can change (RETRYABLE) is not stored, its key is
+        released, and a retry executes again — a different body under a
+        released key is a new request, not `idempotency-key-reused`.
       schema:
         type: string
         minLength: 1

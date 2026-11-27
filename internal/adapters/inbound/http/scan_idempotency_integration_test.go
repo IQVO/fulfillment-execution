@@ -202,9 +202,11 @@ func TestScanIdempotency_MissingKey_Is400AndCountsNothing(t *testing.T) {
 	}
 }
 
-// A rejected scan is stored too: its retry replays the same 409 and the
+// A rejected scan whose cause is state that can change (pick-over-quantity
+// is RETRYABLE, ADR 0066) is NOT stored: the key is released, so the retry
+// under the same key EXECUTES again (a fresh 409, never a replay) and the
 // over-quantity guard still holds for a genuinely new key.
-func TestScanIdempotency_RejectedScanReplaysTheSameProblem(t *testing.T) {
+func TestScanIdempotency_RejectedScanIsReleasedAndTheRetryExecutes(t *testing.T) {
 	f := newScanFixture(t, 2)
 
 	if rec := f.scan("pick-1", "scan-key-ok", scanBody(2)); rec.Code != http.StatusOK {
@@ -214,9 +216,15 @@ func TestScanIdempotency_RejectedScanReplaysTheSameProblem(t *testing.T) {
 	if over.Code != http.StatusConflict || problemType(t, over) != "pick-over-quantity" {
 		t.Fatalf("over-quantity = %d %s, want 409 pick-over-quantity", over.Code, over.Body.String())
 	}
-	replay := f.scan("pick-1", "scan-key-over", scanBody(1))
-	if replay.Code != over.Code || replay.Body.String() != over.Body.String() {
-		t.Fatalf("replayed rejection = %d %s, want %d %s", replay.Code, replay.Body.String(), over.Code, over.Body.String())
+	if n := keyRows(t, f.pool, "scan-key-over"); n != 0 {
+		t.Fatalf("key rows after a RETRYABLE refusal = %d, want 0: the key must be released", n)
+	}
+	retry := f.scan("pick-1", "scan-key-over", scanBody(1))
+	if retry.Code != http.StatusConflict || problemType(t, retry) != "pick-over-quantity" {
+		t.Fatalf("retried rejection = %d %s, want a fresh 409 pick-over-quantity", retry.Code, retry.Body.String())
+	}
+	if got := retry.Header().Get(inboundhttp.IdempotencyReplayedHeader); got != "" {
+		t.Fatalf("the retried refusal carries %s: %q — it executed, it is not a replay", inboundhttp.IdempotencyReplayedHeader, got)
 	}
 	if got := f.picked(t); got != 2 {
 		t.Fatalf("pickedEaches = %d, want 2", got)

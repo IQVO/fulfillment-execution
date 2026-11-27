@@ -51,6 +51,13 @@ func validIdempotencyKey(key string) bool {
 // order-management's own RequireIdempotencyKey (ADR 0023) — the fleet
 // reference implementation this middleware is a direct port of.
 //
+// What is stored: a 2xx, or a refusal whose problem type declares FINAL or
+// OUTCOME on its catalogue entry (ADR 0066, replay_class.go — the middleware
+// reads the class the production error writer marked on its capturing
+// writer; it holds no list of slugs). A RETRYABLE refusal, a refusal with
+// no class, a 5xx and a panic roll the whole transaction back, key row
+// included, so the retry re-executes.
+//
 // # The core correctness argument: a committed row's status_code is NEVER NULL
 //
 // idempotency_keys.status_code (and response_body/response_headers) start
@@ -99,15 +106,13 @@ func RequireIdempotencyKey(pool *pgxpool.Pool) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			key := r.Header.Get(IdempotencyKeyHeader)
 			if key == "" {
-				writeProblem(w, http.StatusBadRequest,
-					"idempotency-key-required", "Idempotency-Key header is required",
+				writeProblem(w, http.StatusBadRequest, problemIdempotencyKeyRequired,
 					"This endpoint requires a caller-supplied "+IdempotencyKeyHeader+" header so a retried request is never applied twice.",
 					r.URL.Path)
 				return
 			}
 			if !validIdempotencyKey(key) {
-				writeProblem(w, http.StatusBadRequest,
-					"idempotency-key-invalid", "Idempotency-Key header is invalid",
+				writeProblem(w, http.StatusBadRequest, problemIdempotencyKeyInvalid,
 					IdempotencyKeyHeader+" must be 1-128 printable ASCII characters.",
 					r.URL.Path)
 				return
@@ -119,9 +124,7 @@ func RequireIdempotencyKey(pool *pgxpool.Pool) func(http.Handler) http.Handler {
 			// exact same bytes it would have without this middleware.
 			bodyBytes, err := io.ReadAll(r.Body)
 			if err != nil {
-				writeProblem(w, http.StatusBadRequest,
-					"malformed-request-body", "The request body could not be read",
-					err.Error(), r.URL.Path)
+				writeProblem(w, http.StatusBadRequest, problemBodyUnreadable, err.Error(), r.URL.Path)
 				return
 			}
 			_ = r.Body.Close()
@@ -132,7 +135,7 @@ func RequireIdempotencyKey(pool *pgxpool.Pool) func(http.Handler) http.Handler {
 			ctx := r.Context()
 			tx, err := pool.Begin(ctx)
 			if err != nil {
-				writeProblem(w, http.StatusInternalServerError, "internal-error", "Internal server error", err.Error(), r.URL.Path)
+				writeProblem(w, http.StatusInternalServerError, problemInternalError, err.Error(), r.URL.Path)
 				return
 			}
 
@@ -143,7 +146,7 @@ func RequireIdempotencyKey(pool *pgxpool.Pool) func(http.Handler) http.Handler {
 			`, key, r.Method, r.URL.Path, requestHash)
 			if err != nil {
 				_ = tx.Rollback(ctx)
-				writeProblem(w, http.StatusInternalServerError, "internal-error", "Internal server error", err.Error(), r.URL.Path)
+				writeProblem(w, http.StatusInternalServerError, problemInternalError, err.Error(), r.URL.Path)
 				return
 			}
 
@@ -187,7 +190,7 @@ func replayCachedResponse(w http.ResponseWriter, r *http.Request, pool *pgxpool.
 		FROM idempotency_keys WHERE key = $1
 	`, key).Scan(&storedHash, &storedMethod, &storedPath, &statusCode, &responseBody, &responseHeadersRaw)
 	if err != nil {
-		writeProblem(w, http.StatusInternalServerError, "internal-error", "Internal server error", err.Error(), r.URL.Path)
+		writeProblem(w, http.StatusInternalServerError, problemInternalError, err.Error(), r.URL.Path)
 		return
 	}
 
@@ -196,8 +199,7 @@ func replayCachedResponse(w http.ResponseWriter, r *http.Request, pool *pgxpool.
 	// key on another path (another task's scans) or with another body is a
 	// different request, not a retry (409, not 422).
 	if storedHash != requestHash || storedPath != r.URL.Path || storedMethod != r.Method {
-		writeProblem(w, http.StatusConflict,
-			"idempotency-key-reused", "Idempotency-Key was already used with a different request",
+		writeProblem(w, http.StatusConflict, problemIdempotencyKeyReused,
 			"The Idempotency-Key header on this request was already used with a request that had a different method, path or body. "+
 				"Use a new Idempotency-Key for a genuinely different request.",
 			r.URL.Path)
@@ -213,7 +215,7 @@ func replayCachedResponse(w http.ResponseWriter, r *http.Request, pool *pgxpool.
 	if statusCode == nil {
 		// Unreachable given the invariant above; a defensive 500 rather
 		// than a panic or a fabricated response if it is ever violated.
-		writeProblem(w, http.StatusInternalServerError, "internal-error", "Internal server error",
+		writeProblem(w, http.StatusInternalServerError, problemInternalError,
 			"idempotency row committed with no recorded outcome — this should be impossible", r.URL.Path)
 		return
 	}
@@ -270,20 +272,23 @@ func runFreshRequest(w http.ResponseWriter, r *http.Request, ctx context.Context
 
 	if _, err := tx.Exec(ctx, "SAVEPOINT handler_run"); err != nil {
 		_ = tx.Rollback(ctx)
-		writeProblem(w, http.StatusInternalServerError, "internal-error", "Internal server error", err.Error(), r.URL.Path)
+		writeProblem(w, http.StatusInternalServerError, problemInternalError, err.Error(), r.URL.Path)
 		return
 	}
 
 	txCtx := pgtx.WithTx(ctx, tx)
-	rec := httptest.NewRecorder()
+	rec := newCapture()
 	next.ServeHTTP(rec, r.WithContext(txCtx))
 
-	// A 5xx is not a deterministic answer: roll the whole unit back (key row,
-	// aggregate change, outbox rows) and never store it, so the retry
-	// re-executes instead of replaying the failure.
-	if rec.Code >= http.StatusInternalServerError {
+	// An answer that is not final for the request is released: the whole
+	// transaction rolls back — the key row with it — and the client gets
+	// the answer, so a retry with the same key executes again instead of
+	// replaying it. That is a 5xx (never a deterministic answer), a refusal
+	// whose problem type declares RETRYABLE, and a refusal that declares no
+	// class (replay_class.go, ADR 0066).
+	if !rec.storable() {
 		_ = tx.Rollback(ctx)
-		copyRecorded(w, rec)
+		writeRecorded(w, rec.ResponseRecorder)
 		return
 	}
 
@@ -294,28 +299,30 @@ func runFreshRequest(w http.ResponseWriter, r *http.Request, ctx context.Context
 		// returns the transaction to health.
 		if _, rerr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT handler_run"); rerr != nil {
 			_ = tx.Rollback(ctx)
-			writeProblem(w, http.StatusInternalServerError, "internal-error", "Internal server error", err.Error(), r.URL.Path)
+			writeProblem(w, http.StatusInternalServerError, problemInternalError, err.Error(), r.URL.Path)
 			return
 		}
-		if rec.Code < http.StatusBadRequest {
-			// A success whose writes cannot be committed must neither be
-			// returned nor cached: fail the request so the key retries.
+		if rec.success() || rec.class == classOutcome {
+			// A success answer whose writes cannot be committed must
+			// neither be returned nor cached, and neither must an OUTCOME
+			// refusal, whose whole point is that its writes commit with
+			// it: fail the request so the key retries.
 			_ = tx.Rollback(ctx)
-			writeProblem(w, http.StatusInternalServerError, "internal-error", "Internal server error", err.Error(), r.URL.Path)
+			writeProblem(w, http.StatusInternalServerError, problemInternalError, err.Error(), r.URL.Path)
 			return
 		}
 	}
 
-	// Every NORMAL (non-panic) response is cached here, including a
-	// business-logic error response (4xx from validation, etc.) — a
-	// deliberate v1 simplification (see the ADR): a client retrying the
-	// exact same key+body deterministically gets the exact same answer,
-	// including a validation error. A caller wanting a different outcome
-	// must use a new Idempotency-Key.
+	// What is stored here is a 2xx, or a refusal whose problem type
+	// declares FINAL (a function of the request alone, or provably
+	// irreversible for the identical request): a client retrying the exact
+	// same key+body deterministically gets the exact same answer. A caller
+	// wanting a different outcome of a stored refusal must use a new
+	// Idempotency-Key (ADR 0066).
 	headersJSON, err := json.Marshal(rec.Header())
 	if err != nil {
 		_ = tx.Rollback(ctx)
-		writeProblem(w, http.StatusInternalServerError, "internal-error", "Internal server error", err.Error(), r.URL.Path)
+		writeProblem(w, http.StatusInternalServerError, problemInternalError, err.Error(), r.URL.Path)
 		return
 	}
 
@@ -325,22 +332,23 @@ func runFreshRequest(w http.ResponseWriter, r *http.Request, ctx context.Context
 		WHERE key = $4
 	`, rec.Code, rec.Body.Bytes(), headersJSON, key); err != nil {
 		_ = tx.Rollback(ctx)
-		writeProblem(w, http.StatusInternalServerError, "internal-error", "Internal server error", err.Error(), r.URL.Path)
+		writeProblem(w, http.StatusInternalServerError, problemInternalError, err.Error(), r.URL.Path)
 		return
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		writeProblem(w, http.StatusInternalServerError, "internal-error", "Internal server error", err.Error(), r.URL.Path)
+		writeProblem(w, http.StatusInternalServerError, problemInternalError, err.Error(), r.URL.Path)
 		return
 	}
 
 	// Only after a successful commit does the real client see anything —
 	// the recorder's headers, then status, then body, VERBATIM.
-	copyRecorded(w, rec)
+	writeRecorded(w, rec.ResponseRecorder)
 }
 
-// copyRecorded writes a captured response onto the real ResponseWriter.
-func copyRecorded(w http.ResponseWriter, rec *httptest.ResponseRecorder) {
+// writeRecorded copies a captured response onto the real writer: headers,
+// then status, then body.
+func writeRecorded(w http.ResponseWriter, rec *httptest.ResponseRecorder) {
 	for k, vs := range rec.Header() {
 		for _, v := range vs {
 			w.Header().Add(k, v)

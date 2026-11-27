@@ -60,6 +60,12 @@ here) is route-scoped behind `RequireIdempotencyKey`, including the sweeps and
   transaction, `UnitOfWork.Execute` joins it). 2xx and 4xx are stored and replayed; a 5xx now
   rolls the whole unit back and is **never stored**, so the retry re-executes. Concurrent
   same-key requests serialise on the primary-key index.
+
+  > **Update 2026-11-27 ([ADR-0066](./0066-idempotency-replay-classes.md)).** "2xx and 4xx are
+  > stored and replayed" is narrowed by the fleet replay-class rule (owner decision 2026-11-23):
+  > a 2xx, a FINAL refusal and an OUTCOME refusal are stored; a RETRYABLE refusal (a referenced
+  > fact not known yet, an aggregate state not reached yet, a claim held right now, a dependency
+  > not ready) is not — its key row rolls back with the request and the retry executes.
 - The sweep CronJob (`cmd/sweep`) mints one key per pass and reuses it across that pass's retries.
 
 **Collections (R7).** `GET /tasks?orderRef=` and `GET /packages?orderRef=` take `limit` (1-500,

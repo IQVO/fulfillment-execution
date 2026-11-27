@@ -19,7 +19,7 @@ import (
 // transaction: a statement fails on the server (a unique violation, like a
 // lost race on a unique index), the repository translates it to a typed
 // error, and the handler answers 4xx — but the transaction is ABORTED from
-// then on. The middleware must still record and return that truthful 4xx.
+// then on.
 func poisonTx(t *testing.T, r *http.Request) {
 	t.Helper()
 	tx, ok := pgtx.TxFrom(r.Context())
@@ -33,6 +33,17 @@ func poisonTx(t *testing.T, r *http.Request) {
 		}
 	}
 	t.Error("the duplicate insert did not abort the transaction")
+}
+
+// refusingHandler poisons the transaction like a lost unique-index race and
+// then answers the problem type (slug, status) through the PRODUCTION error
+// writer, so the answer carries its replay class (ADR 0066).
+func refusingHandler(t *testing.T, calls *atomic.Int64, slug string, status int) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		poisonTx(t, r)
+		inboundhttp.RefuseForTest(w, r, slug, status)
+	})
 }
 
 func poisonRequest(key string) *http.Request {
@@ -50,31 +61,24 @@ func poisonCount(t *testing.T, pool *pgxpool.Pool, key string) int {
 	return n
 }
 
-// TestIdempotency_A409FromAnAbortedTransactionCommitsTheOutcome: a handler
-// that loses a race on a unique index answers 409, not 500, and that 409 is
-// cached and replayed without re-running the handler.
-func TestIdempotency_A409FromAnAbortedTransactionCommitsTheOutcome(t *testing.T) {
+// A FINAL refusal over an aborted transaction answers its own status (not
+// 500), is committed, and replays without ever re-running the handler.
+func TestIdempotency_AFinalRefusalFromAnAbortedTransactionCommitsTheOutcome(t *testing.T) {
 	pool := idempotencyDB(t)
 	var calls atomic.Int64
-	mw := inboundhttp.RequireIdempotencyKey(pool)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls.Add(1)
-		poisonTx(t, r)
-		w.Header().Set("Content-Type", "application/problem+json")
-		w.WriteHeader(http.StatusConflict)
-		_, _ = w.Write([]byte(`{"title":"Conflict","status":409}`))
-	}))
+	mw := inboundhttp.RequireIdempotencyKey(pool)(refusingHandler(t, &calls, "invalid-request", http.StatusBadRequest))
 
 	first := httptest.NewRecorder()
 	mw.ServeHTTP(first, poisonRequest("k-poison"))
-	if first.Code != http.StatusConflict {
-		t.Fatalf("first = %d %s, want the truthful 409", first.Code, first.Body.String())
+	if first.Code != http.StatusBadRequest {
+		t.Fatalf("first = %d %s, want the truthful 400", first.Code, first.Body.String())
 	}
 
 	var statusCode int
 	if err := pool.QueryRow(t.Context(), `SELECT status_code FROM idempotency_keys WHERE key = 'k-poison'`).Scan(&statusCode); err != nil {
-		t.Fatalf("the 409 outcome was not committed: %v", err)
+		t.Fatalf("the FINAL outcome was not committed: %v", err)
 	}
-	if statusCode != http.StatusConflict {
+	if statusCode != http.StatusBadRequest {
 		t.Fatalf("cached status = %d", statusCode)
 	}
 	if n := poisonCount(t, pool, "dup"); n != 0 {
@@ -83,14 +87,37 @@ func TestIdempotency_A409FromAnAbortedTransactionCommitsTheOutcome(t *testing.T)
 
 	replay := httptest.NewRecorder()
 	mw.ServeHTTP(replay, poisonRequest("k-poison"))
-	if replay.Code != http.StatusConflict || replay.Header().Get(inboundhttp.IdempotencyReplayedHeader) != "true" {
-		t.Fatalf("replay = %d replayed=%q, want the cached 409", replay.Code, replay.Header().Get(inboundhttp.IdempotencyReplayedHeader))
+	if replay.Code != http.StatusBadRequest || replay.Header().Get(inboundhttp.IdempotencyReplayedHeader) != "true" {
+		t.Fatalf("replay = %d replayed=%q, want the cached 400", replay.Code, replay.Header().Get(inboundhttp.IdempotencyReplayedHeader))
 	}
 	if replay.Body.String() != first.Body.String() {
 		t.Fatalf("replay body = %s, want %s", replay.Body.String(), first.Body.String())
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("handler ran %d times, want 1 (replay must not re-run it)", calls.Load())
+	}
+}
+
+// A RETRYABLE refusal over an aborted transaction is released like any
+// other: the transaction rolls back (an aborted one can), the client gets
+// the truthful 409, no row is left and the key retries.
+func TestIdempotency_ARetryableRefusalFromAnAbortedTransactionIsReleased(t *testing.T) {
+	pool := idempotencyDB(t)
+	var calls atomic.Int64
+	mw := inboundhttp.RequireIdempotencyKey(pool)(refusingHandler(t, &calls, "unknown-gtin", http.StatusConflict))
+
+	first := httptest.NewRecorder()
+	mw.ServeHTTP(first, poisonRequest("k-retryable"))
+	if first.Code != http.StatusConflict {
+		t.Fatalf("first = %d %s, want the truthful 409", first.Code, first.Body.String())
+	}
+	if n := poisonCount(t, pool, "k-retryable"); n != 0 {
+		t.Fatalf("a RETRYABLE refusal left %d idempotency rows", n)
+	}
+	second := httptest.NewRecorder()
+	mw.ServeHTTP(second, poisonRequest("k-retryable"))
+	if second.Header().Get(inboundhttp.IdempotencyReplayedHeader) != "" || calls.Load() != 2 {
+		t.Fatalf("retry replayed=%q calls=%d, want a fresh execution (2 calls)", second.Header().Get(inboundhttp.IdempotencyReplayedHeader), calls.Load())
 	}
 }
 
