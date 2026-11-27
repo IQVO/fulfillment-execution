@@ -120,8 +120,8 @@ mcp:
     enabled: true
     path: /api/mcp/fulfillment-execution
     parentRefs:
-      - name: warehouse-gateway
-        namespace: kong
+      - name: agent-router
+        namespace: envoy-gateway-system
         sectionName: http
 a2a:
   enabled: true
@@ -129,8 +129,8 @@ a2a:
     enabled: true
     path: /api/a2a/fulfillment-execution
     parentRefs:
-      - name: warehouse-gateway
-        namespace: kong
+      - name: agent-router
+        namespace: envoy-gateway-system
         sectionName: http
 pathCatalogue:
   content: ''
