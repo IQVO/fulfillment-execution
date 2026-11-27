@@ -138,14 +138,12 @@ func parseRequiredTime(w http.ResponseWriter, r *http.Request, raw, name string)
 
 // writeReportBadRequest writes the reports service's RFC 7807 400.
 func writeReportBadRequest(w http.ResponseWriter, r *http.Request, detail string) {
-	writeProblem(w, http.StatusBadRequest, "invalid-report-query",
-		"The report query is malformed or missing a required parameter", detail, r.URL.Path)
+	writeProblem(w, http.StatusBadRequest, problemInvalidReportQuery, detail, r.URL.Path)
 }
 
 // writeReportInternal writes the reports service's RFC 7807 500.
 func writeReportInternal(w http.ResponseWriter, r *http.Request, err error) {
-	writeProblem(w, http.StatusInternalServerError, "report-store-error",
-		"The report could not be served", err.Error(), r.URL.Path)
+	writeProblem(w, http.StatusInternalServerError, problemReportStoreError, err.Error(), r.URL.Path)
 }
 
 // NewReportsRouter builds the chi router for the fulfillment-reports reader

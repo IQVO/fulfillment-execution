@@ -16,20 +16,19 @@ import (
 // own declared parameters. ok is false when a problem was already written.
 func pageParams(w http.ResponseWriter, r *http.Request, filters ...string) (limit int, after *page.Position, ok bool) {
 	if name := page.Unknown(r, filters...); name != "" {
-		writeProblem(w, http.StatusBadRequest, "unknown-query-parameter",
-			"The query parameter is not declared by this route",
+		writeProblem(w, http.StatusBadRequest, problemUnknownQueryParameter,
 			"query parameter \""+sanitizeForLog(name)+"\" is not accepted; this collection takes limit, cursor and its documented filters",
 			r.URL.Path)
 		return 0, nil, false
 	}
 	limit, err := page.Limit(r)
 	if err != nil {
-		writeProblem(w, http.StatusBadRequest, "invalid-limit", "The limit is not valid", err.Error(), r.URL.Path)
+		writeProblem(w, http.StatusBadRequest, problemInvalidLimit, err.Error(), r.URL.Path)
 		return 0, nil, false
 	}
 	after, err = page.After(r)
 	if err != nil {
-		writeProblem(w, http.StatusBadRequest, "invalid-cursor", "The cursor is not valid", err.Error(), r.URL.Path)
+		writeProblem(w, http.StatusBadRequest, problemInvalidCursor, err.Error(), r.URL.Path)
 		return 0, nil, false
 	}
 	return limit, after, true

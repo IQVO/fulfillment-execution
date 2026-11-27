@@ -39,3 +39,20 @@ ADR-0054 also left `BREAK_CASE` out of `AnyTaskType`, so a station could not cla
 
 - Breaking for callers of `POST /tasks/{id}/scans` that send no key: they get 400 until they send one.
 - Quantities stay in eaches; `TaskCompleted` and the break call to inventory-storage are unchanged.
+
+## Addendum (2026-11-27): stored-refusal design superseded
+
+By the owner decision of **2026-11-23** the fleet replay-class rule
+([ADR-0066](./0066-idempotency-replay-classes.md)) **supersedes** this
+ADR's design point "a stored 4xx is replayed too" (and with it the
+"deliberate v1 simplification" of caching every non-5xx answer in the
+middleware this ADR reuses, and the floor client's reliance on replayed
+refusals). The Decision text above is unchanged and keeps the header
+contract, the same-key/same-body replay of the stored answer, and the
+`idempotency-key-reused` conflict — those still hold. What changes: a
+refusal whose problem type declares RETRYABLE on its catalogue entry
+(`pick-over-quantity`, `unknown-gtin`, `scan-sku-mismatch`, …) is NOT
+stored; the key is released and the operator's next scan under the same key
+executes again. Only a 2xx and a FINAL refusal are stored and replayed.
+warehouse-floor-client needed no change: it settles a refused command and
+never auto-resends a 4xx with the same key.

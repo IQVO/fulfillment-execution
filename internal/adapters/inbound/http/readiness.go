@@ -155,7 +155,7 @@ func (h *Handlers) GetReadyz(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if failing := h.Readiness.Failing(r.Context()); len(failing) > 0 {
-		writeProblem(w, http.StatusServiceUnavailable, "dependency-unavailable", "A runtime dependency is unavailable",
+		writeProblem(w, http.StatusServiceUnavailable, problemDependencyUnavailable,
 			"not ready: "+strings.Join(failing, ", "), r.URL.Path)
 		return
 	}

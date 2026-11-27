@@ -448,7 +448,12 @@ also requires an `Idempotency-Key` header (missing: `400`
 `409` `idempotency-key-reused`; same key and request: the stored response is
 replayed with `Idempotency-Replayed: true` —
 [ADR-0028](docs/docs/adr/0028-idempotency-key-middleware.md),
-[ADR-0060](docs/docs/adr/0060-adopt-the-fleet-rest-api-guideline.md)). So does
+[ADR-0060](docs/docs/adr/0060-adopt-the-fleet-rest-api-guideline.md)).
+Stored and replayed are a 2xx and a refusal whose problem type is FINAL for
+the request (a malformed body, a terminal state); a refusal whose cause is
+state that can change (RETRYABLE — `pick-over-quantity`, `unknown-gtin`,
+`no-claimable-task`, …) is NOT stored: the key is released and the retry
+executes again ([ADR-0066](docs/docs/adr/0066-idempotency-replay-classes.md)). So does
 EVERY other `POST` of the service (including `POST /rebin/arrivals` and
 `POST /paths/{pathId}/work-requests`); there is no in-memory mode. `requiredCapabilities` may include `hazmat` — see
 [Integration](#integration) below and `docs/docs/adr/0009-fragile-and-hazmat-handling-flags.md`

@@ -15,6 +15,11 @@ Direct port of order-management's ADR-0023 (`POST /orders`) — the fleet
 reference implementation this middleware and its tests copy
 scenario-for-scenario, applied here to `POST /tasks`.
 
+> **Update 2026-11-27 ([ADR-0066](./0066-idempotency-replay-classes.md)).** "Every normal response
+> is cached, including a business-logic 4xx" no longer holds: each problem type declares a replay
+> class on its catalogue entry, and only 2xx, FINAL and OUTCOME answers are stored; a RETRYABLE
+> refusal rolls the request back, key row included, so the retry executes.
+
 ## Context
 
 Of every mutating route this service exposes —
