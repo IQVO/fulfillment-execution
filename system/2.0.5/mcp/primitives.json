@@ -1,0 +1,597 @@
+{
+  "apiVersion": "warehouse/mcp-primitives/v1",
+  "server": "com.warehouse.wes/fulfillment-execution",
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Complete a claimed task on behalf of the station that holds its active claim. Rejected if the task is not found, not claimed, already completed, or the station does not own the claim. A RELOCATE task also needs the operator's confirmation: quantity (counted, at least 1) and the scanned fromBin (Assign) or toBin (Vacate) the move left open; a REPLENISH task needs the counted quantity (the bins are optional scans that must equal the planned ones); never invent these values, ask the operator.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "description": "the id of the task to complete"
+          },
+          "stationId": {
+            "type": "string",
+            "description": "the id of the station that holds the active claim and is completing the task"
+          },
+          "quantity": {
+            "type": "integer",
+            "description": "optional, RELOCATE and REPLENISH tasks only (required for them): the units the operator counted and moved, at least 1"
+          },
+          "fromBin": {
+            "type": "string",
+            "description": "optional, RELOCATE and REPLENISH tasks only: the source bin the operator scanned; required when a RELOCATE move left the source open (an Assign), otherwise it must equal the planned bin"
+          },
+          "toBin": {
+            "type": "string",
+            "description": "optional, RELOCATE and REPLENISH tasks only: the destination bin the operator scanned; required when a RELOCATE move left the destination open (a Vacate), otherwise it must equal the planned bin"
+          }
+        },
+        "required": [
+          "taskId",
+          "stationId"
+        ],
+        "additionalProperties": false
+      },
+      "name": "complete_task",
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "taskId": {
+            "type": "string"
+          },
+          "stationId": {
+            "type": "string"
+          },
+          "completed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "taskId",
+          "stationId",
+          "completed"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "annotations": {
+        "idempotentHint": false,
+        "readOnlyHint": true
+      },
+      "description": "List claimed tasks whose lease has expired (or expires within a given window), each with the reason it is flagged.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "withinSeconds": {
+            "type": "integer",
+            "description": "flag claimed tasks whose lease expires within this many seconds; 0 = only already-expired leases"
+          }
+        },
+        "required": [
+          "withinSeconds"
+        ],
+        "additionalProperties": false
+      },
+      "name": "diagnose_stuck_tasks",
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "tasks": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "taskId": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string"
+                },
+                "leaseStationId": {
+                  "type": "string"
+                },
+                "leaseExpiry": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "taskId",
+                "type",
+                "leaseStationId",
+                "leaseExpiry",
+                "reason"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "count",
+          "tasks"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "annotations": {
+        "idempotentHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Return the highest-priority (earliest-CPT) task a station could claim now in a given process path, plus how many candidates exist. A RELOCATE candidate carries its slot-plan move (sku, bins, kind); a REPLENISH candidate its replenishment move (sku, bins, quantity, priority).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "processPath": {
+            "type": "string",
+            "description": "the process path to search: PICK, PACK, SLAM, RELOCATE, REPLENISH or BREAK_CASE"
+          }
+        },
+        "required": [
+          "processPath"
+        ],
+        "additionalProperties": false
+      },
+      "name": "find_claimable_work",
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "processPath": {
+            "type": "string"
+          },
+          "candidateCount": {
+            "type": "integer"
+          },
+          "best": {
+            "type": [
+              "null",
+              "object"
+            ],
+            "properties": {
+              "taskId": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string"
+              },
+              "cpt": {
+                "type": "string"
+              },
+              "orderRef": {
+                "type": "string"
+              },
+              "requiredCapabilities": {
+                "type": [
+                  "null",
+                  "array"
+                ],
+                "items": {
+                  "type": "string"
+                }
+              },
+              "relocation": {
+                "type": [
+                  "null",
+                  "object"
+                ],
+                "properties": {
+                  "planId": {
+                    "type": "string"
+                  },
+                  "moveSeq": {
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "sku": {
+                    "type": "string"
+                  },
+                  "fromBin": {
+                    "type": "string"
+                  },
+                  "toBin": {
+                    "type": "string"
+                  },
+                  "ref": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "planId",
+                  "moveSeq",
+                  "kind",
+                  "sku",
+                  "ref"
+                ],
+                "additionalProperties": false
+              },
+              "replenishment": {
+                "type": [
+                  "null",
+                  "object"
+                ],
+                "properties": {
+                  "requestId": {
+                    "type": "string"
+                  },
+                  "sku": {
+                    "type": "string"
+                  },
+                  "fromBin": {
+                    "type": "string"
+                  },
+                  "toBin": {
+                    "type": "string"
+                  },
+                  "quantity": {
+                    "type": "integer"
+                  },
+                  "priority": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "requestId",
+                  "sku",
+                  "fromBin",
+                  "toBin",
+                  "quantity",
+                  "priority"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "taskId",
+              "type",
+              "cpt",
+              "orderRef",
+              "requiredCapabilities"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "processPath",
+          "candidateCount",
+          "best"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "annotations": {
+        "idempotentHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Return the fulfillment throughput report (completions, avg claim-to-complete seconds, lease expiries, weigh-check diverts) for a time window, optionally filtered by process path and station. Reads via the fulfillment-reports REST service.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "start of the window, inclusive, RFC3339 (required)"
+          },
+          "to": {
+            "type": "string",
+            "description": "end of the window, exclusive, RFC3339 (required)"
+          },
+          "taskType": {
+            "type": "string",
+            "description": "optional process-path filter: PICK, PACK or SLAM"
+          },
+          "stationId": {
+            "type": "string",
+            "description": "optional station filter"
+          },
+          "granularity": {
+            "type": "string",
+            "description": "optional time bucket granularity; only 'hour' is supported and it is the default"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "additionalProperties": false
+      },
+      "name": "get_fulfillment_throughput_report",
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "rows": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "taskType": {
+                  "type": "string"
+                },
+                "stationId": {
+                  "type": "string"
+                },
+                "hourBucket": {
+                  "type": "string"
+                },
+                "completions": {
+                  "type": "integer"
+                },
+                "avgClaimToCompleteSeconds": {
+                  "type": "number"
+                },
+                "leaseExpiries": {
+                  "type": "integer"
+                },
+                "weighCheckDiverts": {
+                  "type": "integer"
+                },
+                "packagesManifested": {
+                  "type": "integer"
+                },
+                "packagesOnTimeToCPT": {
+                  "type": "integer"
+                },
+                "packagesLateToCPT": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "taskType",
+                "stationId",
+                "hourBucket",
+                "completions",
+                "avgClaimToCompleteSeconds",
+                "leaseExpiries",
+                "weighCheckDiverts",
+                "packagesManifested",
+                "packagesOnTimeToCPT",
+                "packagesLateToCPT"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "rows"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "annotations": {
+        "idempotentHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Return the on-time-to-CPT rate for a time window, optionally filtered by process path and station: the fraction of manifested packages (SLAM pass) whose manifest time was at or before the originating SLAM task's Critical Pull Time, alongside the raw manifested/on-time/late counts. Companion KPI to order-management ADR 0014 §6 (promise-basis distribution, re-promise rate, split-shipment rate, and promise-to-cutoff gap live there instead). Reads via the fulfillment-reports REST service.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "start of the window, inclusive, RFC3339 (required)"
+          },
+          "to": {
+            "type": "string",
+            "description": "end of the window, exclusive, RFC3339 (required)"
+          },
+          "taskType": {
+            "type": "string",
+            "description": "optional process-path filter; on-time-to-CPT data only exists on SLAM rows"
+          },
+          "stationId": {
+            "type": "string",
+            "description": "optional station filter"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "additionalProperties": false
+      },
+      "name": "get_on_time_to_cpt",
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "taskType": {
+            "type": "string"
+          },
+          "stationId": {
+            "type": "string"
+          },
+          "packagesManifested": {
+            "type": "integer"
+          },
+          "packagesOnTimeToCPT": {
+            "type": "integer"
+          },
+          "packagesLateToCPT": {
+            "type": "integer"
+          },
+          "onTimeRate": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "packagesManifested",
+          "packagesOnTimeToCPT",
+          "packagesLateToCPT",
+          "onTimeRate"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "annotations": {
+        "idempotentHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Return the number of Pending tasks in a process-path queue (PICK, PACK, SLAM, RELOCATE, REPLENISH, or BREAK_CASE).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "processPath": {
+            "type": "string",
+            "description": "the process path queue to inspect: PICK, PACK, SLAM, RELOCATE, REPLENISH or BREAK_CASE"
+          }
+        },
+        "required": [
+          "processPath"
+        ],
+        "additionalProperties": false
+      },
+      "name": "get_queue_status",
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "processPath": {
+            "type": "string"
+          },
+          "depth": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "processPath",
+          "depth"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "annotations": {
+        "idempotentHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Return one work batch (a station's pick walk) by id: station, status (OPEN, COMPLETED or ABANDONED), CPT band, formation time, and the stops in visit order with task id, stop sequence, cart compartment and member state (OPEN, COMPLETED or DETACHED). A DETACHED member left the walk early (its lease expired and the task returned to the pool).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "batchId": {
+            "type": "string",
+            "description": "the id of the work batch to read"
+          }
+        },
+        "required": [
+          "batchId"
+        ],
+        "additionalProperties": false
+      },
+      "name": "get_work_batch",
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "batchId": {
+            "type": "string"
+          },
+          "stationId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "cpt": {
+            "type": "string"
+          },
+          "formedAt": {
+            "type": "string"
+          },
+          "stops": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "taskId": {
+                  "type": "string"
+                },
+                "stopSeq": {
+                  "type": "integer"
+                },
+                "compartment": {
+                  "type": "integer"
+                },
+                "state": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "taskId",
+                "stopSeq",
+                "compartment",
+                "state"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "batchId",
+          "stationId",
+          "status",
+          "cpt",
+          "formedAt",
+          "stops"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "resources": [
+    {
+      "description": "Pending-task depth for the PACK process path.",
+      "mimeType": "application/json",
+      "name": "PACK queue status",
+      "uri": "queue://fulfillment/PACK/status"
+    },
+    {
+      "description": "Pending-task depth for the PICK process path.",
+      "mimeType": "application/json",
+      "name": "PICK queue status",
+      "uri": "queue://fulfillment/PICK/status"
+    },
+    {
+      "description": "Pending-task depth for the SLAM process path.",
+      "mimeType": "application/json",
+      "name": "SLAM queue status",
+      "uri": "queue://fulfillment/SLAM/status"
+    }
+  ],
+  "resourceTemplates": [],
+  "prompts": [
+    {
+      "description": "Standard operating procedure for triaging the fulfillment-execution work backlog using the read tools.",
+      "name": "triage_backlog"
+    }
+  ]
+}

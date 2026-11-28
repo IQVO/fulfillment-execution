@@ -1,0 +1,60 @@
+# fulfillment-execution 2.0.5 (v2.0.5, 9019d1d) - System Assets & Interaction Standard v0.4
+apiVersion: warehouse/system-assets/v1
+application: application.yaml
+release:
+  version: 2.0.5
+  tag: v2.0.5
+  commit: 9019d1d60dd157678f1415fcdfb1ca1321b2dbcb
+  chart: oci://ghcr.io/iqvo/fulfillment-execution:2.0.5
+  images:
+  - ghcr.io/iqvo/warehouse-infra/fulfillment-execution:9019d1d-arm64
+  drift:
+  - MCP initialize serverInfo fulfillment-execution-mcp@'1.0.0' != release 2.0.5 (MC-5)
+  - MCP server negotiates 2025-11-25, fleet target is 2026-07-28
+  - served A2A Agent Card version '9019d1d-arm64' != release 2.0.5 (SERVICE_VERSION is rendered from the
+    image tag)
+  - cluster runs chart 'fulfillment-execution-0.1.0', not the released chart fulfillment-execution-2.0.5
+assets:
+- id: fulfillment-execution/openapi-reports
+  kind: openapi
+  path: openapi/openapi-reports.yaml
+  spec:
+    name: openapi
+    version: 3.0.3
+  version: 1.0.0
+  exposure: kong
+- id: fulfillment-execution/openapi
+  kind: openapi
+  path: openapi/openapi.yaml
+  spec:
+    name: openapi
+    version: 3.0.3
+  version: 1.0.0
+  exposure: kong
+- id: fulfillment-execution/asyncapi
+  kind: asyncapi
+  path: asyncapi/asyncapi.yaml
+  spec:
+    name: asyncapi
+    version: 2.6.0
+  version: 2.0.0
+  exposure: kafka
+- id: fulfillment-execution/mcp
+  kind: mcp
+  documents:
+    serverCard: mcp/server-card.json
+    primitives: mcp/primitives.json
+  spec:
+    name: mcp
+    version: '2025-11-25'
+    serverCard: sep-2127
+  version: 2.0.5
+  exposure: agent-router
+- id: fulfillment-execution/a2a
+  kind: a2a
+  path: a2a/agent-card.json
+  spec:
+    name: a2a
+    version: 1.0.0
+  version: 2.0.5
+  exposure: agent-router
