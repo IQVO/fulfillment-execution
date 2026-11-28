@@ -1,0 +1,3141 @@
+openapi: 3.0.3
+info:
+  title: Fulfillment Execution API
+  version: "1.0.0"
+  description: >
+    Fulfillment Execution is the task-lifecycle core bounded context for
+    Pick, Pack, and SLAM (Scan, Label, Apply, Manifest). It is downstream of
+    Work Planning, which releases work into this service (over Kafka, not
+    HTTP — see the repo README's Integration section), and this service in
+    turn issues commands to WCS/equipment as physical work is executed.
+
+
+    The defining design rule is **pull, not push**: a station calls
+    `claimNext(stationId, capabilities)` and the system selects the
+    highest-priority (earliest CPT — Critical Pull Time) pending
+    task the station is certified/equipped for. The system never names a
+    station in advance. Assignment is **at-most-once**, enforced by a
+    time-boxed **lease**: if a claim is not confirmed (renewed) or completed
+    before the lease expires, the task automatically returns to the pool
+    rather than vanishing.
+
+
+    This API's aggregates: **Task** (Pick | Pack | SLAM; Pending ->
+    Claimed(leased) -> Completed), **Station** (a work position with a
+    capability set, one occupant at a time), and **Package** (Pack path
+    output — an order becomes a sealed carton; the SLAM weigh-check applies
+    a shipping label or diverts the package on a weight discrepancy beyond
+    tolerance). **OrderConsolidation** (Rebin fan-in) gates the pick -> pack
+    handoff: an order's PACK task is created only once every required line
+    has arrived at Rebin (`POST /rebin/arrivals`).
+
+
+    **Out of scope / boundary**: this service does not plan or release work
+    (that's Work Planning's job — it publishes `WorkReleased`, consumed here
+    over Kafka), does not manage inventory reservations (that's
+    Inventory Storage), and does not drive physical WCS/equipment directly
+    over this API (that's a separate command channel). This API is
+    HATEOAS-free by design (Richardson Maturity Level 2 is the target, not
+    Level 3) — clients are expected to know the URL structure, not discover
+    it via response links.
+  contact:
+    name: Fulfillment Execution
+    url: https://github.com/claudioed/fulfillment-execution
+servers:
+  - url: http://localhost:8080
+    description: Local development (cmd/execution requires DATABASE_URL and KAFKA_BROKERS; Postgres is the only runtime)
+
+tags:
+  - name: Work Planning Delegation
+    description: >
+      The A2A seam to the Work Planning & Release context (see
+      [ADR-0058](/docs/adr/0058-a2a-work-planning-delegation)): execution
+      PULLS the next unit for a process path by delegating to the
+      wes-work-planning agent over the Agent2Agent protocol. Planning keeps
+      every release decision; the authoritative fact returns as the
+      WorkReleased CloudEvent on Kafka.
+  - name: Tasks
+    description: >
+      The Task aggregate: units of Pick, Pack, or SLAM work. Covers the pool
+      (create), PULL dispatch (claim-next), lease lifecycle (renew, expire),
+      completion, and read models: the pending queue-depth projection and
+      the by-order-reference lookup used by downstream consoles.
+  - name: Stations
+    description: >
+      The Station aggregate: a work position with a capability set,
+      occupied by at most one worker/robot at a time. Covers registration
+      (which also serves as idempotent re-certification), check-in/
+      check-out of the occupant (see
+      [ADR-0014](/docs/adr/0014-labor-performance-integration-hooks)), and
+      is the entry point for PULL dispatch (`task-claims` is a Station
+      action).
+  - name: Packages
+    description: >
+      The Package aggregate: Pack-path output. An order's scanned contents
+      become a sealed carton (`package-seals`, driven by a Pack task's active
+      claim), then the SLAM weigh-check either applies a shipping label or
+      diverts the package if the actual weight is outside tolerance of the
+      expected weight. Read model: `GET /packages/{id}` and
+      `GET /packages?orderRef=` expose a package's current status (and so
+      the SLAM outcome) without side effects.
+  - name: Rebin
+    description: >
+      The OrderConsolidation aggregate: the Rebin / put-wall fan-in point
+      between Pick and Pack (see
+      [ADR-0016](/docs/adr/0016-rebin-and-order-consolidation)). A
+      multi-line order picked from different pods produces independent PICK
+      completions; each picked line is scanned into the order's
+      consolidation slot (`POST /rebin/arrivals`), and the order's PACK task
+      is created only once every required line has arrived. This is the
+      only path from a completed pick to a PACK task over HTTP.
+  - name: System
+    description: Operational endpoints not tied to a domain aggregate.
+
+paths:
+  /tasks:
+    post:
+      operationId: createTask
+      tags: [Tasks]
+      summary: Create a task and place it in the pool
+      description: >
+        Puts a new unit of Pick, Pack, or SLAM work into the pending pool.
+        The task is not assigned to any station at creation time — PULL
+        dispatch (`POST /stations/{stationId}/task-claims`) is the only way
+        a task becomes claimed, consistent with this service's rule that
+        work is never pushed to a named station in advance. `cpt` (Critical
+        Pull Time) drives dispatch priority: `claimNext` always
+        selects the earliest-CPT pending task a station is equipped for.
+
+
+        **Idempotent per `Idempotency-Key` (ADR-0028).** Send a
+        caller-chosen `Idempotency-Key` header on every call. The first
+        request with a given key creates the task; a retry with the same
+        key and the same body replays the stored response verbatim (same
+        status, headers and task id — including a cached 4xx) instead of
+        creating a duplicate. Reusing a key with a different body is
+        rejected with `409 idempotency-key-reused`; omitting the header is
+        `400 idempotency-key-required`. Postgres is the only runtime, so
+        the check is on in every deployment. Without a repeated key every
+        call creates a new task with a fresh, server-generated id.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: >
+            Caller-supplied unique key (e.g. a UUID) identifying this
+            creation attempt. **Clients must always send a non-empty key**: a
+            missing key is rejected with `400 idempotency-key-required`
+            (Postgres is the only runtime, so the check is on in every
+            deployment). Retries of the same logical request must reuse it;
+            a genuinely different request must use a new one.
+          schema:
+            type: string
+            example: 6f1c2a3e-9b1d-4c1a-8f0e-2d5b7c9a1e44
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTaskRequest"
+            example:
+              type: PICK
+              cpt: "2026-01-01T18:00:00Z"
+              orderRef: order-42
+              requiredCapabilities: [pick]
+              fragile: false
+      responses:
+        "201":
+          description: >
+            Task created and placed in the pending pool (or, on a retry
+            with a repeated `Idempotency-Key` and identical body, the
+            original response replayed).
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+            Location:
+              description: Path of the newly created task, e.g. `/tasks/{id}`.
+              schema:
+                type: string
+                example: /tasks/20260101T120000.000000000
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskResponse"
+              example:
+                id: 20260101T120000.000000000
+                type: PICK
+                status: PENDING
+                cpt: "2026-01-01T18:00:00Z"
+                orderRef: order-42
+                requiredCapabilities: [pick]
+                fragile: false
+                giftWrap: false
+        "400":
+          description: >
+            The `Idempotency-Key` header is missing
+            (`idempotency-key-required`), or the request body is
+            malformed JSON, a required field is missing or empty, or a
+            field value is invalid (e.g. a task type outside the TaskType
+            enum) (`invalid-request`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                keyRequired:
+                  summary: Missing Idempotency-Key header
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/idempotency-key-required
+                    title: Idempotency-Key header is required
+                    status: 400
+                    detail: This endpoint requires a caller-supplied Idempotency-Key header so a retried request is never applied twice.
+                    instance: /tasks
+                invalidRequest:
+                  summary: Invalid body
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/invalid-request
+                    title: The request is malformed or missing a required field
+                    status: 400
+                    detail: type must be one of PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL
+        "409":
+          $ref: "#/components/responses/IdempotencyKeyReused"
+        "422":
+          description: >
+            `invalid-deadline` when `cpt` is present but the zero time
+            (`0001-01-01T00:00:00Z`): a valid date-time, but no task can be due at
+            the zero instant. An absent `cpt` is a `400`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/invalid-deadline
+                title: The deadline is not a real instant
+                status: 422
+                detail: cpt must be a real deadline, not the zero time 0001-01-01T00:00:00Z
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    get:
+      operationId: getTasksByOrderRef
+      tags: [Tasks]
+      summary: Look up every task recorded for an order reference
+      description: >
+        Read-only query tracing an order-management order back to the
+        Pick/Pack/SLAM tasks this service created for it — the endpoint
+        that backs a cross-service console screen answering "what tasks
+        has fulfillment-execution created/completed for order X". Returns
+        every task whose `orderRef` matches, normally one PICK/PACK/SLAM
+        leg each; a leg may appear more than once if it was retried (e.g.
+        a new task created after a prior one's lease expired without
+        completion), so treat the response as the full set of tasks for
+        the order, not a single result per process path. An unrecognized
+        `orderRef` is not an error — it returns an empty page, the same
+        convention `GET /queues/{taskType}/depth` uses for an unknown
+        `taskType`.
+      parameters:
+        - name: orderRef
+          in: query
+          required: true
+          description: >
+            The order reference to look up (Task.orderRef, set at creation).
+            Must be non-empty — an empty value is treated as a missing
+            parameter and rejected with 400.
+          schema:
+            type: string
+            minLength: 1
+            example: order-42
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: >
+            One page of the tasks recorded for `orderRef`, ordered by id
+            (possibly empty). Follow `nextCursor` (with `cursor`) until it is absent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskPage"
+              example:
+                items:
+                    - id: 20260101T120000.000000000
+                      type: PICK
+                      status: COMPLETED
+                      cpt: "2026-01-01T18:00:00Z"
+                      orderRef: order-42
+                      requiredCapabilities: [pick]
+                      fragile: false
+                      giftWrap: false
+                    - id: 20260101T120100.000000000
+                      type: PACK
+                      status: PENDING
+                      cpt: "2026-01-01T19:00:00Z"
+                      orderRef: order-42
+                      requiredCapabilities: [pack]
+                      fragile: false
+                      giftWrap: false
+        "400":
+          description: >
+            The required `orderRef` query parameter is missing
+            (`invalid-request`), `limit` is not an integer 1-500
+            (`invalid-limit`), `cursor` does not decode (`invalid-cursor`), or
+            the query carries a parameter this route does not declare
+            (`unknown-query-parameter`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/invalid-request
+                title: The request is malformed or missing a required field
+                status: 400
+                detail: orderRef is required
+                instance: /tasks
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /stations:
+    post:
+      operationId: registerStation
+      tags: [Stations]
+      summary: Register or re-register a station
+      description: >
+        Creates a station with the given capability set, or — if `stationId`
+        already exists — replaces its capability set (e.g. recertifying a
+        station for a new capability). This is deliberately idempotent by
+        client-supplied id: re-registering the same `stationId` upserts
+        rather than erroring or duplicating, which is what closes the
+        pull-dispatch gap for HTTP-only smoke testing (without this
+        endpoint there is no way to create a station over HTTP, so
+        `task-claims` against a freshly started server always 404s).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterStationRequest"
+            example:
+              stationId: station-1
+              capabilities: [pick]
+      responses:
+        "201":
+          description: Station registered (or its capability set updated).
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+            Location:
+              description: Path of the registered station, e.g. `/stations/{id}`.
+              schema:
+                type: string
+                example: /stations/station-1
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StationResponse"
+              example:
+                id: station-1
+                capabilities: [pick]
+                occupied: false
+        "400":
+          $ref: "#/components/responses/BadRequestNoInstance"
+        "409":
+          $ref: "#/components/responses/IdempotencyKeyReused"
+        "422":
+          description: >
+            The supplied locationCode is KNOWN (per facility-layout) to
+            resolve to a role other than WorkCenter.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/station-location-not-workcenter
+                title: Station's locationCode does not resolve to a facility-layout WorkCenter
+                status: 422
+                detail: "usecases: station location does not resolve to a WorkCenter"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /stations/{stationId}/task-claims:
+    post:
+      operationId: claimNextTask
+      tags: [Stations, Tasks]
+      summary: PULL-dispatch the best-fit pending task to this station
+      description: >
+        Implements this service's core dispatch rule: **pull, not push**.
+        The station calls claimNext; the system — never the caller — selects
+        which task to hand it. Among Pending tasks of `taskType` that this
+        station's registered capabilities satisfy, the **earliest-CPT** task
+        is selected and leased to `stationId` for a fixed duration (5
+        minutes by default). Assignment is **at-most-once**: a task with an
+        active, unexpired lease cannot be claimed by anyone else, and this
+        endpoint will simply skip it and try the next-best candidate. If the
+        lease is not renewed or the task completed before it expires, the
+        task automatically returns to the pool (see
+        `POST /task-lease-expirations`) rather than being lost. This call is
+        not idempotent in the way a PUT would be — every successful call
+        claims a *different* task (or the same task again only after its
+        prior lease was released); that's intended PULL semantics, not a
+        bug.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - name: stationId
+          in: path
+          required: true
+          description: The station pulling work, e.g. as registered via `POST /stations`.
+          schema:
+            type: string
+            example: station-1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClaimNextRequest"
+            example:
+              taskType: PICK
+      responses:
+        "200":
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+          description: The best-fit pending task was found and leased to this station.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskResponse"
+              example:
+                id: 20260101T120000.000000000
+                type: PICK
+                status: CLAIMED
+                cpt: "2026-01-01T18:00:00Z"
+                orderRef: order-42
+                requiredCapabilities: [pick]
+                fragile: false
+                giftWrap: false
+                leaseStationId: station-1
+                leaseExpiry: "2026-01-01T12:05:00Z"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: No station is registered with this `stationId`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/station-not-found
+                title: Station not found
+                status: 404
+                detail: "usecases: station not found"
+                instance: /stations/station-1/task-claims
+        "409":
+          description: >
+            No pending task of `taskType` exists that this station's
+            capabilities satisfy right now — the pool has nothing to
+            offer, not a transient error. Safe to retry later.
+            The same `Idempotency-Key` reused with a different method, path or body is also a 409, problem type `idempotency-key-reused`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/no-claimable-task
+                title: No claimable task for station capabilities
+                status: 409
+                detail: "usecases: no claimable task for station capabilities"
+                instance: /stations/station-1/task-claims
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /stations/{stationId}/work-batches:
+    post:
+      operationId: formWorkBatch
+      tags: [Stations, Tasks]
+      summary: Form this station's pick walk (ADR 0063)
+      description: >
+        Pick batching behind the `PICK_BATCH_MODE` rollout gate. The anchor
+        is exactly the task `POST /stations/{stationId}/task-claims` with
+        `taskType: PICK` would return (the same claimer selects it), so
+        batching never changes who goes first; companions are the station's
+        interleaving-hint candidates inside the anchor's CPT band, in hint
+        rank order, kept only when the station can do them and the cart
+        segregation matrix allows sharing, up to the configured maximum
+        (default 4). A batch of one is valid; nothing waits for a batch to
+        fill. With the mode not `on` (the fleet default is `off`) the
+        surface answers 503 batch-mode-off and `task-claims` is the only
+        dispatch path, exactly as before.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - name: stationId
+          in: path
+          required: true
+          description: The station forming its walk, e.g. as registered via `POST /stations`.
+          schema:
+            type: string
+            example: station-1
+      responses:
+        "200":
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+          description: >
+            The anchor was claimed as an ordinary single task because it has
+            no pick face (ADR 0062): the claim stands, exactly as
+            `task-claims` would have left it, and no walk was formed. `batch`
+            is `null`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FormWorkBatchResponse"
+              example:
+                anchor_task_id: "20260101T120000.000000000"
+        "201":
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+          description: The walk formed. `Location` names the batch read resource.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FormWorkBatchResponse"
+              example:
+                batch:
+                  batch_id: wb-20260101T120000.000000000
+                  station_id: station-1
+                  status: OPEN
+                  cpt: "2026-01-01T18:00:00Z"
+                  formed_at: "2026-01-01T12:00:00Z"
+                  members:
+                    - task_id: "20260101T120000.000000000"
+                      stop_seq: 1
+                      compartment: 1
+                      state: OPEN
+                    - task_id: "20260101T120001.000000000"
+                      stop_seq: 2
+                      compartment: 2
+                      state: OPEN
+                anchor_task_id: "20260101T120000.000000000"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: No station is registered with this `stationId`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/station-not-found
+                title: Station not found
+                status: 404
+                detail: "usecases: station not found"
+                instance: /stations/station-1/work-batches
+        "409":
+          description: >
+            The station holds no claimable PICK right now (`no-claimable-task`),
+            or it already holds an OPEN batch (`station-has-open-batch`) —
+            a station walks one batch at a time.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/station-has-open-batch
+                title: Station already holds an open batch
+                status: 409
+                detail: "workbatch: station already holds an open batch"
+                instance: /stations/station-1/work-batches
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          description: >
+            `PICK_BATCH_MODE` is not `on` (the fleet default is `off`): the
+            batch surface is explicitly off, not broken. Use
+            `POST /stations/{stationId}/task-claims`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/batch-mode-off
+                title: Pick batching is off (PICK_BATCH_MODE)
+                status: 503
+                detail: "usecases: pick batching is off (PICK_BATCH_MODE)"
+                instance: /stations/station-1/work-batches
+
+  /work-batches/{batchId}:
+    get:
+      operationId: getWorkBatch
+      tags: [Stations, Tasks]
+      summary: Read one work batch (the station's walk)
+      description: >
+        The WorkBatch read side (ADR 0063): the batch, its status
+        (`OPEN`, `COMPLETED`, `ABANDONED`) and its stops in visit order with
+        their cart compartments and member states. A `DETACHED` member left
+        the walk early (its lease expired and the task returned to the pool).
+      parameters:
+        - name: batchId
+          in: path
+          required: true
+          description: The batch id, as returned by `POST /stations/{stationId}/work-batches`.
+          schema:
+            type: string
+            example: wb-20260101T120000.000000000
+      responses:
+        "200":
+          description: The batch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkBatchResponse"
+              example:
+                batch_id: wb-20260101T120000.000000000
+                station_id: station-1
+                status: OPEN
+                cpt: "2026-01-01T18:00:00Z"
+                formed_at: "2026-01-01T12:00:00Z"
+                members:
+                  - task_id: "20260101T120000.000000000"
+                    stop_seq: 1
+                    compartment: 1
+                    state: OPEN
+        "404":
+          description: No batch exists with this `batchId`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/batch-not-found
+                title: Work batch not found
+                status: 404
+                detail: "usecases: work batch not found"
+                instance: /work-batches/wb-1
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /work-batches/{batchId}/lease-renewals:
+    post:
+      operationId: renewWorkBatchLease
+      tags: [Stations, Tasks]
+      summary: Renew every open member's task lease (LeaseTogether)
+      description: >
+        The batch's lease is the union of its open members' task leases
+        (ADR 0063's LeaseTogether policy): one call renews every still-open
+        stop, so later stops of a long walk cannot expire mid-walk.
+        Completed members are not renewed; detached members are gone (the
+        sweep already returned them to the pool).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - name: batchId
+          in: path
+          required: true
+          description: The batch id whose walk is still in progress.
+          schema:
+            type: string
+            example: wb-20260101T120000.000000000
+      responses:
+        "204":
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+          description: Every open member's lease was renewed.
+        "400":
+          description: >
+            A missing or malformed `Idempotency-Key` header (the route is
+            behind the idempotency middleware, like every non-idempotent
+            POST that changes lease state).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/idempotency-key-required
+                title: An Idempotency-Key header is required
+                status: 400
+                detail: "the Idempotency-Key header is required on this route"
+                instance: /work-batches/wb-1/lease-renewals
+        "404":
+          description: No batch exists with this `batchId`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/batch-not-found
+                title: Work batch not found
+                status: 404
+                detail: "usecases: work batch not found"
+                instance: /work-batches/wb-1/lease-renewals
+        "409":
+          description: The batch is not OPEN (already completed or abandoned).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/batch-not-open
+                title: Batch is not open
+                status: 409
+                detail: "workbatch: batch is not open"
+                instance: /work-batches/wb-1/lease-renewals
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /stations/{stationId}/check-ins:
+    post:
+      operationId: checkInStation
+      tags: [Stations]
+      summary: Check a worker or robot into a station
+      description: >
+        Assigns an occupant to a station — the Station aggregate's
+        `CheckIn` invariant enforced through the application layer: one
+        occupant at a time. This is operational state, not a
+        labor-performance domain event in its own right (see
+        [ADR-0014](/docs/adr/0014-labor-performance-integration-hooks)):
+        no domain event is published by this endpoint. The checked-in
+        occupant is instead surfaced, best-effort, as `associateId` on the
+        `TaskCompleted` Kafka event when a task claimed by this station is
+        later completed.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - name: stationId
+          in: path
+          required: true
+          description: The station id, as returned by `POST /stations`.
+          schema:
+            type: string
+            example: station-1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CheckInStationRequest"
+            example:
+              occupantId: worker-42
+      responses:
+        "200":
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+          description: Station checked in.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StationResponse"
+              example:
+                id: station-1
+                capabilities: [pick]
+                occupied: true
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: No station is registered with this `stationId`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/station-not-found
+                title: Station not found
+                status: 404
+                detail: "usecases: station not found"
+                instance: /stations/station-1/check-ins
+        "409":
+          description: The station already has an occupant checked in. The same `Idempotency-Key` reused with a different method, path or body is also a 409, problem type `idempotency-key-reused`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/station-occupied
+                title: Station is already occupied
+                status: 409
+                detail: "station: already occupied"
+                instance: /stations/station-1/check-ins
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /stations/{stationId}/check-outs:
+    post:
+      operationId: checkOutStation
+      tags: [Stations]
+      summary: Check the current occupant out of a station
+      description: >
+        Clears a station's occupant — the Station aggregate's `CheckOut`
+        invariant enforced through the application layer. Takes no request
+        body. Like check-in, this publishes no domain event (see
+        [ADR-0014](/docs/adr/0014-labor-performance-integration-hooks)).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - name: stationId
+          in: path
+          required: true
+          description: The station id.
+          schema:
+            type: string
+            example: station-1
+      responses:
+        "200":
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+          description: Station checked out.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StationResponse"
+              example:
+                id: station-1
+                capabilities: [pick]
+                occupied: false
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: No station is registered with this `stationId`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/station-not-found
+                title: Station not found
+                status: 404
+                detail: "usecases: station not found"
+                instance: /stations/station-1/check-outs
+        "409":
+          description: The station has no occupant checked in. The same `Idempotency-Key` reused with a different method, path or body is also a 409, problem type `idempotency-key-reused`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/station-not-occupied
+                title: Station is not occupied
+                status: 409
+                detail: "station: not occupied"
+                instance: /stations/station-1/check-outs
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /tasks/{id}/lease-renewals:
+    post:
+      operationId: renewLease
+      tags: [Tasks]
+      summary: Extend the active lease held by the claiming station
+      description: >
+        Pushes out a task's lease expiry so a station still actively working
+        it doesn't lose the claim to the automatic expiry sweep
+        (`POST /task-lease-expirations`). Only the station that currently owns
+        the claim may renew it. Idempotent in effect: repeated calls simply
+        keep extending the same lease.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - name: id
+          in: path
+          required: true
+          description: The task id, as returned by `POST /tasks` or a task-claims response.
+          schema:
+            type: string
+            example: 20260101T120000.000000000
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RenewLeaseRequest"
+            example:
+              stationId: station-1
+      responses:
+        "204":
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+          description: Lease renewed. No response body.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: No task exists with this id.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/task-not-found
+                title: Task not found
+                status: 404
+                detail: "usecases: task not found"
+                instance: /tasks/20260101T120000.000000000/lease-renewals
+        "409":
+          description: >
+            The task has no active claim to renew (never claimed, its lease
+            already expired, or it was already completed), or `stationId`
+            does not own the active claim.
+            The same `Idempotency-Key` reused with a different method, path or body is also a 409, problem type `idempotency-key-reused`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/task-not-claimed
+                title: Task is not currently claimed
+                status: 409
+                detail: "task: not claimed"
+                instance: /tasks/20260101T120000.000000000/lease-renewals
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /tasks/{id}/completions:
+    post:
+      operationId: completeTask
+      tags: [Tasks]
+      summary: Complete a task on behalf of the station that claimed it
+      description: >
+        Finishes the task's lifecycle (Claimed -> Completed) and publishes
+        `TaskCompleted`. Only the owning station's claim may complete it,
+        and a completed task can never be completed again — this endpoint
+        enforces the no-double-complete invariant, returning `409` on a
+        repeat call rather than silently succeeding twice.
+        A `RELOCATE` task (a slot-plan move, ADR-0047) completes only with
+        the operator's confirmation: `quantity` (counted, at least 1) and the
+        bins the move left open — `fromBin` for an Assign, `toBin` for a
+        Vacate (see the task's `relocation`). A scan of a side the plan fixed
+        must equal the planned bin. The confirmed move is published on
+        `TaskCompleted` (`sku`, `from_bin`, `to_bin`, `quantity`,
+        `relocation_ref`). A `REPLENISH` task (a pick-face replenishment,
+        ADR-0050) completes only with `quantity` (counted, at least 1);
+        `fromBin` and `toBin` are optional scans that must equal the task's
+        planned `replenishment` bins. The confirmed move is published on
+        `TaskCompleted` (`sku`, `from_bin`, `to_bin`, `quantity`,
+        `request_ref`). Any other task type takes none of these fields.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - name: id
+          in: path
+          required: true
+          description: The task id.
+          schema:
+            type: string
+            example: 20260101T120000.000000000
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompleteTaskRequest"
+            examples:
+              anyTask:
+                summary: Any task type except RELOCATE and REPLENISH
+                value:
+                  stationId: station-1
+              relocateVacate:
+                summary: A RELOCATE Vacate move - the reserve destination was scanned
+                value:
+                  stationId: station-1
+                  quantity: 12
+                  toBin: WH1-RSV-B02-01-01-A
+              replenish:
+                summary: A REPLENISH task - the counted quantity (the bins are optional scans)
+                value:
+                  stationId: station-1
+                  quantity: 20
+      responses:
+        "204":
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+          description: Task completed. No response body.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: No task exists with this id.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/task-not-found
+                title: Task not found
+                status: 404
+                detail: "usecases: task not found"
+                instance: /tasks/20260101T120000.000000000/completions
+        "409":
+          description: >
+            The task was already completed (double-complete, rejected), has
+            no active claim, or `stationId` does not own the active claim.
+            Also `pick-incomplete` (a PICK task whose confirmed scans do not
+            add up to the planned eaches) and `case-break-completion-required`
+            (a BREAK_CASE task, which completes only through
+            `POST /tasks/{id}/case-breaks`).
+            The same `Idempotency-Key` reused with a different method, path or body is also a 409, problem type `idempotency-key-reused`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/task-already-completed
+                title: Task already completed
+                status: 409
+                detail: "task: already completed"
+                instance: /tasks/20260101T120000.000000000/completions
+        "422":
+          description: >
+            The RELOCATE confirmation is missing or does not fit the planned
+            move (ADR-0047): `relocation-confirmation-required` (a RELOCATE
+            task completed without `quantity` and the open bins),
+            `invalid-relocation-confirmation` (an open side not scanned, a
+            scan that differs from the planned bin, or equal bins), or
+            `not-relocation-task` (`quantity`/`fromBin`/`toBin` sent for a
+            task that is neither RELOCATE nor REPLENISH). The REPLENISH
+            confirmation (ADR-0050) is `replenishment-confirmation-required`
+            (a REPLENISH task completed without `quantity`) or
+            `invalid-replenishment-confirmation` (a quantity below 1, or a
+            scan that differs from the planned bin). The task stays Claimed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/relocation-confirmation-required
+                title: A RELOCATE task completes only with the confirmed quantity and the bins the move left open
+                status: 422
+                detail: "task: a RELOCATE task completes only with the confirmed quantity and the bins the move left open"
+                instance: /tasks/20260101T120000.000000000/completions
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /tasks/{id}/scans:
+    post:
+      operationId: confirmPickScan
+      tags: [Tasks]
+      summary: Confirm one scan of an each or case GTIN against a PICK task
+      description: >
+        The station holding the claim on a PICK task scans a GTIN (ADR 0054).
+        The GTIN is resolved against the local copy of product-master's pack
+        levels (no synchronous call): it must identify the task's SKU and,
+        for a task planned in eaches, an EACH level; for a task planned in
+        cases, a CASE level. `count` packs are added (default 1) and the
+        answer reports the eaches confirmed so far. Quantities are always in
+        eaches; `POST /tasks/{id}/completions` and `TaskCompleted` are
+        unchanged. A rejected scan changes nothing.
+
+
+        **Idempotent per `Idempotency-Key` (ADR-0055).** Send a fresh
+        `Idempotency-Key` for each physical scan and reuse it only when
+        retrying that scan after a lost response. A retry with the same key
+        and the same body on the same path replays the stored answer
+        verbatim (same status and body, including a cached 4xx) and does
+        not count the scan again; two scans with different keys both
+        count. Reusing a key with a different body or on another task is
+        `409 idempotency-key-reused`; omitting the header is
+        `400 idempotency-key-required`.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The task id.
+          schema:
+            type: string
+            example: 20260101T120000.000000000
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: >
+            Caller-supplied unique key (e.g. a UUID) identifying this
+            physical scan. A missing key is rejected with
+            `400 idempotency-key-required`. A retry of the same scan reuses
+            it; a different scan uses a new one.
+          schema:
+            type: string
+            example: 6f1c2a3e-9b1d-4c1a-8f0e-2d5b7c9a1e44
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PickScanRequest"
+            example:
+              stationId: station-1
+              gtin: "00012345678905"
+              count: 1
+      responses:
+        "200":
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+          description: >
+            The scan is accepted (or, on a retry with a repeated
+            `Idempotency-Key` and identical body, the original answer
+            replayed without counting the scan again).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PickScanResult"
+              example:
+                scannedGtin: "00012345678905"
+                sku: SKU-1
+                level: EACH
+                addedEaches: 1
+                pickedEaches: 1
+                plannedEaches: 12
+        "400":
+          description: >
+            The `Idempotency-Key` header is missing
+            (`idempotency-key-required`), or the request body is malformed
+            JSON, a required field is missing or empty, or a field value is
+            invalid (`invalid-request`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                keyRequired:
+                  summary: Missing Idempotency-Key header
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/idempotency-key-required
+                    title: Idempotency-Key header is required
+                    status: 400
+                    detail: This endpoint requires a caller-supplied Idempotency-Key header so a retried request is never applied twice.
+                    instance: /tasks/20260101T120000.000000000/scans
+                invalidRequest:
+                  summary: Invalid body
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/invalid-request
+                    title: The request is malformed or missing a required field
+                    status: 400
+                    detail: stationId is required
+                    instance: /tasks/20260101T120000.000000000/scans
+        "404":
+          description: >
+            No task exists with this id.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                taskNotFound:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/task-not-found
+                    title: Task not found
+                    status: 404
+                    detail: "usecases: task not found"
+                    instance: /tasks/20260101T120000.000000000/scans
+        "409":
+          description: >
+            The scan does not fit the task or its claim: the task has no active claim or another station owns it, `unknown-gtin` (no pack level carries the code), `invalid-scanned-gtin` (a bad check digit or a variable-measure indicator), `scan-sku-mismatch` (the GTIN of another SKU, for example the each barcode printed on a case of something else), `scan-level-mismatch` (a case scan on an each pick or the reverse), `no-pick-plan` or `pick-over-quantity`.
+            The same `Idempotency-Key` reused with a different method, path or body is also a 409, problem type `idempotency-key-reused`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                taskNotOwner:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/task-not-owner
+                    title: Station does not own the active claim on this task
+                    status: 409
+                    detail: "task: station does not own the claim"
+                    instance: /tasks/20260101T120000.000000000/scans
+                unknownGtin:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/unknown-gtin
+                    title: The scanned GTIN is not a known pack level
+                    status: 409
+                    detail: "usecases: scanned GTIN is not a known pack level: 00012345678905"
+                    instance: /tasks/20260101T120000.000000000/scans
+                invalidScannedGtin:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/invalid-scanned-gtin
+                    title: The scanned text is not a valid GTIN
+                    status: 409
+                    detail: "usecases: scanned GTIN is invalid: gs1: invalid GTIN: check digit does not match"
+                    instance: /tasks/20260101T120000.000000000/scans
+                scanSkuMismatch:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/scan-sku-mismatch
+                    title: The scanned GTIN is not the SKU of this pick
+                    status: 409
+                    detail: "task: the scanned GTIN is not the SKU of this pick"
+                    instance: /tasks/20260101T120000.000000000/scans
+                scanLevelMismatch:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/scan-level-mismatch
+                    title: The scanned pack level does not match the pick unit
+                    status: 409
+                    detail: "task: the scanned pack level does not match the pick unit"
+                    instance: /tasks/20260101T120000.000000000/scans
+                noPickPlan:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/no-pick-plan
+                    title: The task carries no pick plan to scan against
+                    status: 409
+                    detail: "task: the task carries no pick plan to scan against"
+                    instance: /tasks/20260101T120000.000000000/scans
+                pickOverQuantity:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/pick-over-quantity
+                    title: The scan would pick more than the planned quantity
+                    status: 409
+                    detail: "task: the scan would pick more than the planned quantity"
+                    instance: /tasks/20260101T120000.000000000/scans
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /tasks/{id}/case-breaks:
+    post:
+      operationId: completeCaseBreak
+      tags: [Tasks]
+      summary: Complete a BREAK_CASE task by breaking the sealed case in inventory-storage
+      description: >
+        A BREAK_CASE task (ADR 0054) is created when an each pick finds only a
+        sealed case at its source. Completing it asks inventory-storage to
+        break the container (`POST /containers/{lpn}/case-breaks`) into the loose
+        bin, with an Idempotency-Key stable per task, and only then completes
+        the task and publishes `TaskCompleted`. If inventory-storage cannot be
+        reached the task stays claimed (503); a retry does not break twice.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - name: id
+          in: path
+          required: true
+          description: The task id.
+          schema:
+            type: string
+            example: 20260101T120000.000000000
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BreakCaseRequest"
+            example:
+              stationId: station-1
+      responses:
+        "204":
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+          description: The case was broken and the task completed. No response body.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: >
+            No task exists with this id.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                taskNotFound:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/task-not-found
+                    title: Task not found
+                    status: 404
+                    detail: "usecases: task not found"
+                    instance: /tasks/20260101T120000.000000000/case-breaks
+        "409":
+          description: >
+            The task has no active claim, another station owns it, it is already completed, it is not a BREAK_CASE task (`not-case-break-task`), or inventory-storage rejected the break (`case-break-rejected`). `POST /tasks/{id}/completions` on a BREAK_CASE task answers `case-break-completion-required`.
+            The same `Idempotency-Key` reused with a different method, path or body is also a 409, problem type `idempotency-key-reused`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                caseBreakRejected:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/case-break-rejected
+                    title: inventory-storage rejected the case break
+                    status: 409
+                    detail: "ports: inventory-storage rejected the case break"
+                    instance: /tasks/20260101T120000.000000000/case-breaks
+                notCaseBreakTask:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/not-case-break-task
+                    title: The task is not a BREAK_CASE task
+                    status: 409
+                    detail: "task: not a BREAK_CASE task"
+                    instance: /tasks/20260101T120000.000000000/case-breaks
+                caseBreakCompletionRequired:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/case-break-completion-required
+                    title: A BREAK_CASE task completes only through POST /tasks/{id}/case-breaks
+                    status: 409
+                    detail: "task: a BREAK_CASE task completes only through the case break"
+                    instance: /tasks/20260101T120000.000000000/case-breaks
+        "503":
+          description: >
+            inventory-storage could not be reached; the task stays claimed and the call can be retried.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                caseBreakUnavailable:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/case-break-unavailable
+                    title: inventory-storage could not be reached for the case break
+                    status: 503
+                    detail: "ports: inventory-storage is unavailable for the case break"
+                    instance: /tasks/20260101T120000.000000000/case-breaks
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /tasks/{id}/package-seals:
+    post:
+      operationId: sealPackage
+      tags: [Tasks, Packages]
+      summary: Scan contents and seal a Package for a Pack task's order
+      description: >
+        The Pack-path counterpart to `complete`: the station holding the
+        active claim on a Pack task scans the order's contents and seals
+        them into a brand-new Package resource (created by this call, not
+        pre-existing — see the `Location` header). The task itself is left
+        claimed; a separate `POST /tasks/{id}/completions` call finishes the
+        Pack task once the package is sealed. Requires at least one scanned
+        item — an empty `contents` array is a domain invariant violation
+        (`422`), not a malformed request (`400`), since the array is present
+        and well-formed, just semantically insufficient to seal.
+
+
+        **Ship in own container (opt-in,
+        [ADR-0056](/docs/adr/0056-ship-in-own-container)).** With
+        `shipInOwnContainer: true` and the order line's `lineQuantity` (in
+        eaches), a line that is exactly one full active CASE of its SKU
+        (`lineQuantity` equal to the `unitsPerPack` of the SKU's active CASE
+        level in the local pack-level copy of product-master's events) is
+        sealed in the case itself: the package carries `containerSource: CASE`
+        and the case's GTIN, dimensions and weight in `container`, with no
+        cartonisation. `contents` must then name exactly one SKU. Anything
+        else is refused with `422` and nothing is sealed: not exactly one
+        line (`ship-in-own-container-not-single-line`), a quantity other
+        than one full case (`ship-in-own-container-quantity-mismatch`), no
+        CASE level for the SKU (`ship-in-own-container-no-case-level`), a
+        retired CASE level (`ship-in-own-container-case-retired`), or a case
+        declared without dimensions and weight
+        (`ship-in-own-container-case-dimensions-unknown`). Without the new
+        fields the request and the response are exactly as before.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - name: id
+          in: path
+          required: true
+          description: The Pack task id whose active claim authorizes this seal.
+          schema:
+            type: string
+            example: 20260101T120100.000000000
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SealPackageRequest"
+            examples:
+              ordinary:
+                summary: An ordinary carton (the existing request, unchanged)
+                value:
+                  stationId: station-2
+                  contents: [sku-1, sku-2]
+              shipInOwnContainer:
+                summary: An order line that is exactly one full case of 12 eaches
+                value:
+                  stationId: station-2
+                  contents: [sku-1]
+                  shipInOwnContainer: true
+                  lineQuantity: 12
+      responses:
+        "201":
+          description: Package sealed.
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+            Location:
+              description: Path of the newly created package, e.g. `/packages/{id}`.
+              schema:
+                type: string
+                example: /packages/20260101T120200.000000000
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PackageResponse"
+              examples:
+                ordinary:
+                  summary: An ordinary carton
+                  value:
+                    id: 20260101T120200.000000000
+                    orderRef: order-42
+                    status: SEALED
+                    scannedContents: [sku-1, sku-2]
+                    fragileHandling: false
+                    giftWrapRequested: false
+                    sortLane: STANDARD
+                shipInOwnContainer:
+                  summary: Sealed in its own case
+                  value:
+                    id: 20260101T120200.000000000
+                    orderRef: order-42
+                    status: SEALED
+                    scannedContents: [sku-1]
+                    fragileHandling: false
+                    giftWrapRequested: false
+                    sortLane: STANDARD
+                    shipInOwnContainer: true
+                    containerSource: CASE
+                    container:
+                      gtin: "24006381333935"
+                      lengthMm: 400
+                      widthMm: 300
+                      heightMm: 200
+                      weightG: 6500
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: No task exists with this id.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/task-not-found
+                title: Task not found
+                status: 404
+                detail: "usecases: task not found"
+                instance: /tasks/20260101T120100.000000000/package-seals
+        "409":
+          description: >
+            One of: `stationId` has no active claim on this task — it was
+            never claimed, or the lease has expired, whichever station held it
+            (`task-not-claimed`, the same type `complete` and `lease-renewals`
+            return for that condition; [ADR-0038](/docs/adr/0038-seal-package-expired-lease-is-not-claimed));
+            an ACTIVE lease on the task is held by a different station
+            (`task-not-owner`); or a scanned item's live DOT
+            hazard classification lookup found it incompatible — per the
+            class-level 49 CFR §177.848-derived segregation matrix — with an
+            item already scanned into this same package
+            (`package-segregation-violation`, see
+            [ADR-0010](/docs/adr/0010-package-segregation-and-sort-lane)).
+            The segregation check only runs when the deployment has
+            `PRODUCT_CLASSIFICATION_MODE=kafka` configured (a local copy of
+            product-master's classifications,
+            [ADR-0039](/docs/adr/0039-product-classification-local-copy));
+            the default permissive mode never rejects on this basis.
+            The same `Idempotency-Key` reused with a different method, path or body is also a 409, problem type `idempotency-key-reused`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/task-not-owner
+                title: Station does not own the active claim on this task
+                status: 409
+                detail: "task: station does not own the claim"
+                instance: /tasks/20260101T120100.000000000/package-seals
+        "422":
+          description: >
+            The task is not a Pack task (`wrong-task-type`), or `contents`
+            was empty (nothing was scanned, so there is nothing to seal:
+            `package-no-scanned-contents`), or a
+            `shipInOwnContainer` request cannot ship in a case, in which case
+            nothing is sealed: `ship-in-own-container-not-single-line`
+            (`contents` is not exactly one SKU),
+            `ship-in-own-container-quantity-mismatch` (`lineQuantity` is not
+            the `unitsPerPack` of the SKU's active CASE level),
+            `ship-in-own-container-no-case-level` (the local pack-level copy
+            holds no CASE level in effect for the SKU),
+            `ship-in-own-container-case-retired` (the SKU's CASE level is
+            end-dated) or `ship-in-own-container-case-dimensions-unknown`
+            (the case was declared without dimensions and weight).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                noScannedContents:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/package-no-scanned-contents
+                    title: Cannot seal a package without scanned contents
+                    status: 422
+                    detail: "package: cannot seal without scanned contents"
+                    instance: /tasks/20260101T120100.000000000/package-seals
+                notSingleLine:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/ship-in-own-container-not-single-line
+                    title: Ship-in-own-container needs exactly one order line in the package
+                    status: 422
+                    detail: "package: ship-in-own-container needs exactly one order line in the package"
+                    instance: /tasks/20260101T120100.000000000/package-seals
+                quantityMismatch:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/ship-in-own-container-quantity-mismatch
+                    title: The order line is not exactly one full case
+                    status: 422
+                    detail: "package: the order line quantity is not exactly one full case"
+                    instance: /tasks/20260101T120100.000000000/package-seals
+                noCaseLevel:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/ship-in-own-container-no-case-level
+                    title: The SKU has no active CASE level
+                    status: 422
+                    detail: "package: the SKU has no active CASE level"
+                    instance: /tasks/20260101T120100.000000000/package-seals
+                caseRetired:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/ship-in-own-container-case-retired
+                    title: The SKU's CASE level is retired
+                    status: 422
+                    detail: "package: the SKU's CASE level is retired"
+                    instance: /tasks/20260101T120100.000000000/package-seals
+                caseDimensionsUnknown:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/ship-in-own-container-case-dimensions-unknown
+                    title: The active CASE level has no dimensions and weight
+                    status: 422
+                    detail: "package: the active CASE level has no dimensions and weight"
+                    instance: /tasks/20260101T120100.000000000/package-seals
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /packages:
+    get:
+      operationId: getPackagesByOrderRef
+      tags: [Packages]
+      summary: Look up every Package sealed for an order reference
+      description: >
+        Read-only query returning every Package sealed for `orderRef` — the
+        Package-side twin of `GET /tasks?orderRef=` (same query-parameter
+        contract, same 400 on a missing or empty `orderRef`, same empty
+        array for an unrecognized one). An order normally yields one carton,
+        but a multi-carton order or a re-pack after a SLAM diversion yields
+        several, so treat the response as a set. Ordered by package id.
+        Side-effect-free (see
+        [ADR-0033](/docs/adr/0033-package-read-model)).
+      parameters:
+        - name: orderRef
+          in: query
+          required: true
+          description: >
+            The order reference to look up (Package.orderRef, copied from
+            the owning Pack task at seal time). Must be non-empty — an empty
+            value is treated as a missing parameter and rejected with 400.
+          schema:
+            type: string
+            minLength: 1
+            example: order-42
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: >
+            One page of the Packages sealed for `orderRef`, ordered by id
+            (possibly empty). Follow `nextCursor` (with `cursor`) until it is absent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PackagePage"
+              example:
+                items:
+                    - id: 20260101T120200.000000000
+                      orderRef: order-42
+                      status: LABELED
+                      scannedContents: [sku-1, sku-2]
+                      fragileHandling: false
+                      giftWrapRequested: false
+                      sortLane: STANDARD
+        "400":
+          description: >
+            The required `orderRef` query parameter is missing or empty
+            (`invalid-request`), `limit` is not an integer 1-500
+            (`invalid-limit`), `cursor` does not decode (`invalid-cursor`), or
+            the query carries a parameter this route does not declare
+            (`unknown-query-parameter`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/invalid-request
+                title: The request is malformed or missing a required field
+                status: 400
+                detail: orderRef is required
+                instance: /packages
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /packages/{id}:
+    get:
+      operationId: getPackage
+      tags: [Packages]
+      summary: Read one Package, including its SLAM outcome
+      description: >
+        Read-only view of a single Package, in exactly the shape
+        `POST /tasks/{id}/package-seals` returns on 201. This is how the SLAM
+        operator and the outbound dock loader learn the SLAM outcome:
+        `POST /packages/{id}/slam-runs` answers `204` both when a label was
+        applied and when the package was diverted, so read `status` here —
+        `LABELED` means the carton goes to the truck by its `sortLane`,
+        `DIVERTED` means it goes to problem-solve. Side-effect-free (see
+        [ADR-0033](/docs/adr/0033-package-read-model)).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The package id, as returned by `POST /tasks/{id}/package-seals`.
+          schema:
+            type: string
+            example: 20260101T120200.000000000
+      responses:
+        "200":
+          description: The package.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PackageResponse"
+              example:
+                id: 20260101T120200.000000000
+                orderRef: order-42
+                status: DIVERTED
+                scannedContents: [sku-1, sku-2]
+                fragileHandling: false
+                giftWrapRequested: false
+                sortLane: STANDARD
+        "404":
+          description: No package exists with this id.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/package-not-found
+                title: Package not found
+                status: 404
+                detail: "usecases: package not found"
+                instance: /packages/20260101T120200.000000000
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /packages/{id}/slam-runs:
+    post:
+      operationId: runSlam
+      tags: [Packages]
+      summary: Run the SLAM weigh-check on a sealed package
+      description: >
+        SLAM = Scan, Label, Apply, Manifest. Weighs a sealed package: if
+        `|actualWeight - expectedWeight|` is within tolerance (0.05, same
+        unit as the two weights — e.g. kilograms), a shipping label is
+        applied (`LabelApplied`); otherwise the package is diverted
+        (`WeightDiscrepancyDetected` + `PackageDiverted`) rather than
+        shipped with a wrong manifest. Idempotent in effect once processed:
+        a repeat call on an already-labeled-or-diverted package returns
+        `409` rather than re-processing it.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - name: id
+          in: path
+          required: true
+          description: The package id, as returned by `POST /tasks/{id}/package-seals`.
+          schema:
+            type: string
+            example: 20260101T120200.000000000
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunSlamRequest"
+            example:
+              actualWeight: 2.02
+              expectedWeight: 2.0
+      responses:
+        "204":
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+          description: >
+            Weigh-check recorded (label applied or the package diverted —
+            both are successful outcomes of this call). No response body;
+            read `GET /packages/{id}` afterwards to see which outcome
+            occurred (`status` `LABELED` or `DIVERTED`, see
+            [ADR-0033](/docs/adr/0033-package-read-model)).
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: No package exists with this id.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/package-not-found
+                title: Package not found
+                status: 404
+                detail: "usecases: package not found"
+                instance: /packages/20260101T120200.000000000/slam-runs
+        "409":
+          description: >
+            The package already had a label applied or was already diverted
+            (`package-already-processed`), or it has not been sealed yet and
+            is still Open (`package-not-sealed`). The same `Idempotency-Key`
+            reused with a different method, path or body is also a 409,
+            problem type `idempotency-key-reused`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                alreadyProcessed:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/package-already-processed
+                    title: Package SLAM already processed
+                    status: 409
+                    detail: "package: SLAM already processed"
+                    instance: /packages/20260101T120200.000000000/slam-runs
+                notSealed:
+                  value:
+                    type: https://errors.fulfillment-execution.warehouse-systems.dev/package-not-sealed
+                    title: Package must be sealed before SLAM
+                    status: 409
+                    detail: "package: must be sealed before SLAM"
+                    instance: /packages/20260101T120200.000000000/slam-runs
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /queues/{taskType}/depth:
+    get:
+      operationId: getQueueDepth
+      tags: [Tasks]
+      summary: Read the pending-task count for a process path (read model)
+      description: >
+        A projection, not a live domain query: returns how many tasks of
+        `taskType` currently sit Pending (not yet claimed) in the pool.
+        Read-only — this endpoint never mutates state. An unrecognized
+        `taskType` is not an error; it simply has a depth of `0`, since
+        this is a count over existing tasks rather than a lookup against a
+        fixed enum the server enforces.
+      parameters:
+        - name: taskType
+          in: path
+          required: true
+          description: The process path to count (conventionally PICK, PACK, SLAM, RELOCATE, REPLENISH or BREAK_CASE).
+          schema:
+            type: string
+            example: PICK
+      responses:
+        "200":
+          description: Current pending-task count for `taskType`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueueDepthResponse"
+              example:
+                taskType: PICK
+                depth: 3
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /capacity/{capability}:
+    get:
+      operationId: getInstalledCapacity
+      tags: [Stations]
+      summary: Read how many registered stations hold a given capability (read model)
+      description: >
+        A projection over the Station registry, not a staffing count: returns
+        how many currently-registered stations hold `capability`, regardless
+        of occupancy. This is the raw installed ceiling a process path can
+        ever be staffed up to — workforce-management's CommitShiftPlan calls
+        this endpoint to enforce `plannedHeads` against reality, live,
+        instead of trusting a caller-supplied installed-station count alone
+        (see this repo's ADR-0018). Read-only — never mutates state. An
+        unrecognized `capability` is not an error; it simply has an
+        installed count of `0`, the same "count over existing rows, not a
+        lookup against a fixed enum" contract `getQueueDepth` already uses.
+      parameters:
+        - name: capability
+          in: path
+          required: true
+          description: The capability to count registered stations for (e.g. pick, pack, slam, rebin).
+          schema:
+            type: string
+            example: pick
+      responses:
+        "200":
+          description: Current count of registered stations holding `capability`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InstalledCapacityResponse"
+              example:
+                capability: pick
+                installed: 4
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /paths/{pathId}/work-requests:
+    post:
+      operationId: requestNextWork
+      tags: [Work Planning Delegation]
+      summary: Ask the Work Planning agent (over A2A) to admit the next unit for a path
+      description: >
+        The PULL side of the execution/planning seam (ADR-0058): execution,
+        whose claimable queue for a process path is draining, delegates
+        "admit the next priority-ordered unit" to the wes-work-planning A2A
+        agent. Planning keeps every release decision (release policy, WIP
+        invariant); execution keeps the judgement of when to ask. The
+        authoritative fact still arrives as the `WorkReleased` CloudEvent on
+        Kafka through the existing consumer — the 200 body is only the
+        delegation acknowledgement. Each call asks for exactly one unit, so
+        the route is behind the idempotency middleware (ADR-0058, ADR-0060):
+        a retry of ONE logical pull (same `Idempotency-Key`, same path)
+        replays the stored answer with `Idempotency-Replayed: true`, while a
+        legitimate second pull sends a new key. Answers 503 when this deployment has no
+        `WORK_PLANNING_A2A_URL` configured, and 502 when the planning agent
+        is unreachable or answers off-contract.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - name: pathId
+          in: path
+          required: true
+          description: >
+            The process path more work is requested for (e.g. pick-zone-a).
+            Must be a path Work Planning knows; an unknown path answers 404.
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        "200":
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+          description: Work Planning admitted the next unit; the body is the acknowledgement.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkRequestResponse"
+              example:
+                workUnitId: wu-482910
+                cpt: "2026-08-21T12:00:00Z"
+                reference: order-77213-line-1
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: Work Planning does not know this process path.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: Work Planning rejected the pull with a business rule (empty pool or WIP limit reached); nothing was released. The same `Idempotency-Key` reused with a different method, path or body is also a 409, problem type `idempotency-key-reused`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "502":
+          description: The planning agent was unreachable or answered off-contract.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "503":
+          description: Work-planning delegation is not configured on this deployment.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /task-lease-expirations:
+    post:
+      operationId: expireLeases
+      tags: [Tasks]
+      summary: Sweep every Claimed task whose lease has expired back to Pending
+      description: >
+        The Clock-driven side of the at-most-once lease design: scans every
+        Claimed task and, for each whose lease expiry has passed without a
+        renewal or completion, frees it back to Pending (publishing
+        `LeaseExpired`) so the work is never silently lost. A collection-
+        level action on the `tasks` resource — not scoped to a single task
+        id — analogous to how `/tasks/{id}/completions` is a single-resource
+        action; deliberately not placed under an unscoped `/admin` path.
+        Idempotent: a second call simply frees nothing new if nothing else
+        has expired since the last sweep. Takes no request body.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+          description: Sweep completed; body reports how many tasks were freed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExpireLeasesResponse"
+              example:
+                freed: 2
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/IdempotencyKeyReused"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /cpt-miss-sweeps:
+    post:
+      operationId: sweepCPTMisses
+      tags: [Tasks]
+      summary: Sweep every still-open task whose CPT has passed and report it as missed
+      description: >
+        The Clock-driven half of the promise feedback loop with
+        order-management (ADR 0014 §5, this service's own ADR-0025): scans
+        every task still open (Pending or Claimed — i.e. not Completed) and,
+        for each whose CPT is at or before now, publishes `TaskCPTMissed`.
+        Unlike `/task-lease-expirations`, this never mutates the task's own
+        lifecycle state — a CPT miss is a fact reported upstream, not a
+        state transition. A collection-level action on the `tasks`
+        resource, mirroring `/task-lease-expirations`'s own convention exactly.
+        **Not idempotent in the usual sense by design**: a task still open
+        past its CPT is reported again on every sweep pass for as long as
+        it remains open — order-management's `RepromiseOrder` consumer is
+        explicitly designed (ADR 0014 §5) to be idempotent on
+        `(orderId, sourceEventId)` because of this. Takes no request body.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+          description: Sweep completed; body reports how many tasks were reported as CPT-missed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SweepCPTMissesResponse"
+              example:
+                reported: 1
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/IdempotencyKeyReused"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /rebin/arrivals:
+    post:
+      operationId: arriveAtRebin
+      tags: [Rebin]
+      summary: Record one picked line arriving at the order's Rebin consolidation slot
+      description: >
+        A Rebin / put-wall associate (or automation signal) scans one picked
+        line of an order into that order's consolidation slot. This is the
+        pick -> pack handoff of
+        [ADR-0016](/docs/adr/0016-rebin-and-order-consolidation): once every
+        required line of the order has arrived, this call creates the
+        order's PACK task (through the same `CreateTask` use case as
+        `POST /tasks`, so it appears in `GET /tasks?orderRef=` and is
+        claimable via `task-claims` with `taskType: PACK`) and raises
+        `OrderConsolidated`. Every accepted arrival raises
+        `ItemArrivedAtRebin`. Neither event is forwarded to Kafka today.
+
+
+        **The first call for an `orderRef` fixes the required line set.**
+        The first arrival seen for an `orderRef` creates its consolidation
+        tracker with that call's `requiredLineIds` as the full, fixed set.
+        Every later call for the same `orderRef` must still send
+        `requiredLineIds` (it is validated as required on every call, since
+        only the caller knows whether an arrival is the first), but the
+        value is ignored once the set exists — the caller is responsible for
+        sending the same set each time. `lineId` must be a member of the
+        fixed set, otherwise the call is rejected with `422`
+        `rebin-unknown-line` (this includes a first call whose `lineId` is
+        not in its own `requiredLineIds`).
+
+
+        **Idempotent per (`orderRef`, `lineId`).** Re-sending an arrival for
+        a line that has already arrived is a no-op success (`204`), so a
+        redelivered scan never errors and never double-counts.
+
+
+        **The PACK task is created exactly once**, by the arrival that
+        completes the set; it takes `packCpt`, `packRequiredCapabilities`,
+        `packFragile` and `packGiftWrap` from that completing call. Any
+        later arrival for an already-consolidated order is a `204` no-op
+        and creates no further PACK task. A single-line order
+        (`requiredLineIds` of length 1, `lineId` equal to it) completes on
+        its first arrival, creating the PACK task immediately.
+
+
+        No response body on success. Like every POST it requires an
+        `Idempotency-Key` header (ADR-0028, ADR-0060): a retry with the same
+        key and body replays the stored `204`; the natural (`orderRef`,
+        `lineId`) key additionally makes a re-send with a new key a no-op.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ArriveAtRebinRequest"
+            example:
+              orderRef: order-42
+              lineId: line-1
+              requiredLineIds: [line-1, line-2]
+              packCpt: "2026-01-01T19:00:00Z"
+              packRequiredCapabilities: [pack]
+              packFragile: false
+              packGiftWrap: false
+      responses:
+        "204":
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+          description: >
+            Arrival recorded (or was already recorded — an idempotent
+            redelivery). If this arrival completed the order's required
+            line set, the order's PACK task has been created. No response
+            body.
+        "400":
+          $ref: "#/components/responses/BadRequestNoInstance"
+        "409":
+          $ref: "#/components/responses/IdempotencyKeyReused"
+        "422":
+          description: >
+            `lineId` is not part of this order's required consolidation
+            set — the set fixed by the first arrival seen for `orderRef`.
+            Also `invalid-deadline` when `packCpt` is present but the zero
+            time (`0001-01-01T00:00:00Z`): a valid date-time, but no task can be
+            due at the zero instant. An absent `packCpt` is a `400`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/rebin-unknown-line
+                title: Line is not part of this order's required consolidation set
+                status: 422
+                detail: "consolidation: line is not part of this order"
+                instance: /rebin/arrivals
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /healthz:
+    get:
+      operationId: getHealthz
+      tags: [System]
+      summary: Liveness check
+      description: >
+        Returns `200` if the HTTP server process is up and serving. This is
+        a liveness probe, not a readiness probe — it does not check
+        connectivity to Postgres or Kafka, and always returns `200` with no
+        body as long as the process can handle the request at all.
+      responses:
+        "200":
+          description: The service process is up.
+
+  /readyz:
+    get:
+      operationId: getReadyz
+      tags: [System]
+      summary: Readiness check
+      description: >
+        Returns `200 {"status":"ready"}` while the service is ready to
+        accept new traffic. Ready means: the service is not draining AND
+        Postgres answers a ping AND a Kafka broker answers a metadata
+        request (reachability only; topics are never required, the
+        service's writers auto-create them). The dependency verdict is
+        cached for a few seconds. Returns `503 {"status":"not_ready"}`
+        once graceful shutdown has begun (ADR-0029) — the readiness gate
+        is flipped as the FIRST step of shutdown, before the HTTP server
+        stops accepting connections, so a Kubernetes readinessProbe
+        pointed here has a window to stop routing new traffic before the
+        listener closes — and a `503` problem+json of type
+        `dependency-unavailable` (the detail names the failing
+        dependencies) while Postgres or Kafka is not reachable.
+        With `PATH_CATALOGUE_SOURCE=kafka` it also returns `503` from boot
+        until the process-path catalogue replay has caught up: the listener
+        starts before the replay so `/healthz` answers at once (ADR-0044).
+        Distinct from `/healthz` (liveness, never flipped by shutdown).
+      responses:
+        "200":
+          description: The service is ready to accept new traffic.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: [ready]
+              example:
+                status: ready
+        "503":
+          description: >-
+            The service is draining, warming up, or Postgres or Kafka is
+            not reachable, and must not receive new traffic.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: [not_ready]
+              example:
+                status: not_ready
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: >
+        Caller-supplied key, 1-128 printable ASCII characters (a UUID minted
+        once per LOGICAL submit; a retry reuses it, a new user action mints a
+        new one). Required on every POST: a missing key is `400
+        idempotency-key-required`, a malformed one `400
+        idempotency-key-invalid`. The key is global to the service: a retry
+        with the same method, path and body replays the stored answer (status,
+        body and `Location`) with `Idempotency-Replayed: true` and runs
+        nothing; the same key with a different method, path or body is
+        `409 idempotency-key-reused`.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+        pattern: '^[ -~]+$'
+        example: 6f1c2a3e-9b1d-4c1a-8f0e-2d5b7c9a1e44
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Page size, 1-500 (default 100). An empty, repeated or out-of-range value is `400 invalid-limit`.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 500
+        default: 100
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: >
+        Opaque keyset cursor taken from the previous page's `nextCursor`
+        (repeat the filters on every page). A value that does not decode is
+        `400 invalid-cursor`. Any other query parameter is
+        `400 unknown-query-parameter`.
+      schema:
+        type: string
+  headers:
+    IdempotencyReplayed:
+      description: >
+        Present, with the value `true`, ONLY when this answer is the stored
+        replay of an earlier request that used the same `Idempotency-Key`
+        (the handler did not run again). The first execution never carries it.
+      schema:
+        type: string
+        enum: ["true"]
+  schemas:
+    Problem:
+      type: object
+      description: >
+        RFC 7807 (Problem Details for HTTP APIs) error response, used for
+        every error this API returns. See
+        https://www.rfc-editor.org/rfc/rfc7807.
+      required: [type, title, status, detail]
+      properties:
+        type:
+          type: string
+          format: uri
+          description: >
+            A URI identifying the error category. Does not need to resolve
+            to a real page — it is an identifier, unique per distinct error
+            category in this service.
+          example: https://errors.fulfillment-execution.warehouse-systems.dev/task-not-found
+        title:
+          type: string
+          description: Fixed, category-level human-readable summary.
+          example: Task not found
+        status:
+          type: integer
+          format: int32
+          description: Duplicates the HTTP status code, per RFC 7807.
+          example: 404
+        detail:
+          type: string
+          description: The specific error message for this occurrence.
+          example: "usecases: task not found"
+        instance:
+          type: string
+          description: >
+            The request path that produced the error. Omitted for a
+            validation error on a bare collection-create endpoint
+            (`POST /tasks`, `POST /stations`, `POST /rebin/arrivals`) whose
+            path has no segment identifying a specific resource.
+          example: /tasks/20260101T120000.000000000/lease-renewals
+
+    TaskPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskResponse"
+        nextCursor:
+          type: string
+          description: Opaque cursor of the next page; absent on the last page.
+    PackagePage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PackageResponse"
+        nextCursor:
+          type: string
+          description: Opaque cursor of the next page; absent on the last page.
+    TaskType:
+      type: string
+      description: >
+        The process path a task belongs to. REBIN tasks are not creatable
+        through `POST /tasks` by HTTP-only callers in practice — they arrive
+        via the WorkReleased Kafka event's rebin path (see the process-path
+        catalogue) — but they exist in the task store and therefore appear
+        in read-model responses alongside PICK/PACK/SLAM.
+      enum: [PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL]
+      example: PICK
+
+    AnyTaskType:
+      type: string
+      description: >
+        Every task type a task can have and a station can claim: the
+        creatable TaskType values plus `RELOCATE` (a slot-plan move,
+        ADR-0047), `REPLENISH` (a pick-face replenishment, ADR-0050) and
+        `BREAK_CASE` (open a sealed case into loose eaches, ADR-0054,
+        claimable since ADR-0055). RELOCATE, REPLENISH and BREAK_CASE tasks
+        are created only from WorkReleased on their process paths, never
+        through `POST /tasks`, because they need the planned move or break.
+        A claimed BREAK_CASE task completes only through
+        `POST /tasks/{id}/case-breaks`.
+      enum: [PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL, RELOCATE, REPLENISH, BREAK_CASE]
+      example: PICK
+
+    TaskRelocation:
+      type: object
+      description: >
+        The slot-plan move a RELOCATE task executes (ADR-0047), from
+        WorkReleased.data.relocation. An open side is omitted: `fromBin` of an
+        Assign and `toBin` of a Vacate are scanned by the operator at
+        completion.
+      required: [planId, moveSeq, kind, sku, ref]
+      properties:
+        planId:
+          type: string
+          description: The approved slot plan.
+          example: plan-7
+        moveSeq:
+          type: integer
+          format: int32
+          minimum: 0
+          description: The move's 0-based position in the plan.
+          example: 3
+        kind:
+          type: string
+          enum: [Relocate, Assign, Vacate]
+          example: Vacate
+        sku:
+          type: string
+          example: SKU-1
+        fromBin:
+          type: string
+          description: Planned source bin; omitted for an Assign.
+          example: WH1-FWD-A01-01-03-A
+        toBin:
+          type: string
+          description: Planned destination bin; omitted for a Vacate.
+          example: WH1-FWD-A01-01-02-A
+        ref:
+          type: string
+          description: The move reference `<planId>:<moveSeq>`, published as TaskCompleted.relocation_ref.
+          example: "plan-7:3"
+        executed:
+          type: object
+          description: The executed move, present once the task is completed.
+          required: [quantity, fromBin, toBin]
+          properties:
+            quantity:
+              type: integer
+              format: int32
+              minimum: 1
+              example: 12
+            fromBin:
+              type: string
+              example: WH1-FWD-A01-01-03-A
+            toBin:
+              type: string
+              example: WH1-RSV-B02-01-01-A
+
+    TaskReplenishment:
+      type: object
+      description: >
+        The pick-face replenishment move a REPLENISH task executes
+        (ADR-0050), from WorkReleased.data.replenishment. Both bins are
+        always known. `priority` is recorded for the operator's view;
+        claimNext orders by CPT only.
+      required: [requestId, sku, fromBin, toBin, quantity, priority]
+      properties:
+        requestId:
+          type: string
+          description: The replenishment request id, published as TaskCompleted.request_ref.
+          example: req-9
+        sku:
+          type: string
+          example: SKU-1
+        fromBin:
+          type: string
+          description: Source (reserve) bin.
+          example: WH1-RSV-AMB-B02-03-02-C
+        toBin:
+          type: string
+          description: Destination bin (the pick face).
+          example: WH1-FWD-AMB-A01-01-01-A
+        quantity:
+          type: integer
+          format: int32
+          minimum: 1
+          description: The planned units to move.
+          example: 24
+        priority:
+          type: string
+          enum: [NORMAL, URGENT]
+          example: URGENT
+        executed:
+          type: object
+          description: The executed move, present once the task is completed.
+          required: [quantity, fromBin, toBin]
+          properties:
+            quantity:
+              type: integer
+              format: int32
+              minimum: 1
+              example: 20
+            fromBin:
+              type: string
+              example: WH1-RSV-AMB-B02-03-02-C
+            toBin:
+              type: string
+              example: WH1-FWD-AMB-A01-01-01-A
+
+    TaskStatus:
+      type: string
+      description: Lifecycle state of a Task.
+      enum: [PENDING, CLAIMED, COMPLETED]
+      example: PENDING
+
+    PackageStatus:
+      type: string
+      description: Lifecycle state of a Package.
+      enum: [OPEN, SEALED, LABELED, DIVERTED]
+      example: SEALED
+
+    SortLane:
+      type: string
+      description: >
+        Package's derived WES-tier sortation routing decision (see
+        [ADR-0010](/docs/adr/0010-package-segregation-and-sort-lane)):
+        `HAZMAT_LANE` if any scanned item carried a DOT hazard class from
+        the live per-scanned-item classification lookup, else
+        `FRAGILE_NO_TILT` if `fragileHandling` is true, else `STANDARD`.
+        A decision only — no WCS device/conveyor integration exists in
+        this service; a real WCS system would consume this value as its
+        own inbound fact.
+      enum: [HAZMAT_LANE, FRAGILE_NO_TILT, STANDARD]
+      example: STANDARD
+
+    CreateTaskRequest:
+      type: object
+      required: [type, cpt, orderRef, requiredCapabilities]
+      properties:
+        type:
+          $ref: "#/components/schemas/TaskType"
+        cpt:
+          type: string
+          format: date-time
+          description: >
+            Critical Pull Time — the deadline driving dispatch
+            priority. `claimNext` always selects the earliest-CPT pending
+            task a station qualifies for.
+          example: "2026-01-01T18:00:00Z"
+        orderRef:
+          type: string
+          minLength: 1
+          description: >
+            The originating order/work-unit reference (opaque to this
+            service). Must be non-empty: the API treats "" as a missing
+            field and rejects it with 400.
+          example: order-42
+        requiredCapabilities:
+          type: array
+          description: >
+            Capabilities a claiming station's capability set must be a
+            superset of. This is an open, freeform list of strings, not a
+            closed enum — known values in active use include `pick`,
+            `pack`, `slam`, and `hazmat` (hazmat is matched by the same
+            generic capability-set mechanism as any other value; no special
+            handling exists or is needed for it).
+          minItems: 1
+          items:
+            type: string
+            nullable: true
+            description: >
+              A null item is accepted and treated as an empty capability
+              string (Go's JSON decoding cannot distinguish them).
+            example: pick
+        fragile:
+          type: boolean
+          nullable: true
+          default: false
+          description: >
+            A packing hint, not a placement or capability-matching signal:
+            true if this task's upstream order line was classified Fragile
+            by inventory-storage's ProductClassification concept, as
+            stamped onto the WorkReleased event by wes-work-planning at
+            release time. Optional and defaults to false for backward
+            compatibility with any producer that predates this field; an
+            explicit null is accepted and treated the same as omission
+            (false).
+      example:
+        type: PICK
+        cpt: "2026-01-01T18:00:00Z"
+        orderRef: order-42
+        requiredCapabilities: [pick]
+        fragile: false
+
+    WorkBatchMember:
+      type: object
+      required: [task_id, stop_seq, compartment, state]
+      properties:
+        task_id:
+          type: string
+          description: The member PICK task's id.
+          example: 20260101T120000.000000000
+        stop_seq:
+          type: integer
+          minimum: 1
+          description: The 1-based visit order of this stop (hint rank order, ADR 0063 D6).
+          example: 1
+        compartment:
+          type: integer
+          minimum: 1
+          description: The cart position holding this task's items; v1 assigns it by stop order.
+          example: 1
+        state:
+          type: string
+          enum: [OPEN, COMPLETED, DETACHED]
+          description: >
+            The member's state inside the walk. DETACHED means the task's
+            lease expired and it returned to the pool through the existing
+            sweep.
+          example: OPEN
+
+    WorkBatchResponse:
+      type: object
+      required: [batch_id, station_id, status, cpt, formed_at, members]
+      properties:
+        batch_id:
+          type: string
+          description: Server-generated work batch id.
+          example: wb-20260101T120000.000000000
+        station_id:
+          type: string
+          description: The station holding the walk.
+          example: station-1
+        status:
+          type: string
+          enum: [OPEN, COMPLETED, ABANDONED]
+          description: >
+            OPEN while any member is still open; COMPLETED when the last
+            open member completed; ABANDONED when every member left without
+            completing.
+          example: OPEN
+        cpt:
+          type: string
+          format: date-time
+          description: The batch's priority band — every member shares this CPT instant.
+          example: "2026-01-01T18:00:00Z"
+        formed_at:
+          type: string
+          format: date-time
+          description: The formation instant; the walk's `walk_seconds` on WorkBatchCompleted is measured from it.
+          example: "2026-01-01T12:00:00Z"
+        members:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/WorkBatchMember"
+
+    FormWorkBatchResponse:
+      type: object
+      required: [anchor_task_id]
+      properties:
+        batch:
+          type: object
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/WorkBatchResponse"
+          description: >
+            The formed walk, or null when the anchor was claimed as an
+            ordinary single task because it has no pick face (ADR 0062) —
+            the claim stands exactly as `task-claims` would have left it.
+        anchor_task_id:
+          type: string
+          description: The task ClaimNext would have returned — batching never changes who goes first.
+          example: 20260101T120000.000000000
+
+    TaskResponse:
+      type: object
+      required: [id, type, status, cpt, orderRef, requiredCapabilities, fragile, giftWrap]
+      properties:
+        id:
+          type: string
+          description: Server-generated task id.
+          example: 20260101T120000.000000000
+        type:
+          $ref: "#/components/schemas/AnyTaskType"
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+        cpt:
+          type: string
+          format: date-time
+          example: "2026-01-01T18:00:00Z"
+        orderRef:
+          type: string
+          example: order-42
+        requiredCapabilities:
+          type: array
+          items:
+            type: string
+          example: [pick]
+        fragile:
+          type: boolean
+          description: >
+            Packing hint carried from task creation — see
+            CreateTaskRequest.fragile. Does not affect claiming.
+          example: false
+        giftWrap:
+          type: boolean
+          description: >
+            Read-only packing hint: true if this task's order was flagged
+            for gift wrap at work-enqueue time. Unlike fragile, it has no
+            HTTP ingestion path — it arrives only via
+            WorkReleased.data.gift_wrap (see ADR-0011) and cannot be set
+            through POST /tasks. Does not affect claiming or capability
+            matching.
+          example: false
+        leaseStationId:
+          type: string
+          description: The station currently holding the active claim; omitted (never null) when the task is not claimed.
+          example: station-1
+        leaseExpiry:
+          type: string
+          format: date-time
+          description: When the active claim's lease expires; omitted (never null) when the task is not claimed.
+          example: "2026-01-01T12:05:00Z"
+        relocation:
+          $ref: "#/components/schemas/TaskRelocation"
+        replenishment:
+          $ref: "#/components/schemas/TaskReplenishment"
+
+    ClaimNextRequest:
+      type: object
+      required: [taskType]
+      properties:
+        taskType:
+          $ref: "#/components/schemas/AnyTaskType"
+      example:
+        taskType: PICK
+
+    RenewLeaseRequest:
+      type: object
+      required: [stationId]
+      properties:
+        stationId:
+          type: string
+          minLength: 1
+          description: >
+            Must match the station that currently owns the active claim.
+            Must be non-empty: the API treats "" as a missing field and
+            rejects it with 400.
+          example: station-1
+      example:
+        stationId: station-1
+
+    PickScanRequest:
+      type: object
+      required: [stationId, gtin]
+      properties:
+        stationId:
+          type: string
+          minLength: 1
+        gtin:
+          type: string
+          pattern: '^([0-9]{8}|[0-9]{12,14})$'
+          description: The scanned GTIN (8, 12, 13 or 14 digits). The handler only rejects a blank value (400); a value that is not a valid GTIN (wrong shape, bad check digit or a variable-measure indicator) is a 409 `invalid-scanned-gtin`.
+        count:
+          type: integer
+          format: int32
+          minimum: 1
+          default: 1
+          description: Packs scanned - eaches for an EACH GTIN, cases for a CASE GTIN.
+    PickScanResult:
+      type: object
+      required: [scannedGtin, sku, level, addedEaches, pickedEaches, plannedEaches]
+      properties:
+        scannedGtin: { type: string, description: "Normalised 14-digit GTIN." }
+        sku: { type: string }
+        level: { type: string, enum: [EACH, INNER, CASE, PALLET] }
+        addedEaches: { type: integer, format: int32, minimum: 1 }
+        pickedEaches: { type: integer, format: int32, minimum: 1 }
+        plannedEaches: { type: integer, format: int32, minimum: 1 }
+
+    CompleteTaskRequest:
+      type: object
+      required: [stationId]
+      properties:
+        stationId:
+          type: string
+          minLength: 1
+          description: >
+            Must match the station that currently owns the active claim.
+            Must be non-empty: the API treats "" as a missing field and
+            rejects it with 400.
+          example: station-1
+        quantity:
+          type: integer
+          format: int32
+          minimum: 1
+          description: >
+            RELOCATE and REPLENISH only (ADR-0047, ADR-0050): the units the
+            operator counted and moved (RELOCATE v1 moves the whole on-hand
+            quantity of the SKU at the source bin; REPLENISH takes the
+            counted quantity, which may differ from the planned one).
+            Required for a RELOCATE or REPLENISH task, rejected (422
+            `not-relocation-task`) for any other. A value below 1 is a 400.
+          example: 12
+        fromBin:
+          type: string
+          minLength: 1
+          pattern: '\S'
+          description: >
+            RELOCATE and REPLENISH only: the source bin the operator
+            scanned. Required when a RELOCATE move left the source open (an
+            Assign); when sent for a planned source (always for REPLENISH)
+            it must equal it. A blank value (no character outside ECMA-262
+            `\s`) is a 400.
+          example: WH1-RSV-B02-01-01-A
+        toBin:
+          type: string
+          minLength: 1
+          pattern: '\S'
+          description: >
+            RELOCATE and REPLENISH only: the destination bin the operator
+            scanned. Required when a RELOCATE move left the destination
+            open (a Vacate); when sent for a planned destination (always
+            for REPLENISH) it must equal it. A blank value (no character
+            outside ECMA-262 `\s`) is a 400.
+          example: WH1-RSV-B02-01-01-A
+      example:
+        stationId: station-1
+
+    BreakCaseRequest:
+      type: object
+      required: [stationId]
+      properties:
+        stationId:
+          type: string
+          minLength: 1
+          description: >
+            Must match the station that currently owns the active claim.
+            Must be non-empty: the API treats "" as a missing field and
+            rejects it with 400.
+          example: station-1
+      example:
+        stationId: station-1
+
+    SealPackageRequest:
+      type: object
+      required: [stationId]
+      properties:
+        stationId:
+          type: string
+          minLength: 1
+          description: >
+            Must match the station that currently owns the active claim on
+            the Pack task. Must be non-empty: the API treats "" as a
+            missing field and rejects it with 400.
+          example: station-2
+        contents:
+          type: array
+          description: >
+            SKUs scanned for this package. An empty or omitted array is
+            accepted by request validation (it's well-formed JSON) but
+            rejected by the domain with a 422, since sealing requires at
+            least one scanned item.
+          items:
+            type: string
+            nullable: true
+            description: >
+              A null item is accepted and treated as an empty SKU string
+              (Go's JSON decoding cannot distinguish them).
+            example: sku-1
+        shipInOwnContainer:
+          type: boolean
+          description: >
+            Opt-in (ADR-0056). `true` asks to ship the order line in its own
+            CASE: it requires `lineQuantity` and exactly one SKU in
+            `contents`, and is refused with a `422`
+            `ship-in-own-container-*` problem unless `lineQuantity` equals the
+            `unitsPerPack` of the SKU's active CASE level. Absent or `false`
+            is the ordinary carton seal, unchanged.
+          example: true
+        lineQuantity:
+          type: integer
+          format: int32
+          minimum: 1
+          description: >
+            The order line's quantity in EACHES (never cases). Required when
+            `shipInOwnContainer` is `true` (a missing value is a `400`);
+            ignored otherwise.
+          example: 12
+      example:
+        stationId: station-2
+        contents: [sku-1, sku-2]
+
+    PackageResponse:
+      type: object
+      required: [id, orderRef, status, scannedContents, fragileHandling, giftWrapRequested, sortLane]
+      properties:
+        id:
+          type: string
+          description: Server-generated package id.
+          example: 20260101T120200.000000000
+        orderRef:
+          type: string
+          example: order-42
+        status:
+          $ref: "#/components/schemas/PackageStatus"
+        scannedContents:
+          type: array
+          items:
+            type: string
+          example: [sku-1, sku-2]
+        fragileHandling:
+          type: boolean
+          description: >
+            Derived at seal time from the owning Pack task's `fragile`
+            flag (not an independent input to seal-package) — true if any
+            of the package's scanned/sealed contents came from an order
+            line classified Fragile upstream.
+          example: false
+        giftWrapRequested:
+          type: boolean
+          description: >
+            Derived at seal time from the owning Pack task's `giftWrap`
+            flag (not an independent input to seal-package, and not
+            restated by the station) — true if the order this package
+            fulfils was flagged for gift wrap at work-enqueue time. Unlike
+            hazmat, this is a packing concern only: it does not gate which
+            station may fulfil the order (see ADR-0011).
+          example: false
+        sortLane:
+          $ref: "#/components/schemas/SortLane"
+        shipInOwnContainer:
+          type: boolean
+          description: >
+            Present (always `true`) only when the package ships in its own
+            container (ADR-0056); omitted from an ordinary carton.
+          example: true
+        containerSource:
+          $ref: "#/components/schemas/ContainerSource"
+        container:
+          $ref: "#/components/schemas/OwnContainer"
+
+    ContainerSource:
+      type: string
+      description: >
+        What a package ships in when it is not a cartonised carton. `CASE`:
+        the SKU's own sealed case (ADR-0056).
+      enum: [CASE]
+      example: CASE
+
+    OwnContainer:
+      type: object
+      description: >
+        The case a package ships in (ADR-0056): its GTIN and the declared
+        dimensions and weight of the case level, copied at seal time (a later
+        re-declaration does not change a sealed package).
+      required: [gtin, lengthMm, widthMm, heightMm, weightG]
+      properties:
+        gtin:
+          type: string
+          description: The case's GTIN, 14 digits.
+          example: "24006381333935"
+        lengthMm:
+          type: integer
+          format: int32
+          description: Case length in millimetres.
+          example: 400
+        widthMm:
+          type: integer
+          format: int32
+          description: Case width in millimetres.
+          example: 300
+        heightMm:
+          type: integer
+          format: int32
+          description: Case height in millimetres.
+          example: 200
+        weightG:
+          type: integer
+          format: int32
+          description: Case weight in grams.
+          example: 6500
+
+    RunSlamRequest:
+      type: object
+      required: [actualWeight, expectedWeight]
+      properties:
+        actualWeight:
+          type: number
+          format: double
+          nullable: true
+          description: >
+            Measured weight from the SLAM scale, in the same unit as
+            expectedWeight (e.g. kilograms). An explicit null is accepted
+            and treated the same as 0 (Go's JSON decoding cannot
+            distinguish them).
+          example: 2.02
+        expectedWeight:
+          type: number
+          format: double
+          nullable: true
+          description: >
+            Expected weight for this order's contents, in the same unit as
+            actualWeight. An explicit null is accepted and treated the same
+            as 0 (Go's JSON decoding cannot distinguish them).
+          example: 2.0
+      example:
+        actualWeight: 2.02
+        expectedWeight: 2.0
+
+    QueueDepthResponse:
+      type: object
+      required: [taskType, depth]
+      properties:
+        taskType:
+          type: string
+          example: PICK
+        depth:
+          type: integer
+          format: int32
+          description: Count of currently Pending tasks of this type.
+          example: 3
+
+    InstalledCapacityResponse:
+      type: object
+      required: [capability, installed]
+      properties:
+        capability:
+          type: string
+          example: pick
+        installed:
+          type: integer
+          format: int32
+          description: Count of currently-registered stations holding this capability, regardless of occupancy.
+          example: 4
+
+    WorkRequestResponse:
+      type: object
+      description: >
+        Acknowledgement of an accepted work delegation (ADR-0058): the work
+        unit Work Planning admitted for the path. The WorkReleased event on
+        Kafka remains the authoritative fact.
+      required: [workUnitId, cpt, reference]
+      properties:
+        workUnitId:
+          type: string
+          description: The work unit Work Planning admitted.
+          example: wu-482910
+        cpt:
+          type: string
+          format: date-time
+          description: The admitted unit's common pick time.
+          example: "2026-08-21T12:00:00Z"
+        reference:
+          type: string
+          description: The admitted unit's external reference.
+          example: order-77213-line-1
+
+    ExpireLeasesResponse:
+      type: object
+      required: [freed]
+      properties:
+        freed:
+          type: integer
+          format: int32
+          description: Count of tasks freed back to Pending by this sweep.
+          example: 2
+
+    SweepCPTMissesResponse:
+      type: object
+      required: [reported]
+      properties:
+        reported:
+          type: integer
+          format: int32
+          description: Count of tasks reported as CPT-missed (TaskCPTMissed raised) by this sweep pass.
+          example: 1
+
+    RegisterStationRequest:
+      type: object
+      required: [stationId, capabilities]
+      properties:
+        stationId:
+          type: string
+          minLength: 1
+          description: >
+            Client-supplied station identifier; re-using an existing one
+            upserts capabilities. Must be non-empty: the API treats "" as a
+            missing field and rejects it with 400.
+          example: station-1
+        capabilities:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            nullable: true
+            description: >
+              A null item is accepted and treated as an empty capability
+              string (Go's JSON decoding cannot distinguish them).
+            example: pick
+        locationCode:
+          type: string
+          nullable: true
+          description: >
+            Optional facility-layout LocationCode identifying where this
+            station physically sits (ADR-0024). Omitted entirely — or an
+            explicit null, which is treated exactly the same — means
+            unchecked: no role validation is attempted. When supplied
+            and the location-role lookup is configured, a LocationCode
+            that KNOWINGLY resolves to a role other than WorkCenter is
+            rejected (422); an unrecognized LocationCode, or an
+            unavailable lookup, fails open and is recorded unchecked.
+          example: WH1-STOR-AMB-A07-01-01-A
+      example:
+        stationId: station-1
+        capabilities: [pick]
+
+    StationResponse:
+      type: object
+      required: [id, capabilities, occupied]
+      properties:
+        id:
+          type: string
+          example: station-1
+        capabilities:
+          type: array
+          items:
+            type: string
+          example: [pick]
+        occupied:
+          type: boolean
+          description: Whether the station currently has an occupant checked in.
+          example: false
+        locationCode:
+          type: string
+          description: >
+            Omitted entirely (not defaulted to "") when the station has
+            no recorded locationCode (ADR-0024).
+          example: WH1-STOR-AMB-A07-01-01-A
+
+    CheckInStationRequest:
+      type: object
+      required: [occupantId]
+      properties:
+        occupantId:
+          type: string
+          minLength: 1
+          description: >
+            Identifies the worker or robot checking in. Opaque to this
+            service — carried through to the `associateId` field of a
+            later `TaskCompleted` Kafka event for any task this station
+            completes while the occupant remains checked in (see
+            [ADR-0014](/docs/adr/0014-labor-performance-integration-hooks)).
+            Must be non-empty: the API treats "" as a missing field and
+            rejects it with 400.
+          example: worker-42
+      example:
+        occupantId: worker-42
+
+    ArriveAtRebinRequest:
+      type: object
+      required: [orderRef, lineId, requiredLineIds, packCpt, packRequiredCapabilities]
+      properties:
+        orderRef:
+          type: string
+          minLength: 1
+          description: >
+            The order whose lines are being consolidated; also stamped as
+            the resulting PACK task's `orderRef`. Must be non-empty: the API
+            treats "" as a missing field and rejects it with 400.
+          example: order-42
+        lineId:
+          type: string
+          minLength: 1
+          description: >
+            The line arriving at Rebin with this call. Must be a member of
+            the order's required line set (else 422 `rebin-unknown-line`).
+            Must be non-empty: the API treats "" as a missing field and
+            rejects it with 400.
+          example: line-1
+        requiredLineIds:
+          type: array
+          minItems: 1
+          description: >
+            Every line id the order needs before it can be packed. Required
+            and non-empty on every call, but only the FIRST call for an
+            `orderRef` uses it — it fixes the order's required set, and later
+            calls' values are ignored (send the same set each time).
+          items:
+            type: string
+            nullable: true
+            description: >
+              A null item is accepted and treated as an empty line id
+              string (Go's JSON decoding cannot distinguish them).
+            example: line-1
+          example: [line-1, line-2]
+        packCpt:
+          type: string
+          format: date-time
+          description: >
+            Critical Pull Time for the PACK task this order's
+            consolidation creates. Used only by the arrival that completes
+            the set.
+          example: "2026-01-01T19:00:00Z"
+        packRequiredCapabilities:
+          type: array
+          minItems: 1
+          description: >
+            Capabilities a station must hold to claim the resulting PACK
+            task (open, freeform list — see
+            CreateTaskRequest.requiredCapabilities). Required and non-empty
+            on every call; used only by the arrival that completes the set.
+          items:
+            type: string
+            nullable: true
+            description: >
+              A null item is accepted and treated as an empty capability
+              string (Go's JSON decoding cannot distinguish them).
+            example: pack
+          example: [pack]
+        packFragile:
+          type: boolean
+          nullable: true
+          default: false
+          description: >
+            Packing hint carried onto the resulting PACK task's `fragile`.
+            Optional; omission and an explicit null both mean false.
+          example: false
+        packGiftWrap:
+          type: boolean
+          nullable: true
+          default: false
+          description: >
+            Packing hint carried onto the resulting PACK task's `giftWrap`.
+            Optional; omission and an explicit null both mean false.
+          example: false
+      example:
+        orderRef: order-42
+        lineId: line-1
+        requiredLineIds: [line-1, line-2]
+        packCpt: "2026-01-01T19:00:00Z"
+        packRequiredCapabilities: [pack]
+        packFragile: false
+        packGiftWrap: false
+
+  responses:
+    IdempotencyKeyReused:
+      description: >
+        The `Idempotency-Key` was already used with a different method, path
+        or body (`idempotency-key-reused`). Use a new key for a genuinely
+        different request. Distinguished from a business conflict by the
+        problem `type`.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://errors.fulfillment-execution.warehouse-systems.dev/idempotency-key-reused
+            title: Idempotency-Key was already used with a different request
+            status: 409
+            detail: The Idempotency-Key header on this request was already used with a request that had a different method, path or body. Use a new Idempotency-Key for a genuinely different request.
+            instance: /tasks
+
+    BadRequest:
+      description: >
+        The `Idempotency-Key` header is missing (`idempotency-key-required`)
+        or not 1-128 printable ASCII characters (`idempotency-key-invalid`) on
+        a POST, or the request body could not be read or contains a NUL
+        character (`malformed-request-body`), or the request body is malformed
+        JSON, a required field is missing or empty, or a field value is invalid (e.g. a task type outside the
+        TaskType enum).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://errors.fulfillment-execution.warehouse-systems.dev/invalid-request
+            title: The request is malformed or missing a required field
+            status: 400
+            detail: stationId is required
+            instance: /tasks/20260101T120000.000000000/completions
+
+    BadRequestNoInstance:
+      description: >
+        The `Idempotency-Key` header is missing (`idempotency-key-required`)
+        or not 1-128 printable ASCII characters (`idempotency-key-invalid`) on
+        a POST, or the request body could not be read or contains a NUL
+        character (`malformed-request-body`), or the request body is malformed
+        JSON, a required field is missing or empty, or a field value is invalid (e.g. a task type outside the
+        TaskType enum). `instance` is omitted: this is a bare
+        collection-create endpoint with no path segment identifying a
+        specific resource.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://errors.fulfillment-execution.warehouse-systems.dev/invalid-request
+            title: The request is malformed or missing a required field
+            status: 400
+            detail: type must be one of PICK, PACK, SLAM, REBIN, DISPATCH, ARRIVAL
+
+    InternalError:
+      description: An unexpected server-side failure (e.g. a repository or event-publisher error).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://errors.fulfillment-execution.warehouse-systems.dev/internal-error
+            title: Internal server error
+            status: 500
+            detail: "pgx: connection refused"

@@ -1,0 +1,20 @@
+{
+  "name": "com.warehouse.wes/fulfillment-execution",
+  "version": "2.0.5",
+  "title": "Fulfillment Execution MCP",
+  "description": "Pick, pack and SLAM task lifecycle with pull-based claimNext dispatch and lease semantics.",
+  "websiteUrl": "https://iqvo.github.io/fulfillment-execution/",
+  "repository": {
+    "url": "https://github.com/IQVO/fulfillment-execution",
+    "source": "github"
+  },
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "http://localhost:8010/api/mcp/fulfillment-execution",
+      "protocolVersions": [
+        "2025-11-25"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+# fulfillment-execution 2.0.5 (v2.0.5, 9019d1d) - System Assets & Interaction Standard v0.4
+apiVersion: warehouse/application/v1
+application:
+  id: fulfillment-execution
+  name: Fulfillment Execution
+  kind: bounded-context
+  version: 2.0.5
+  description: Fulfillment Execution — Pick/Pack/SLAM task lifecycle with pull-based claimNext dispatch
+    and lease semantics
+  repository: https://github.com/IQVO/fulfillment-execution
+  owners:
+  - claudioed
+  lifecycle: production
+subdomain:
+  id: wes
+  name: WES
+  summary: 'Warehouse Execution System: planning, releasing and executing work on the floor.'
+boundedContext:
+  id: fulfillment-execution
+  name: Fulfillment Execution
+  classification: Core
+  tier: WES
+  purpose: 'Pick, pack and SLAM task lifecycle with pull-based claimNext dispatch and lease semantics.
+    The execution side of the WES: work is claimed by stations and associates, never pushed.'
+  publishes:
+  - warehouse.fulfillment.analytics
+  - warehouse.fulfillment.events
+tags:
+- task
+- package
+- promise-feedback
+- station
+- rebin
+assets: system-assets.yaml
+interactions: interactions.yaml

@@ -1,0 +1,653 @@
+# fulfillment-execution 2.0.5 (v2.0.5, 9019d1d) - System Assets & Interaction Standard v0.4
+# Interactions of fulfillment-execution (STANDARD.md Part B): every call this
+# context MAKES (technology + operation + business) and every event it consumes.
+#
+# Outbound calls (3, one per distinct use case + producer operation):
+#   rest facility-layout  GET  /locations/{locationCode}        (RegisterStation, ADR-0024)
+#   rest inventory-storage POST /containers/{lpn}/case-breaks   (CompleteCaseBreak, ADR-0054)
+#   a2a  wes-work-planning skill release_next_work              (RequestNextWork, ADR-0058)
+# Published events go through the transactional outbox (ADR-0020) to the
+# integration channel warehouse.fulfillment.events and, for analytics, to
+# warehouse.fulfillment.analytics.
+apiVersion: warehouse/interactions/v1
+application: application.yaml
+
+interactions:
+  # --- RegisterStation: outbound REST to facility-layout
+  - id: register-station-call-get-location-slot
+    technology: rest
+    operation:
+      asset: facility-layout/openapi
+      id: getLocationSlot
+      effect: read
+      rest: { method: GET, path: "/locations/{locationCode}" }
+    business:
+      capability: execution.station-registry
+      process: station-registration
+      useCase: RegisterStation
+      triggers:
+        - { kind: api, via: rest, ref: registerStation, actor: "human:floor-supervisor" }
+      purpose: "Resolve the station's locationCode to its facility-layout role so a station standing outside a WorkCenter is rejected (LOCATION_ROLE_MODE=http only)."
+      criticality: degradable
+      onFailure: "registration proceeds with the locationCode recorded unchecked (fail-open; circuit breaker and retry)"
+  # --- CompleteCaseBreak: outbound REST to inventory-storage
+  - id: complete-case-break-call-break-case
+    technology: rest
+    operation:
+      asset: inventory-storage/openapi
+      id: breakCase
+      effect: write
+      rest: { method: POST, path: "/containers/{lpn}/case-breaks" }
+    business:
+      capability: execution.case-break
+      process: case-break-completion
+      useCase: CompleteCaseBreak
+      triggers:
+        - { kind: api, via: rest, ref: completeCaseBreak, actor: "human:floor-associate" }
+      purpose: "Ask inventory-storage to break the sealed case into the loose bin (Idempotency-Key per task) before the BREAK_CASE Task is completed."
+      criticality: blocking
+      onFailure: "the Task stays Claimed and unchanged; a retry reuses the same idempotency key"
+  # --- RequestNextWork: outbound A2A to wes-work-planning
+  - id: request-next-work-call-release-next-work
+    technology: a2a
+    operation:
+      asset: wes-work-planning/a2a
+      id: release_next_work
+      effect: write
+      a2a: { method: SendMessage }
+    business:
+      capability: execution.work-request
+      process: work-request
+      useCase: RequestNextWork
+      triggers:
+        - { kind: api, via: rest, ref: requestNextWork, actor: "human:floor-supervisor" }
+      purpose: "Delegate to Work Planning 'admit the next unit for this process path' when the claimable queue drains; the released work still arrives as the WorkReleased CloudEvent."
+      criticality: blocking
+      onFailure: "the request is answered 502 (peer unreachable), 404 (unknown path) or 503 (delegation not configured) and no work is released"
+  # --- CreateTask
+  - id: create-task-publish-task-available
+    technology: event.publish
+    operation:
+      asset: fulfillment-execution/asyncapi
+      id: consumeFulfillmentIntegrationEvents
+      effect: write
+      event: { channel: warehouse.fulfillment.events, type: com.warehouse.wes.fulfillment-execution.task.TaskAvailable }
+    business:
+      capability: execution.task-pool
+      process: task-creation
+      useCase: CreateTask
+      triggers:
+        - { kind: api, via: rest, ref: createTask, actor: "human:floor-supervisor" }
+        - { kind: api, via: rest, ref: arriveAtRebin, actor: "human:floor-associate" }
+        - { kind: event, ref: com.warehouse.wes.work-planning.workunit.WorkReleased, actor: system }
+      purpose: "Announce that a Task entered the pool and can be claimed by a station."
+      criticality: best-effort
+      onFailure: "outbox-retry"
+  - id: create-task-publish-task-created-analytics
+    technology: event.publish
+    operation:
+      asset: fulfillment-execution/asyncapi
+      id: consumeFulfillmentAnalyticsEvents
+      effect: write
+      event: { channel: warehouse.fulfillment.analytics, type: com.warehouse.wes.fulfillment-execution.task.TaskCreated }
+    business:
+      capability: execution.task-pool
+      process: task-creation
+      useCase: CreateTask
+      triggers:
+        - { kind: api, via: rest, ref: createTask, actor: "human:floor-supervisor" }
+        - { kind: api, via: rest, ref: arriveAtRebin, actor: "human:floor-associate" }
+        - { kind: event, ref: com.warehouse.wes.work-planning.workunit.WorkReleased, actor: system }
+      purpose: "Analytics copy: a Task was created (released work or the PACK task after rebin consolidation)."
+      criticality: best-effort
+      onFailure: "outbox-retry"
+  # --- ClaimNext
+  - id: claim-next-publish-task-claimed
+    technology: event.publish
+    operation:
+      asset: fulfillment-execution/asyncapi
+      id: consumeFulfillmentIntegrationEvents
+      effect: write
+      event: { channel: warehouse.fulfillment.events, type: com.warehouse.wes.fulfillment-execution.task.TaskClaimed }
+    business:
+      capability: execution.task-claiming
+      process: task-claiming
+      useCase: ClaimNext
+      triggers:
+        - { kind: api, via: rest, ref: claimNextTask, actor: "human:floor-associate" }
+      purpose: "Tell the fleet which station holds the lease on a Task (pull dispatch, at-most-once claim)."
+      criticality: best-effort
+      onFailure: "outbox-retry"
+  - id: claim-next-publish-task-claimed-analytics
+    technology: event.publish
+    operation:
+      asset: fulfillment-execution/asyncapi
+      id: consumeFulfillmentAnalyticsEvents
+      effect: write
+      event: { channel: warehouse.fulfillment.analytics, type: com.warehouse.wes.fulfillment-execution.task.TaskClaimed }
+    business:
+      capability: execution.task-claiming
+      process: task-claiming
+      useCase: ClaimNext
+      triggers:
+        - { kind: api, via: rest, ref: claimNextTask, actor: "human:floor-associate" }
+      purpose: "Analytics copy of TaskClaimed for the throughput read model and the data platform."
+      criticality: best-effort
+      onFailure: "outbox-retry"
+  # --- FormWorkBatch
+  - id: form-work-batch-publish-task-claimed
+    technology: event.publish
+    operation:
+      asset: fulfillment-execution/asyncapi
+      id: consumeFulfillmentIntegrationEvents
+      effect: write
+      event: { channel: warehouse.fulfillment.events, type: com.warehouse.wes.fulfillment-execution.task.TaskClaimed }
+    business:
+      capability: execution.pick-batching
+      process: pick-batching
+      useCase: FormWorkBatch
+      triggers:
+        - { kind: api, via: rest, ref: formWorkBatch, actor: "human:floor-associate" }
+      purpose: "Tell the fleet which station holds the lease on each Task claimed into its pick walk."
+      criticality: best-effort
+      onFailure: "outbox-retry"
+  - id: form-work-batch-publish-task-claimed-analytics
+    technology: event.publish
+    operation:
+      asset: fulfillment-execution/asyncapi
+      id: consumeFulfillmentAnalyticsEvents
+      effect: write
+      event: { channel: warehouse.fulfillment.analytics, type: com.warehouse.wes.fulfillment-execution.task.TaskClaimed }
+    business:
+      capability: execution.pick-batching
+      process: pick-batching
+      useCase: FormWorkBatch
+      triggers:
+        - { kind: api, via: rest, ref: formWorkBatch, actor: "human:floor-associate" }
+      purpose: "Analytics copy of TaskClaimed for the throughput read model and the data platform."
+      criticality: best-effort
+      onFailure: "outbox-retry"
+  - id: form-work-batch-publish-work-batch-formed
+    technology: event.publish
+    operation:
+      asset: fulfillment-execution/asyncapi
+      id: consumeFulfillmentIntegrationEvents
+      effect: write
+      event: { channel: warehouse.fulfillment.events, type: com.warehouse.wes.fulfillment-execution.workbatch.WorkBatchFormed }
+    business:
+      capability: execution.pick-batching
+      process: pick-batching
+      useCase: FormWorkBatch
+      triggers:
+        - { kind: api, via: rest, ref: formWorkBatch, actor: "human:floor-associate" }
+      purpose: "Announce a station's pick walk (anchor and companion stops) formed behind PICK_BATCH_MODE."
+      criticality: best-effort
+      onFailure: "outbox-retry"
+  - id: form-work-batch-publish-work-batch-formed-analytics
+    technology: event.publish
+    operation:
+      asset: fulfillment-execution/asyncapi
+      id: consumeFulfillmentAnalyticsEvents
+      effect: write
+      event: { channel: warehouse.fulfillment.analytics, type: com.warehouse.wes.fulfillment-execution.workbatch.WorkBatchFormed }
+    business:
+      capability: execution.pick-batching
+      process: pick-batching
+      useCase: FormWorkBatch
+      triggers:
+        - { kind: api, via: rest, ref: formWorkBatch, actor: "human:floor-associate" }
+      purpose: "Analytics copy of WorkBatchFormed for the throughput read model and the data platform."
+      criticality: best-effort
+      onFailure: "outbox-retry"
+  # --- CompleteTask
+  - id: complete-task-publish-task-completed
+    technology: event.publish
+    operation:
+      asset: fulfillment-execution/asyncapi
+      id: consumeFulfillmentIntegrationEvents
+      effect: write
+      event: { channel: warehouse.fulfillment.events, type: com.warehouse.wes.fulfillment-execution.task.TaskCompleted }
+    business:
+      capability: execution.task-completion
+      process: task-completion
+      useCase: CompleteTask
+      triggers:
+        - { kind: api, via: rest, ref: completeTask, actor: "human:floor-associate" }
+        - { kind: api, via: mcp, ref: complete_task, actor: "agent:mcp-client" }
+        - { kind: api, via: a2a, ref: complete_task, actor: "agent:a2a-client" }
+      purpose: "Report that a station finished a claimed Task (feeds order promise and labor performance)."
+      criticality: best-effort
+      onFailure: "outbox-retry"
+  - id: complete-task-publish-task-completed-analytics
+    technology: event.publish
+    operation:
+      asset: fulfillment-execution/asyncapi
+      id: consumeFulfillmentAnalyticsEvents
+      effect: write
+      event: { channel: warehouse.fulfillment.analytics, type: com.warehouse.wes.fulfillment-execution.task.TaskCompleted }
+    business:
+      capability: execution.task-completion
+      process: task-completion
+      useCase: CompleteTask
+      triggers:
+        - { kind: api, via: rest, ref: completeTask, actor: "human:floor-associate" }
+        - { kind: api, via: mcp, ref: complete_task, actor: "agent:mcp-client" }
+        - { kind: api, via: a2a, ref: complete_task, actor: "agent:a2a-client" }
+      purpose: "Analytics copy of TaskCompleted for the throughput read model and the data platform."
+      criticality: best-effort
+      onFailure: "outbox-retry"
+  - id: complete-task-publish-work-batch-completed
+    technology: event.publish
+    operation:
+      asset: fulfillment-execution/asyncapi
+      id: consumeFulfillmentIntegrationEvents
+      effect: write
+      event: { channel: warehouse.fulfillment.events, type: com.warehouse.wes.fulfillment-execution.workbatch.WorkBatchCompleted }
+    business:
+      capability: execution.task-completion
+      process: task-completion
+      useCase: CompleteTask
+      triggers:
+        - { kind: api, via: rest, ref: completeTask, actor: "human:floor-associate" }
+        - { kind: api, via: mcp, ref: complete_task, actor: "agent:mcp-client" }
+        - { kind: api, via: a2a, ref: complete_task, actor: "agent:a2a-client" }
+      purpose: "Announce that the last member of a pick walk completed."
+      criticality: best-effort
+      onFailure: "outbox-retry"
+  - id: complete-task-publish-work-batch-completed-analytics
+    technology: event.publish
+    operation:
+      asset: fulfillment-execution/asyncapi
+      id: consumeFulfillmentAnalyticsEvents
+      effect: write
+      event: { channel: warehouse.fulfillment.analytics, type: com.warehouse.wes.fulfillment-execution.workbatch.WorkBatchCompleted }
+    business:
+      capability: execution.task-completion
+      process: task-completion
+      useCase: CompleteTask
+      triggers:
+        - { kind: api, via: rest, ref: completeTask, actor: "human:floor-associate" }
+        - { kind: api, via: mcp, ref: complete_task, actor: "agent:mcp-client" }
+        - { kind: api, via: a2a, ref: complete_task, actor: "agent:a2a-client" }
+      purpose: "Analytics copy of WorkBatchCompleted for the throughput read model and the data platform."
+      criticality: best-effort
+      onFailure: "outbox-retry"
+  - id: complete-task-publish-transfer-picked
+    technology: event.publish
+    operation:
+      asset: fulfillment-execution/asyncapi
+      id: consumeFulfillmentIntegrationEvents
+      effect: write
+      event: { channel: warehouse.fulfillment.events, type: com.warehouse.wes.fulfillment-execution.transfer.TransferPicked }
+    business:
+      capability: execution.task-completion
+      process: task-completion
+      useCase: CompleteTask
+      triggers:
+        - { kind: api, via: rest, ref: completeTask, actor: "human:floor-associate" }
+        - { kind: api, via: mcp, ref: complete_task, actor: "agent:mcp-client" }
+        - { kind: api, via: a2a, ref: complete_task, actor: "agent:a2a-client" }
+      purpose: "Report the pick leg of an inter-warehouse transfer task completed."
+      criticality: best-effort
+      onFailure: "outbox-retry"
+  - id: complete-task-publish-transfer-dispatched
+    technology: event.publish
+    operation:
+      asset: fulfillment-execution/asyncapi
+      id: consumeFulfillmentIntegrationEvents
+      effect: write
+      event: { channel: warehouse.fulfillment.events, type: com.warehouse.wes.fulfillment-execution.transfer.TransferDispatched }
+    business:
+      capability: execution.task-completion
+      process: task-completion
+      useCase: CompleteTask
+      triggers:
+        - { kind: api, via: rest, ref: completeTask, actor: "human:floor-associate" }
+        - { kind: api, via: mcp, ref: complete_task, actor: "agent:mcp-client" }
+        - { kind: api, via: a2a, ref: complete_task, actor: "agent:a2a-client" }
+      purpose: "Report the dispatch leg of an inter-warehouse transfer task completed."
+      criticality: best-effort
+      onFailure: "outbox-retry"
+  - id: complete-task-publish-transfer-arrived
+    technology: event.publish
+    operation:
+      asset: fulfillment-execution/asyncapi
+      id: consumeFulfillmentIntegrationEvents
+      effect: write
+      event: { channel: warehouse.fulfillment.events, type: com.warehouse.wes.fulfillment-execution.transfer.TransferArrived }
+    business:
+      capability: execution.task-completion
+      process: task-completion
+      useCase: CompleteTask
+      triggers:
+        - { kind: api, via: rest, ref: completeTask, actor: "human:floor-associate" }
+        - { kind: api, via: mcp, ref: complete_task, actor: "agent:mcp-client" }
+        - { kind: api, via: a2a, ref: complete_task, actor: "agent:a2a-client" }
+      purpose: "Report the arrival leg of an inter-warehouse transfer task completed."
+      criticality: best-effort
+      onFailure: "outbox-retry"
+  # --- CompleteCaseBreak
+  - id: complete-case-break-publish-task-completed
+    technology: event.publish
+    operation:
+      asset: fulfillment-execution/asyncapi
+      id: consumeFulfillmentIntegrationEvents
+      effect: write
+      event: { channel: warehouse.fulfillment.events, type: com.warehouse.wes.fulfillment-execution.task.TaskCompleted }
+    business:
+      capability: execution.case-break
+      process: case-break-completion
+      useCase: CompleteCaseBreak
+      triggers:
+        - { kind: api, via: rest, ref: completeCaseBreak, actor: "human:floor-associate" }
+      purpose: "Report that a BREAK_CASE Task completed once inventory-storage broke the case."
+      criticality: best-effort
+      onFailure: "outbox-retry"
+  - id: complete-case-break-publish-task-completed-analytics
+    technology: event.publish
+    operation:
+      asset: fulfillment-execution/asyncapi
+      id: consumeFulfillmentAnalyticsEvents
+      effect: write
+      event: { channel: warehouse.fulfillment.analytics, type: com.warehouse.wes.fulfillment-execution.task.TaskCompleted }
+    business:
+      capability: execution.case-break
+      process: case-break-completion
+      useCase: CompleteCaseBreak
+      triggers:
+        - { kind: api, via: rest, ref: completeCaseBreak, actor: "human:floor-associate" }
+      purpose: "Analytics copy of TaskCompleted for the throughput read model and the data platform."
+      criticality: best-effort
+      onFailure: "outbox-retry"
+  # --- ExpireLeases
+  - id: expire-leases-publish-task-available
+    technology: event.publish
+    operation:
+      asset: fulfillment-execution/asyncapi
+      id: consumeFulfillmentIntegrationEvents
+      effect: write
+      event: { channel: warehouse.fulfillment.events, type: com.warehouse.wes.fulfillment-execution.task.TaskAvailable }
+    business:
+      capability: execution.lease-management
+      process: lease-expiry
+      useCase: ExpireLeases
+      triggers:
+        - { kind: api, via: rest, ref: expireLeases, actor: "human:floor-supervisor" }
+        - { kind: schedule, ref: expireLeases, actor: system }
+      purpose: "Announce that a Task whose lease expired returned to the pool."
+      criticality: best-effort
+      onFailure: "outbox-retry"
+  - id: expire-leases-publish-lease-expired-analytics
+    technology: event.publish
+    operation:
+      asset: fulfillment-execution/asyncapi
+      id: consumeFulfillmentAnalyticsEvents
+      effect: write
+      event: { channel: warehouse.fulfillment.analytics, type: com.warehouse.wes.fulfillment-execution.task.LeaseExpired }
+    business:
+      capability: execution.lease-management
+      process: lease-expiry
+      useCase: ExpireLeases
+      triggers:
+        - { kind: api, via: rest, ref: expireLeases, actor: "human:floor-supervisor" }
+        - { kind: schedule, ref: expireLeases, actor: system }
+      purpose: "Analytics copy: a claim lease expired and the Task was freed."
+      criticality: best-effort
+      onFailure: "outbox-retry"
+  - id: expire-leases-publish-work-batch-abandoned
+    technology: event.publish
+    operation:
+      asset: fulfillment-execution/asyncapi
+      id: consumeFulfillmentIntegrationEvents
+      effect: write
+      event: { channel: warehouse.fulfillment.events, type: com.warehouse.wes.fulfillment-execution.workbatch.WorkBatchAbandoned }
+    business:
+      capability: execution.lease-management
+      process: lease-expiry
+      useCase: ExpireLeases
+      triggers:
+        - { kind: api, via: rest, ref: expireLeases, actor: "human:floor-supervisor" }
+        - { kind: schedule, ref: expireLeases, actor: system }
+      purpose: "Announce that a pick walk was abandoned because a member lease expired."
+      criticality: best-effort
+      onFailure: "outbox-retry"
+  - id: expire-leases-publish-work-batch-abandoned-analytics
+    technology: event.publish
+    operation:
+      asset: fulfillment-execution/asyncapi
+      id: consumeFulfillmentAnalyticsEvents
+      effect: write
+      event: { channel: warehouse.fulfillment.analytics, type: com.warehouse.wes.fulfillment-execution.workbatch.WorkBatchAbandoned }
+    business:
+      capability: execution.lease-management
+      process: lease-expiry
+      useCase: ExpireLeases
+      triggers:
+        - { kind: api, via: rest, ref: expireLeases, actor: "human:floor-supervisor" }
+        - { kind: schedule, ref: expireLeases, actor: system }
+      purpose: "Analytics copy of WorkBatchAbandoned for the throughput read model and the data platform."
+      criticality: best-effort
+      onFailure: "outbox-retry"
+  # --- SweepCPTMisses
+  - id: sweep-c-p-t-misses-publish-task-c-p-t-missed
+    technology: event.publish
+    operation:
+      asset: fulfillment-execution/asyncapi
+      id: consumeFulfillmentIntegrationEvents
+      effect: write
+      event: { channel: warehouse.fulfillment.events, type: com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed }
+    business:
+      capability: execution.cpt-monitoring
+      process: cpt-miss-detection
+      useCase: SweepCPTMisses
+      triggers:
+        - { kind: api, via: rest, ref: sweepCPTMisses, actor: "human:floor-supervisor" }
+        - { kind: schedule, ref: cptMisses, actor: system }
+      purpose: "Report a Task still open at or past its CPT so exception handling can act (ADR 0025)."
+      criticality: best-effort
+      onFailure: "outbox-retry"
+  # --- SealPackage
+  - id: seal-package-publish-package-sealed-analytics
+    technology: event.publish
+    operation:
+      asset: fulfillment-execution/asyncapi
+      id: consumeFulfillmentAnalyticsEvents
+      effect: write
+      event: { channel: warehouse.fulfillment.analytics, type: com.warehouse.wes.fulfillment-execution.package.PackageSealed }
+    business:
+      capability: execution.packing
+      process: package-sealing
+      useCase: SealPackage
+      triggers:
+        - { kind: api, via: rest, ref: sealPackage, actor: "human:floor-associate" }
+      purpose: "Analytics copy: a Package was sealed by a pack station."
+      criticality: best-effort
+      onFailure: "outbox-retry"
+  # --- RunSlam
+  - id: run-slam-publish-weight-discrepancy-detected
+    technology: event.publish
+    operation:
+      asset: fulfillment-execution/asyncapi
+      id: consumeFulfillmentIntegrationEvents
+      effect: write
+      event: { channel: warehouse.fulfillment.events, type: com.warehouse.wes.fulfillment-execution.package.WeightDiscrepancyDetected }
+    business:
+      capability: execution.slam
+      process: slam-weigh-check
+      useCase: RunSlam
+      triggers:
+        - { kind: api, via: rest, ref: runSlam, actor: "human:floor-associate" }
+      purpose: "Report that actual package weight is outside tolerance of expected."
+      criticality: best-effort
+      onFailure: "outbox-retry"
+  - id: run-slam-publish-weight-discrepancy-detected-analytics
+    technology: event.publish
+    operation:
+      asset: fulfillment-execution/asyncapi
+      id: consumeFulfillmentAnalyticsEvents
+      effect: write
+      event: { channel: warehouse.fulfillment.analytics, type: com.warehouse.wes.fulfillment-execution.package.WeightDiscrepancyDetected }
+    business:
+      capability: execution.slam
+      process: slam-weigh-check
+      useCase: RunSlam
+      triggers:
+        - { kind: api, via: rest, ref: runSlam, actor: "human:floor-associate" }
+      purpose: "Analytics copy of WeightDiscrepancyDetected for the throughput read model and the data platform."
+      criticality: best-effort
+      onFailure: "outbox-retry"
+  - id: run-slam-publish-package-diverted
+    technology: event.publish
+    operation:
+      asset: fulfillment-execution/asyncapi
+      id: consumeFulfillmentIntegrationEvents
+      effect: write
+      event: { channel: warehouse.fulfillment.events, type: com.warehouse.wes.fulfillment-execution.package.PackageDiverted }
+    business:
+      capability: execution.slam
+      process: slam-weigh-check
+      useCase: RunSlam
+      triggers:
+        - { kind: api, via: rest, ref: runSlam, actor: "human:floor-associate" }
+      purpose: "Report that a package failed the SLAM weigh-check and was diverted."
+      criticality: best-effort
+      onFailure: "outbox-retry"
+  - id: run-slam-publish-package-diverted-analytics
+    technology: event.publish
+    operation:
+      asset: fulfillment-execution/asyncapi
+      id: consumeFulfillmentAnalyticsEvents
+      effect: write
+      event: { channel: warehouse.fulfillment.analytics, type: com.warehouse.wes.fulfillment-execution.package.PackageDiverted }
+    business:
+      capability: execution.slam
+      process: slam-weigh-check
+      useCase: RunSlam
+      triggers:
+        - { kind: api, via: rest, ref: runSlam, actor: "human:floor-associate" }
+      purpose: "Analytics copy of PackageDiverted for the throughput read model and the data platform."
+      criticality: best-effort
+      onFailure: "outbox-retry"
+  - id: run-slam-publish-label-applied-analytics
+    technology: event.publish
+    operation:
+      asset: fulfillment-execution/asyncapi
+      id: consumeFulfillmentAnalyticsEvents
+      effect: write
+      event: { channel: warehouse.fulfillment.analytics, type: com.warehouse.wes.fulfillment-execution.package.LabelApplied }
+    business:
+      capability: execution.slam
+      process: slam-weigh-check
+      useCase: RunSlam
+      triggers:
+        - { kind: api, via: rest, ref: runSlam, actor: "human:floor-associate" }
+      purpose: "Analytics copy: the SLAM pass applied the shipping label."
+      criticality: best-effort
+      onFailure: "outbox-retry"
+  - id: run-slam-publish-package-manifested
+    technology: event.publish
+    operation:
+      asset: fulfillment-execution/asyncapi
+      id: consumeFulfillmentIntegrationEvents
+      effect: write
+      event: { channel: warehouse.fulfillment.events, type: com.warehouse.wes.fulfillment-execution.package.PackageManifested }
+    business:
+      capability: execution.slam
+      process: slam-weigh-check
+      useCase: RunSlam
+      triggers:
+        - { kind: api, via: rest, ref: runSlam, actor: "human:floor-associate" }
+      purpose: "Report that a package passed SLAM and was manifested for ship."
+      criticality: best-effort
+      onFailure: "outbox-retry"
+  - id: run-slam-publish-package-manifested-analytics
+    technology: event.publish
+    operation:
+      asset: fulfillment-execution/asyncapi
+      id: consumeFulfillmentAnalyticsEvents
+      effect: write
+      event: { channel: warehouse.fulfillment.analytics, type: com.warehouse.wes.fulfillment-execution.package.PackageManifested }
+    business:
+      capability: execution.slam
+      process: slam-weigh-check
+      useCase: RunSlam
+      triggers:
+        - { kind: api, via: rest, ref: runSlam, actor: "human:floor-associate" }
+      purpose: "Analytics copy of PackageManifested for the throughput read model and the data platform."
+      criticality: best-effort
+      onFailure: "outbox-retry"
+  # NOT DECLARED: com.warehouse.wes.fulfillment-execution.task.ItemPicked on
+  # warehouse.fulfillment.analytics. It is in apis/asyncapi.yaml and the analytics
+  # encoder, but no use case raises it at v2.0.5 (shared.NewItemPicked has no
+  # caller; features/task_pool_rules.feature, ADR 0040 and ADR 0041 record "ItemPicked
+  # is defined but never raised"). The builder's coverage rule still demands an
+  # interaction for it; none can be declared without inventing a use case.
+
+subscriptions:
+  - id: consume-wes-work-planning-work-released
+    operation:
+      asset: wes-work-planning/asyncapi    # pinned: internal/adapters/inbound/kafka/testdata/wes-work-planning.asyncapi.yaml
+      id: consumeWorkPlanningEvents
+      consumerOperation: receiveWorkReleased   # this repo's apis/asyncapi.yaml
+      event:
+        channel: warehouse.work-planning.events
+        types:
+          - com.warehouse.wes.work-planning.workunit.WorkReleased
+    business:
+      capability: execution.task-pool
+      process: task-creation
+      useCases: [ApplyWorkReleased]
+      purpose: "Create one Task per released work unit (deduplicated on the CloudEvents id) so it can be pulled by a station."
+  - id: consume-process-path-management-process-path-events
+    operation:
+      asset: process-path-management/asyncapi    # pinned: internal/adapters/outbound/kafkacatalog/testdata/process-path-management.asyncapi.yaml
+      id: publishProcessPathEvents
+      consumerOperation: receiveProcessPathEvents   # this repo's apis/asyncapi.yaml
+      event:
+        channel: warehouse.process-path-management.events
+        types:
+          - com.warehouse.wes.process-path-management.processpath.ProcessPathCreated
+          - com.warehouse.wes.process-path-management.processpath.ProcessPathUpdated
+          - com.warehouse.wes.process-path-management.processpath.ProcessPathDeactivated
+    business:
+      capability: execution.process-path-catalogue
+      process: task-creation
+      projection: PathCatalogue              # pure read model, only when PATH_CATALOGUE_SOURCE=kafka (ADR-0017)
+      purpose: "Keep the in-memory process-path catalogue a released work unit's path id is resolved against."
+  - id: consume-product-master-product-events
+    operation:
+      asset: product-master/asyncapi    # pinned: internal/adapters/inbound/kafka/testdata/product-master.asyncapi.yaml
+      id: receiveProductEvents
+      consumerOperation: receiveProductClassified   # this repo's apis/asyncapi.yaml
+      event:
+        channel: warehouse.product-master.events
+        types:
+          - com.warehouse.wms.product-master.product.ProductClassified
+          - com.warehouse.wms.product-master.product.ProductPackLevelDeclared
+          - com.warehouse.wms.product-master.product.ProductPackLevelRetired
+    business:
+      capability: execution.product-reference
+      process: product-reference-sync
+      useCases: [ApplyProductClassified, ApplyPackLevel]
+      purpose: "Keep the local classification copy (DOT hazard check at SealPackage, ADR-0039) and the local PackView (GTIN resolution at pick scans, ADR-0054) current."
+  - id: consume-task-interleaving-interleaving-hint-issued
+    operation:
+      asset: task-interleaving/asyncapi    # pinned: internal/adapters/inbound/kafka/testdata/task-interleaving.asyncapi.yaml
+      id: receiveInterleavingHints
+      consumerOperation: receiveInterleavingHintIssued   # this repo's apis/asyncapi.yaml
+      event:
+        channel: warehouse.task-interleaving.events
+        types:
+          - com.warehouse.wes.task-interleaving.stationtrip.InterleavingHintIssued
+    business:
+      capability: execution.task-claiming
+      process: task-claiming
+      useCases: [ApplyInterleavingHint]
+      purpose: "Keep one active advisory hint per station that claimNext uses only as a tie-break inside a priority band (ADR-0051)."
+
+# In the spec but raised by no code path at this release (checked: shared.NewItemPicked has no caller;
+# features/task_pool_rules.feature and ADRs 0040/0041 say "defined but never raised").
+declaredNotRaised:
+  - channel: warehouse.fulfillment.analytics
+    type: com.warehouse.wes.fulfillment-execution.task.ItemPicked
+    reason: declared in apis/asyncapi.yaml and the analytics encoder, but no use case raises it at v2.0.5 (shared.NewItemPicked has no caller)
